@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -37,23 +37,76 @@ for await (const raw of rl) {
 }
 rl.close();
 
-/** Valor de una variable en las otras configuraciones de este ordenador (otros proyectos ya conectados). */
+/** Configuraciones de este ordenador (otros proyectos conectados), de la más reciente a la más antigua. */
+function otherConfigs(): { file: string; text: string }[] {
+  return readdirSync(KIT_DIR)
+    .filter((n) => /^\.env(\.[A-Za-z0-9_-]+)?$/.test(n) && n !== ".env.example")
+    .map((file) => ({ file, mtime: statSync(join(KIT_DIR, file)).mtimeMs, text: readFileSync(join(KIT_DIR, file), "utf8") }))
+    .sort((a, b) => b.mtime - a.mtime);
+}
+const valueIn = (text: string, key: string) => new RegExp(`^${key}=(.+)$`, "m").exec(text)?.[1]?.trim() || undefined;
+
+/** Valor de una variable en las otras configuraciones de este ordenador. */
 function fromOtherProjects(key: string): string | undefined {
-  for (const f of readdirSync(KIT_DIR).filter((n) => /^\.env(\.[A-Za-z0-9_-]+)?$/.test(n) && n !== ".env.example")) {
-    const m = new RegExp(`^${key}=(.+)$`, "m").exec(readFileSync(join(KIT_DIR, f), "utf8"));
-    if (m?.[1].trim()) return m[1].trim();
+  for (const c of otherConfigs()) {
+    const v = valueIn(c.text, key);
+    if (v) return v;
   }
   return undefined;
 }
 
-/** Pregunta en la terminal; con `secret` no se ve lo que se escribe. */
-async function ask(question: string, secret = false): Promise<string> {
+/** Misma instalación de Backcode (mismo proyecto de Firebase y mismo modo emulador/producción). */
+const sameBackend = (text: string) =>
+  valueIn(text, "BACKCODE_FIREBASE_PROJECT_ID") === values.get("BACKCODE_FIREBASE_PROJECT_ID") &&
+  (valueIn(text, "BACKCODE_USE_EMULATORS") ?? "0") === (values.get("BACKCODE_USE_EMULATORS") ?? "0");
+
+/** Comprueba la llave contra el servidor (runnerSignIn) antes de guardarla. */
+async function keyWorks(key: string): Promise<boolean> {
+  const project = values.get("BACKCODE_FIREBASE_PROJECT_ID");
+  const region = values.get("BACKCODE_FUNCTIONS_REGION") || "us-central1";
+  const url = values.get("BACKCODE_USE_EMULATORS") === "1" ? `http://127.0.0.1:5001/${project}/${region}/runnerSignIn` : `https://${region}-${project}.cloudfunctions.net/runnerSignIn`;
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: { key } }) });
+    return !!((await res.json()) as { result?: { token?: string } }).result?.token;
+  } catch {
+    return false;
+  }
+}
+
+/** Pregunta en la terminal. */
+async function ask(question: string): Promise<string> {
   const q = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  if (secret) (q as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = (s: string) => void (s.startsWith(question) && process.stdout.write(question));
   const answer = await q.question(question);
   q.close();
-  if (secret) process.stdout.write("\n");
   return answer.trim();
+}
+
+/** Pregunta sin mostrar lo que se escribe (ni al pegar). */
+function askHidden(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    process.stdout.write(question);
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    let value = "";
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          resolve(value.trim());
+          return;
+        }
+        if (ch === "\u0003") process.exit(130); // Ctrl+C
+        if (ch === "\u007f" || ch === "\b") value = value.slice(0, -1);
+        else value += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }
 
 const projectId = values.get("BACKCODE_PROJECT_ID") ?? "";
@@ -62,17 +115,35 @@ if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
   console.error("\n✗ Falta el proyecto. Copia de nuevo la configuración desde la app.");
   process.exit(1);
 }
-// La llave es por usuario: si ya conectaste otro proyecto en este ordenador, se reutiliza (generar una
-// nueva revocaría la de los demás runners).
-if (!values.get("BACKCODE_RUNNER_KEY")) {
-  const key = fromOtherProjects("BACKCODE_RUNNER_KEY");
-  if (!key) {
-    console.error("\n✗ No hay ninguna llave en este ordenador. Genérala en la app (Conectar → Genera tu llave personal) y vuelve a copiar la configuración.");
+
+// La llave es por usuario: se usa la pegada o, si no hay, la de otro proyecto de este ordenador. Se valida contra el
+// servidor (generar una nueva revoca la anterior) y la válida se copia a tus otras configuraciones de la misma instalación.
+{
+  const pasted = values.get("BACKCODE_RUNNER_KEY");
+  const candidates = [...new Set([pasted, ...otherConfigs().filter((c) => sameBackend(c.text)).map((c) => valueIn(c.text, "BACKCODE_RUNNER_KEY"))].filter((k): k is string => !!k))];
+  let valid: string | undefined;
+  for (const key of candidates) {
+    if (await keyWorks(key)) {
+      valid = key;
+      break;
+    }
+  }
+  if (!valid) {
+    console.error(
+      pasted
+        ? "\n✗ La llave que has pegado no es válida o ya se revocó (generar otra invalida la anterior). Genera una en la app (Conectar → Genera tu llave personal) y vuelve a copiar la configuración."
+        : "\n✗ No hay ninguna llave válida en este ordenador. Genera una en la app (Conectar → Genera tu llave personal) y vuelve a copiar la configuración.",
+    );
     process.exit(1);
   }
-  values.set("BACKCODE_RUNNER_KEY", key);
-  console.log("  · Se reutiliza tu llave de este ordenador.");
+  if (valid !== pasted) console.log("  · Se reutiliza tu llave de este ordenador.");
+  values.set("BACKCODE_RUNNER_KEY", valid);
+  for (const c of otherConfigs().filter((x) => sameBackend(x.text) && x.file !== `.env.${projectId}` && valueIn(x.text, "BACKCODE_RUNNER_KEY") !== valid)) {
+    writeFileSync(join(KIT_DIR, c.file), c.text.replace(/^BACKCODE_RUNNER_KEY=.*$/m, `BACKCODE_RUNNER_KEY=${valid}`), { mode: 0o600 });
+    console.log(`  · Llave actualizada también en ${c.file} (reinicia ese runner para usarla).`);
+  }
 }
+
 // Bitbucket: el API token no pasa por la app; se reutiliza o se pide aquí y se queda en este .env.
 if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket" && !values.get("BACKCODE_BITBUCKET_TOKEN")) {
   let email = fromOtherProjects("BACKCODE_BITBUCKET_EMAIL");
@@ -85,7 +156,7 @@ if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket" && !values.get("BACKCODE
     console.log("     read:pullrequest:bitbucket, write:pullrequest:bitbucket");
     console.log("  3. Usa el email de esa cuenta de Atlassian (no tu usuario de Bitbucket).\n");
     email = await ask("Email de tu cuenta Atlassian: ");
-    token = await ask("API token (no se muestra): ", true);
+    token = await askHidden("API token (no se muestra al escribirlo ni al pegarlo): ");
   }
   if (email && token) {
     values.set("BACKCODE_BITBUCKET_EMAIL", email);

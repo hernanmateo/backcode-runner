@@ -27,7 +27,8 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 
 **La llave (runner key) es por usuario, no por proyecto.** Solo hace falta generarla en la app la primera vez en cada ordenador.
 Si ya tienes otro proyecto conectado, en la guía elige **"Ya tengo una llave en este ordenador"**: `npm run connect` reutiliza la que
-tienes. Generar una nueva revoca la anterior y desconectaría tus otros runners.
+tienes. Generar una nueva revoca la anterior; si lo haces, `npm run connect` comprueba la llave contra el servidor y copia la
+válida a tus otras configuraciones (reinicia esos runners para que la usen). Si no encuentra ninguna válida, te pide generar una.
 
 ## Arrancarlo cada día
 ```bash
