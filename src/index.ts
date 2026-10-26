@@ -4,11 +4,11 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { commitPushAndOpenPr, commitsAhead, createWorktree, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { commitPushAndOpenPr, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
-import { buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildFollowUpPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
 
 const cfg = (() => {
@@ -43,15 +43,21 @@ let pending: string[] = [];
 let busy = false;
 let stopping = false;
 
-async function runFeature(id: string, feature: Feature): Promise<{ status: "done" | "failed"; result: FeatureResult }> {
+type RunOutcome = { status: "done" | "failed" | "waiting"; result: FeatureResult; sessionId?: string };
+
+async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const acceptanceError = await store.verifyAcceptance(id, feature);
   if (acceptanceError) return { status: "failed", result: { error: acceptanceError } };
 
   const project = await store.projectInfo();
-  const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch! });
-  await store.event(id, "start", `Worktree ${wt.branch} creado desde ${cfg.remote}/${cfg.baseBranch}`);
+  // Con sesión previa, es una conversación: se continúa la misma sesión en el mismo worktree y rama.
+  const resuming = !!feature.sessionId;
+  const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
+  await store.event(id, "start", resuming ? `Continuando la conversación en ${wt.branch}` : `Worktree ${wt.branch} creado desde ${cfg.remote}/${cfg.baseBranch}`);
 
-  let prUrl: string | undefined;
+  const previousPr = feature.result?.prUrl;
+  let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
+  let question: string | undefined; // pregunta de Claude (ask_user)
   const prServer = createSdkMcpServer({
     name: "backcode",
     version: "1.0.0",
@@ -62,7 +68,7 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
         { title: z.string().min(5).max(120), body: z.string().min(20).max(20_000) },
         async ({ title, body }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
-          if (prUrl) return fail(`Ya existe un PR para esta funcionalidad: ${prUrl}`);
+          if (prUrl) return fail(`Ya publicaste los cambios en esta vuelta: ${prUrl}`);
 
           const files = await stageAll(wt.path);
           if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, cfg.baseBranch)) === 0) {
@@ -85,6 +91,18 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
       ),
+      tool(
+        "ask_user",
+        "Ask the person who accepted this task a blocking clarification question. They answer in the app and this same session continues with their reply. After calling it, end your turn without further changes.",
+        { question: z.string().min(5).max(2000) },
+        async ({ question: q }) => {
+          if (question) return { content: [{ type: "text" as const, text: "Ya hay una pregunta pendiente; termina tu turno." }], isError: true };
+          question = q;
+          await store.postMessage(id, "question", q);
+          await store.event(id, "question", q.slice(0, 300));
+          return { content: [{ type: "text" as const, text: "Pregunta enviada. Termina tu turno ahora sin hacer más cambios; continuarás con la respuesta." }] };
+        },
+      ),
     ],
   });
 
@@ -93,11 +111,16 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
   const timeout = setTimeout(() => abort.abort(), cfg.timeoutMinutes * 60_000);
   const lease = setInterval(() => store.extendLease(id).catch(() => undefined), FEATURE_LEASE_MS / 3);
 
-  let result: FeatureResult = { branch: wt.branch };
+  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr };
+  let sessionId = feature.sessionId;
   try {
+    const prompt = resuming
+      ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr)
+      : buildUserPrompt(id, feature);
     const messages = query({
-      prompt: buildUserPrompt(id, feature),
+      prompt,
       options: {
+        resume: feature.sessionId,
         cwd: wt.path,
         model: cfg.model,
         abortController: abort,
@@ -111,7 +134,7 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
         settingSources: [],
         // dontAsk: todo lo que no esté en allowedTools se deniega sin preguntar.
         permissionMode: "dontAsk",
-        allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request"],
+        allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user"],
         disallowedTools: ["WebFetch", "WebSearch", "Agent", "Task"],
         hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected)] }] },
         sandbox: {
@@ -137,7 +160,10 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
             await store.event(id, "tool", `${block.name}${detail ? `: ${detail}` : ""}`);
           }
         }
+      } else if (msg.type === "system" && msg.subtype === "init") {
+        sessionId = msg.session_id;
       } else if (msg.type === "result") {
+        sessionId = msg.session_id;
         const models = Object.values(msg.modelUsage ?? {});
         result = {
           ...result,
@@ -159,11 +185,16 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
     clearTimeout(timeout);
     clearInterval(lease);
     current = null;
-    await removeWorktree(cfg.repoPath, wt.path);
+    // El worktree se conserva: la conversación puede continuar (se limpia tras días sin uso).
   }
 
-  if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined } };
-  return { status: "failed", result: { ...result, error: result.error ?? "Claude terminó sin abrir un PR (ver summary)" } };
+  // El resumen de cada vuelta queda en el hilo; si preguntó, la pregunta ya está publicada.
+  if (!question && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
+  if (question && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
+  if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined }, sessionId };
+  // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
+  if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
+  return { status: "failed", result: { ...result, error: result.error ?? "Claude terminó sin abrir un PR (ver resumen)" }, sessionId };
 }
 
 async function drain(): Promise<void> {
@@ -176,11 +207,11 @@ async function drain(): Promise<void> {
       if (!feature) continue;
       console.log(`[run] ${id} · ${feature.title}`);
       try {
-        const { status, result } = await runFeature(id, feature);
-        if (stopping && !result.prUrl) {
+        const { status, result, sessionId } = await runFeature(id, feature);
+        if (stopping && !result.prUrl && status !== "waiting") {
           await store.requeue(id);
         } else {
-          await store.finish(id, status, result);
+          await store.finish(id, status, result, sessionId);
           await store.event(id, status, result.prUrl ?? result.error ?? "");
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
@@ -201,6 +232,7 @@ async function main(): Promise<void> {
   console.log(`[backcode] usuario ${uid} · proyecto ${cfg.projectId} · repo ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · runner ${cfg.runnerId}`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
+  await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
 
   // Mapa del repo para la IA que prepara los encargos: al arrancar y cada 6 h, sin bloquear la cola.
   const knowledgeAbort = new AbortController();

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -21,18 +21,46 @@ export async function createWorktree(opts: {
   baseBranch: string;
   featureId: string;
   branch: string;
-}): Promise<{ path: string; branch: string }> {
+  /** Continuar una conversación: reutiliza el worktree (o la rama publicada) en vez de empezar de la base. */
+  resume?: boolean;
+}): Promise<{ path: string; branch: string; resumed: boolean }> {
   if (!/^[A-Za-z0-9]{1,64}$/.test(opts.featureId)) throw new Error(`featureId no válido: ${opts.featureId}`);
   const branch = opts.branch;
   const path = join(opts.worktreesDir, opts.featureId);
   mkdirSync(opts.worktreesDir, { recursive: true });
+
+  if (opts.resume) {
+    // Mismo directorio que la sesión original: Claude Code guarda las sesiones por carpeta.
+    const current = existsSync(path) ? await git(path, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "") : "";
+    if (current === branch) return { path, branch, resumed: true };
+    await git(opts.repoPath, ["fetch", opts.remote, opts.baseBranch]);
+    const published = await git(opts.repoPath, ["ls-remote", "--heads", opts.remote, branch]).catch(() => "");
+    if (published) {
+      await git(opts.repoPath, ["fetch", opts.remote, `${branch}:refs/remotes/${opts.remote}/${branch}`]);
+      if (existsSync(path)) await removeWorktree(opts.repoPath, path);
+      await git(opts.repoPath, ["worktree", "prune"]);
+      await git(opts.repoPath, ["worktree", "add", "-B", branch, path, `${opts.remote}/${branch}`]);
+      return { path, branch, resumed: true };
+    }
+  }
 
   await git(opts.repoPath, ["fetch", opts.remote, opts.baseBranch]);
   if (existsSync(path)) await removeWorktree(opts.repoPath, path);
   await git(opts.repoPath, ["worktree", "prune"]);
   // -B reinicia la rama si existía de un intento anterior.
   await git(opts.repoPath, ["worktree", "add", "-B", branch, path, `${opts.remote}/${opts.baseBranch}`]);
-  return { path, branch };
+  return { path, branch, resumed: false };
+}
+
+/** Los worktrees se conservan para poder continuar la conversación; se borran tras `days` sin uso. */
+export async function pruneOldWorktrees(repoPath: string, worktreesDir: string, days: number): Promise<void> {
+  if (!existsSync(worktreesDir)) return;
+  const limit = Date.now() - days * 86_400_000;
+  for (const name of readdirSync(worktreesDir)) {
+    const path = join(worktreesDir, name);
+    if (statSync(path).mtimeMs < limit) await removeWorktree(repoPath, path);
+  }
+  await git(repoPath, ["worktree", "prune"]).catch(() => undefined);
 }
 
 /** Último commit de la rama base en el remoto (hace fetch antes). */
@@ -110,6 +138,11 @@ export async function commitPushAndOpenPr(opts: {
   ]);
   await git(opts.worktree, ["push", "--no-verify", "--force-with-lease", opts.remote, `${opts.branch}:${opts.branch}`]);
   if (opts.pushOnly) return `${opts.remote}/${opts.branch}`;
+  // En una conversación el PR ya existe: el push de arriba lo actualiza.
+  const existing = await run("gh", ["pr", "view", opts.branch, "--json", "url,state", "-q", "select(.state == \"OPEN\") | .url"], { cwd: opts.worktree })
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => "");
+  if (/^https:\/\//.test(existing)) return existing;
   const { stdout } = await run(
     "gh",
     ["pr", "create", "--draft", "--base", opts.baseBranch, "--head", opts.branch, "--title", opts.title, "--body", opts.body],

@@ -28,6 +28,14 @@ npm start -- --env .env.api
 ```
 Si lanzas dos runners tuyos para el mismo proyecto, el segundo se niega a arrancar.
 
+## Conversación con Claude (hilo por tarea)
+- Si Claude necesita una aclaración, usa `ask_user`: la tarea pasa a **Necesita respuesta** y la pregunta aparece en el hilo de la app.
+- Quien la aceptó responde (o pide más cambios cuando ya hay PR) desde la app: el runner **retoma la misma sesión** de Claude en el
+  mismo worktree y rama, y los commits nuevos actualizan el mismo PR.
+- Los worktrees se conservan para poder continuar (`~/.backcode/worktrees/<proyecto>/<tarea>`) y se borran tras 14 días sin uso.
+- **Seguir en Claude Code:** `cd ~/.backcode/worktrees/<proyecto>/<tarea> && claude --resume <sesión>` (la app te da el comando exacto).
+  Dentro, `/remote-control` la abre en la app móvil de Claude. Ahí trabajas con tus permisos normales, fuera del sandbox del runner.
+
 ## Mapa del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato
 (`BACKCODE_KNOWLEDGE_MODEL`, por defecto `haiku`; unos céntimos) y sube un resumen: stack, estructura, módulos, comandos y convenciones.

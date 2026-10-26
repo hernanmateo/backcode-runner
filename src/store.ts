@@ -24,7 +24,7 @@ import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/
 import type { RunnerConfig } from "./config.js";
 import type { Quota } from "./quota.js";
 
-export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed";
+export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed" | "waiting";
 
 export interface Feature {
   title: string;
@@ -35,7 +35,21 @@ export interface Feature {
   branch?: string;
   promptHash?: string;
   attempts?: number;
+  /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
+  sessionId?: string;
+  result?: FeatureResult;
 }
+
+/** Mensaje del hilo de la tarea. */
+export interface ThreadMessage {
+  author: "user" | "claude";
+  kind: "message" | "question" | "summary";
+  text: string;
+  at?: Timestamp;
+}
+
+/** Vueltas máximas de conversación sobre una misma tarea (evita bucles). */
+const MAX_CONVERSATION_RUNS = 30;
 
 export interface FeatureResult {
   summary?: string;
@@ -137,7 +151,9 @@ export class Store {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "execute" || d.get("assignee") !== this.uid) return null;
       const attempts = ((d.get("attempts") as number | undefined) ?? 0) + 1;
-      if (attempts > this.cfg.maxAttempts) {
+      // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
+      const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
+      if (attempts > limit) {
         tx.update(ref, { status: "failed", result: { error: "Máximo de intentos alcanzado" }, finishedAt: serverTimestamp() });
         return null;
       }
@@ -165,6 +181,17 @@ export class Store {
     if (feature.promptHash !== expected) return "El prompt cambió después de aceptar la tarea";
     if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return "Nombre de rama no válido";
     return null;
+  }
+
+  /** Añade un mensaje de Claude al hilo de la tarea. */
+  async postMessage(id: string, kind: "question" | "summary", text: string): Promise<void> {
+    await addDoc(collection(this.feature(id), "messages"), { author: "claude", kind, text: text.slice(0, 4000), at: serverTimestamp() });
+  }
+
+  /** Hilo completo de la tarea, en orden. */
+  async thread(id: string): Promise<ThreadMessage[]> {
+    const snap = await getDocs(collection(this.feature(id), "messages"));
+    return snap.docs.map((d) => d.data() as ThreadMessage).sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
   }
 
   knowledge() {
@@ -202,11 +229,12 @@ export class Store {
       .catch((err) => console.error("[event]", err.message));
   }
 
-  async finish(id: string, status: "done" | "failed", result: FeatureResult): Promise<void> {
+  async finish(id: string, status: "done" | "failed" | "waiting", result: FeatureResult, sessionId?: string): Promise<void> {
     const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
     await updateDoc(this.feature(id), {
       status,
       result: clean,
+      ...(sessionId ? { sessionId } : {}),
       finishedAt: serverTimestamp(),
       leaseUntil: deleteField(),
       runnerId: deleteField(),
