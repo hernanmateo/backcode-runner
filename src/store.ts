@@ -22,6 +22,7 @@ import {
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
 import type { RunnerConfig } from "./config.js";
+import type { Quota } from "./quota.js";
 
 export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed";
 
@@ -42,6 +43,8 @@ export interface FeatureResult {
   branch?: string;
   costUsd?: number;
   turns?: number;
+  /** Tokens de todos los modelos usados en la tarea (incluye subagentes). */
+  tokens?: { input: number; output: number; cache: number };
   error?: string;
 }
 
@@ -176,6 +179,13 @@ export class Store {
 
   async saveKnowledge(summary: string, commit: string, costUsd: number): Promise<void> {
     await setDoc(this.knowledge(), { summary, commit, costUsd, updatedBy: this.uid, updatedAt: serverTimestamp() });
+  }
+
+  /** Publica la cuota del plan de este usuario para su grupo (panel "Uso del equipo"). */
+  async saveQuota(quota: Quota): Promise<void> {
+    const groupId = (await getDoc(this.project())).get("groupId") as string | undefined;
+    if (!groupId) return;
+    await setDoc(doc(this.db, "groups", groupId, "quota", this.uid), { ...quota, updatedAt: serverTimestamp() });
   }
 
   async projectInfo(): Promise<{ name: string; context: string }> {

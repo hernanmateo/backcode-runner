@@ -7,6 +7,7 @@ import { KIT_DIR, loadConfig } from "./config.js";
 import { commitPushAndOpenPr, commitsAhead, createWorktree, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { refreshKnowledge } from "./knowledge.js";
+import { readQuota } from "./quota.js";
 import { buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
 
@@ -37,6 +38,7 @@ const DENY_READ = [
 ];
 
 let current: { id: string; abort: AbortController } | null = null;
+let refreshQuota: () => Promise<void> = async () => undefined;
 let pending: string[] = [];
 let busy = false;
 let stopping = false;
@@ -136,10 +138,16 @@ async function runFeature(id: string, feature: Feature): Promise<{ status: "done
           }
         }
       } else if (msg.type === "result") {
+        const models = Object.values(msg.modelUsage ?? {});
         result = {
           ...result,
           costUsd: msg.total_cost_usd,
           turns: msg.num_turns,
+          tokens: {
+            input: models.reduce((n, m) => n + m.inputTokens, 0),
+            output: models.reduce((n, m) => n + m.outputTokens, 0),
+            cache: models.reduce((n, m) => n + m.cacheReadInputTokens + m.cacheCreationInputTokens, 0),
+          },
           summary: msg.subtype === "success" ? msg.result.slice(0, 4000) : undefined,
           error: msg.subtype === "success" ? undefined : `${msg.subtype}: ${msg.errors.join("; ").slice(0, 2000)}`,
         };
@@ -176,6 +184,7 @@ async function drain(): Promise<void> {
           await store.event(id, status, result.prUrl ?? result.error ?? "");
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
+        void refreshQuota();
       } catch (err) {
         console.error(`[error] ${id}`, err);
         await store.finish(id, "failed", { error: String(err).slice(0, 2000) });
@@ -200,6 +209,14 @@ async function main(): Promise<void> {
   void learn();
   const knowledgeTimer = setInterval(learn, 6 * 60 * 60_000);
 
+  // Cuota del plan para el panel "Uso del equipo": al arrancar, tras cada tarea y cada 30 min.
+  refreshQuota = async () => {
+    const quota = await readQuota(agentEnv());
+    if (quota) await store.saveQuota(quota).catch((err) => console.warn(`[quota] ${(err as Error).message}`));
+  };
+  void refreshQuota();
+  const quotaTimer = setInterval(() => void refreshQuota(), 30 * 60_000);
+
   // Solo las tareas que este usuario aceptó en este proyecto, por prioridad y orden de aceptación.
   const unsubscribe = onSnapshot(
     store.myQueue(),
@@ -223,6 +240,7 @@ async function main(): Promise<void> {
     console.log("[backcode] parando…");
     unsubscribe();
     clearInterval(knowledgeTimer);
+    clearInterval(quotaTimer);
     knowledgeAbort.abort();
     current?.abort.abort();
     while (busy) await new Promise((r) => setTimeout(r, 200));
