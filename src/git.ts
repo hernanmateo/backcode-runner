@@ -1,0 +1,121 @@
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+
+// Sin hooks de git en ningún comando que lance el runner: un hook escrito por el agente
+// se ejecutaría fuera del sandbox y con tus credenciales.
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await run("git", [...NO_HOOKS, ...args], { cwd, maxBuffer: 50 * 1024 * 1024 });
+  return stdout.trim();
+}
+
+export async function createWorktree(opts: {
+  repoPath: string;
+  worktreesDir: string;
+  remote: string;
+  baseBranch: string;
+  featureId: string;
+  branch: string;
+}): Promise<{ path: string; branch: string }> {
+  if (!/^[A-Za-z0-9]{1,64}$/.test(opts.featureId)) throw new Error(`featureId no válido: ${opts.featureId}`);
+  const branch = opts.branch;
+  const path = join(opts.worktreesDir, opts.featureId);
+  mkdirSync(opts.worktreesDir, { recursive: true });
+
+  await git(opts.repoPath, ["fetch", opts.remote, opts.baseBranch]);
+  if (existsSync(path)) await removeWorktree(opts.repoPath, path);
+  await git(opts.repoPath, ["worktree", "prune"]);
+  // -B reinicia la rama si existía de un intento anterior.
+  await git(opts.repoPath, ["worktree", "add", "-B", branch, path, `${opts.remote}/${opts.baseBranch}`]);
+  return { path, branch };
+}
+
+/** Último commit de la rama base en el remoto (hace fetch antes). */
+export async function remoteHead(repoPath: string, remote: string, baseBranch: string): Promise<string> {
+  await git(repoPath, ["fetch", remote, baseBranch]);
+  return git(repoPath, ["rev-parse", `${remote}/${baseBranch}`]);
+}
+
+/** Worktree de solo lectura (sin rama) en un commit concreto. Solo contiene ficheros versionados. */
+export async function createDetachedWorktree(repoPath: string, worktreesDir: string, name: string, commit: string): Promise<string> {
+  const path = join(worktreesDir, name);
+  mkdirSync(worktreesDir, { recursive: true });
+  if (existsSync(path)) await removeWorktree(repoPath, path);
+  await git(repoPath, ["worktree", "prune"]);
+  await git(repoPath, ["worktree", "add", "--detach", path, commit]);
+  return path;
+}
+
+export async function removeWorktree(repoPath: string, path: string): Promise<void> {
+  await git(repoPath, ["worktree", "remove", "--force", path]).catch(() => undefined);
+}
+
+export async function stageAll(worktree: string): Promise<string[]> {
+  await git(worktree, ["add", "-A"]);
+  const out = await git(worktree, ["diff", "--cached", "--name-only", "-z"]);
+  return out.split("\0").filter(Boolean);
+}
+
+export async function commitsAhead(worktree: string, remote: string, baseBranch: string): Promise<number> {
+  return Number(await git(worktree, ["rev-list", "--count", `${remote}/${baseBranch}..HEAD`]));
+}
+
+export const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "clave privada"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "AWS access key"],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, "token de GitHub"],
+  [/\bsk-ant-[A-Za-z0-9_-]{20,}/, "API key de Anthropic"],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/, "token de Slack"],
+  [/\bsk-[A-Za-z0-9]{32,}\b/, "API key"],
+  [/"private_key"\s*:\s*"-----BEGIN/, "service account de Google"],
+];
+
+/** Busca secretos en las líneas añadidas del diff staged. */
+export async function scanStagedForSecrets(worktree: string): Promise<string[]> {
+  const diff = await git(worktree, ["diff", "--cached", "-U0", "--no-color"]);
+  const findings: string[] = [];
+  let file = "";
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) file = line.slice(6);
+    else if (line.startsWith("+")) {
+      for (const [re, label] of SECRET_PATTERNS) {
+        if (re.test(line)) findings.push(`${label} en ${file}`);
+      }
+    }
+  }
+  return [...new Set(findings)];
+}
+
+export async function commitPushAndOpenPr(opts: {
+  worktree: string;
+  remote: string;
+  baseBranch: string;
+  branch: string;
+  title: string;
+  body: string;
+  featureId: string;
+  pushOnly: boolean;
+}): Promise<string> {
+  // Un reintento tras fallar el push o gh puede no tener nada nuevo que commitear.
+  const staged = await git(opts.worktree, ["diff", "--cached", "--name-only"]);
+  if (staged) await git(opts.worktree, [
+    "commit", "--no-verify",
+    "-m", opts.title,
+    "-m", `Backcode-Feature: ${opts.featureId}`,
+  ]);
+  await git(opts.worktree, ["push", "--no-verify", "--force-with-lease", opts.remote, `${opts.branch}:${opts.branch}`]);
+  if (opts.pushOnly) return `${opts.remote}/${opts.branch}`;
+  const { stdout } = await run(
+    "gh",
+    ["pr", "create", "--draft", "--base", opts.baseBranch, "--head", opts.branch, "--title", opts.title, "--body", opts.body],
+    { cwd: opts.worktree },
+  );
+  const url = stdout.trim().split("\n").pop() ?? "";
+  if (!/^https:\/\//.test(url)) throw new Error(`gh no devolvió la URL del PR: ${stdout}`);
+  return url;
+}
