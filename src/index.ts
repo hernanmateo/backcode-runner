@@ -7,6 +7,7 @@ import { KIT_DIR, loadConfig } from "./config.js";
 import { checkRepo, commitPushAndOpenPr, describeWarning, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { materializeAttachments } from "./attachments.js";
+import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
 import { buildFollowUpPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
@@ -40,6 +41,8 @@ const DENY_READ = [
 
 let current: { id: string; abort: AbortController } | null = null;
 let refreshQuota: () => Promise<void> = async () => undefined;
+/** GitHub o Bitbucket según el repo; sin él solo se sube la rama. Se decide al arrancar (checkRepo). */
+let prHost: PrHost | undefined;
 let pending: string[] = [];
 let busy = false;
 let stopping = false;
@@ -84,7 +87,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
           const footer = `\n\n---\nBackcode feature \`${id}\` · ${files.length} fichero(s) · rama \`${wt.branch}\`\n\n🤖 Generado por Backcode runner con [Claude Code](https://claude.com/claude-code)`;
           try {
-            prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: cfg.baseBranch, branch: wt.branch, title, body: body + footer, featureId: id, pushOnly: cfg.pullRequest === "push-only" });
+            prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: cfg.baseBranch, branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
           } catch (err) {
             await store.event(id, "error", `open_pull_request: ${String(err)}`);
             return fail(`No se pudo publicar la rama o abrir el PR: ${String(err).slice(0, 500)}`);
@@ -252,9 +255,10 @@ async function main(): Promise<void> {
   store = new Store(db, storage, cfg, uid);
   console.log(`[backcode] usuario ${uid} · proyecto ${cfg.projectId} · repo ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · runner ${cfg.runnerId}`);
   // Ajusta rama base y modo de PR al repo real; los avisos se ven en la terminal y en la app.
-  const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest);
+  const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest, !!cfg.bitbucket);
   cfg.baseBranch = repo.baseBranch;
   cfg.pullRequest = repo.pullRequest;
+  prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
   store.warnings = repo.warnings;
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();

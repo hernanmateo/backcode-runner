@@ -25,7 +25,11 @@ const Env = z.object({
   BACKCODE_BASE_BRANCH: z.string().regex(/^[A-Za-z0-9._\/-]+$/).default("main"),
   BACKCODE_REMOTE: z.string().regex(/^[A-Za-z0-9._-]+$/).default("origin"),
   // "github": push + PR en borrador con gh. "push-only": solo push de la rama (repos sin GitHub o pruebas).
-  BACKCODE_PULL_REQUEST: z.enum(["github", "push-only"]).default("github"),
+  BACKCODE_PULL_REQUEST: z.enum(["github", "bitbucket", "push-only"]).default("github"),
+  // Bitbucket Cloud: email de la cuenta Atlassian + API token con permisos de repositorio y pull requests.
+  // Se quedan en este ordenador: los usa el runner (nunca Claude) para abrir y mergear PRs.
+  BACKCODE_BITBUCKET_EMAIL: z.string().optional(),
+  BACKCODE_BITBUCKET_TOKEN: z.string().optional(),
   BACKCODE_MODEL: z.string().optional(),
   BACKCODE_MAX_TURNS: num.default(80),
   BACKCODE_MAX_BUDGET_USD: num.default(5),
@@ -51,7 +55,8 @@ export interface RunnerConfig {
   repoPath: string;
   baseBranch: string;
   remote: string;
-  pullRequest: "github" | "push-only";
+  pullRequest: "github" | "bitbucket" | "push-only";
+  bitbucket?: { email: string; token: string };
   model?: string;
   maxTurns: number;
   maxBudgetUsd: number;
@@ -99,6 +104,7 @@ export function loadConfig(): RunnerConfig {
     baseBranch: env.BACKCODE_BASE_BRANCH,
     remote: env.BACKCODE_REMOTE,
     pullRequest: env.BACKCODE_PULL_REQUEST,
+    bitbucket: env.BACKCODE_BITBUCKET_EMAIL && env.BACKCODE_BITBUCKET_TOKEN ? { email: env.BACKCODE_BITBUCKET_EMAIL, token: env.BACKCODE_BITBUCKET_TOKEN } : undefined,
     model: env.BACKCODE_MODEL || undefined,
     maxTurns: env.BACKCODE_MAX_TURNS,
     maxBudgetUsd: env.BACKCODE_MAX_BUDGET_USD,

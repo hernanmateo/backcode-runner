@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { PrHost } from "./hosts.js";
 
 const run = promisify(execFile);
 
@@ -114,15 +115,25 @@ export async function pruneOldWorktrees(repoPath: string, worktreesDir: string, 
  * Devuelve avisos legibles para la terminal y para la app.
  */
 /** Aviso de configuración: código + datos, para que la app lo muestre traducido. */
-export type RepoWarning = { code: "baseBranchFallback"; configured: string; used: string } | { code: "notGithub"; host: string };
+export type RepoWarning =
+  | { code: "baseBranchFallback"; configured: string; used: string }
+  | { code: "notGithub"; host: string }
+  | { code: "bitbucketNoToken" };
 
 export function describeWarning(w: RepoWarning): string {
-  return w.code === "baseBranchFallback"
-    ? `La rama base "${w.configured}" no existe en el repo; se usa "${w.used}" (la rama por defecto). Cámbiala en la app (Conectar → ¿Dónde está tu código?).`
-    : `El repo está en ${w.host}, no en GitHub: se sube la rama sin abrir PR (ábrelo desde ${w.host}).`;
+  if (w.code === "baseBranchFallback") return `La rama base "${w.configured}" no existe en el repo; se usa "${w.used}" (la rama por defecto). Cámbiala en la app (Conectar → ¿Dónde está tu código?).`;
+  if (w.code === "bitbucketNoToken") return "El repo está en Bitbucket pero falta el API token (BACKCODE_BITBUCKET_EMAIL y BACKCODE_BITBUCKET_TOKEN): se sube la rama sin abrir PR.";
+  return `El repo está en ${w.host}, que no es GitHub ni Bitbucket: se sube la rama sin abrir PR (ábrelo desde ${w.host}).`;
 }
 
-export async function checkRepo(repoPath: string, remote: string, baseBranch: string, pullRequest: "github" | "push-only"): Promise<{ baseBranch: string; pullRequest: "github" | "push-only"; warnings: RepoWarning[] }> {
+type PrMode = "github" | "bitbucket" | "push-only";
+
+/**
+ * Ajusta la configuración al repo real antes de empezar: si la rama base no existe en el remoto se usa
+ * la rama por defecto del repo (p. ej. master), y el modo de PR se adapta al alojamiento (GitHub,
+ * Bitbucket con token, o solo subir la rama). Devuelve avisos para la terminal y para la app.
+ */
+export async function checkRepo(repoPath: string, remote: string, baseBranch: string, pullRequest: PrMode, hasBitbucketToken: boolean): Promise<{ baseBranch: string; pullRequest: PrMode; remoteUrl: string; warnings: RepoWarning[] }> {
   const warnings: RepoWarning[] = [];
   const url = await git(repoPath, ["remote", "get-url", remote]).catch(() => "");
   if (!url) throw new Error(`El repo ${repoPath} no tiene el remoto "${remote}"`);
@@ -134,12 +145,17 @@ export async function checkRepo(repoPath: string, remote: string, baseBranch: st
     warnings.push({ code: "baseBranchFallback", configured: baseBranch, used: defaultBranch });
     baseBranch = defaultBranch;
   }
-  if (pullRequest === "github" && !/github\.com[:/]/.test(url)) {
-    const host = /@?([a-z0-9.-]+\.[a-z]+)[:/]/i.exec(url)?.[1] ?? "otro servidor";
-    warnings.push({ code: "notGithub", host });
-    pullRequest = "push-only";
+  if (pullRequest !== "push-only") {
+    if (/github\.com[:/]/.test(url)) pullRequest = "github";
+    else if (/bitbucket\.org[:/]/.test(url)) {
+      pullRequest = hasBitbucketToken ? "bitbucket" : "push-only";
+      if (!hasBitbucketToken) warnings.push({ code: "bitbucketNoToken" });
+    } else {
+      warnings.push({ code: "notGithub", host: /@?([a-z0-9.-]+\.[a-z]+)[:/]/i.exec(url)?.[1] ?? "?" });
+      pullRequest = "push-only";
+    }
   }
-  return { baseBranch, pullRequest, warnings };
+  return { baseBranch, pullRequest, remoteUrl: url, warnings };
 }
 
 /** Último commit de la rama base en el remoto (hace fetch antes). */
@@ -206,9 +222,10 @@ export async function commitPushAndOpenPr(opts: {
   title: string;
   body: string;
   featureId: string;
-  pushOnly: boolean;
+  /** Sin host (modo "solo subir la rama") no se abre PR. */
+  host?: PrHost;
 }): Promise<string> {
-  // Un reintento tras fallar el push o gh puede no tener nada nuevo que commitear.
+  // Un reintento tras fallar el push o la API puede no tener nada nuevo que commitear.
   const staged = await git(opts.worktree, ["diff", "--cached", "--name-only"]);
   if (staged) await git(opts.worktree, [
     "commit", "--no-verify",
@@ -216,18 +233,7 @@ export async function commitPushAndOpenPr(opts: {
     "-m", `Backcode-Feature: ${opts.featureId}`,
   ]);
   await git(opts.worktree, ["push", "--no-verify", "--force-with-lease", opts.remote, `${opts.branch}:${opts.branch}`]);
-  if (opts.pushOnly) return `${opts.remote}/${opts.branch}`;
+  if (!opts.host) return `${opts.remote}/${opts.branch}`;
   // En una conversación el PR ya existe: el push de arriba lo actualiza.
-  const existing = await run("gh", ["pr", "view", opts.branch, "--json", "url,state", "-q", "select(.state == \"OPEN\") | .url"], { cwd: opts.worktree })
-    .then(({ stdout }) => stdout.trim())
-    .catch(() => "");
-  if (/^https:\/\//.test(existing)) return existing;
-  const { stdout } = await run(
-    "gh",
-    ["pr", "create", "--draft", "--base", opts.baseBranch, "--head", opts.branch, "--title", opts.title, "--body", opts.body],
-    { cwd: opts.worktree },
-  );
-  const url = stdout.trim().split("\n").pop() ?? "";
-  if (!/^https:\/\//.test(url)) throw new Error(`gh no devolvió la URL del PR: ${stdout}`);
-  return url;
+  return opts.host.openOrUpdatePr({ cwd: opts.worktree, branch: opts.branch, base: opts.baseBranch, title: opts.title, body: opts.body });
 }
