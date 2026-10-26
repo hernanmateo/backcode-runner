@@ -23,9 +23,15 @@ for await (const raw of rl) {
   if (line.startsWith(END_MARK) || (line === "" && values.size > 0)) break;
   if (line === "" || line.startsWith("#")) continue;
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
-  if (!m || !allowed.has(m[1])) {
+  if (!m || !m[1].startsWith("BACKCODE_")) {
+    // Solo variables de Backcode: nada de NODE_OPTIONS, PATH… que cambiarían cómo se ejecuta el runner.
     console.error(`\n✗ Línea no reconocida: "${line.slice(0, 60)}". Copia de nuevo la configuración desde la app.`);
     process.exit(1);
+  }
+  if (!allowed.has(m[1])) {
+    // La app puede ser más nueva que este runner: se ignora y se sugiere actualizar.
+    console.warn(`  · ${m[1]} no la conoce esta versión del runner: se ignora (actualiza con git pull).`);
+    continue;
   }
   values.set(m[1], m[2]);
 }
