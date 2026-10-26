@@ -229,6 +229,24 @@ async function drain(): Promise<void> {
   }
 }
 
+/** Mensaje claro en la terminal al conectar: qué está pasando y qué hacer ahora. */
+function printConnected(projectName: string): void {
+  const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+  const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+  const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+  console.log(`
+${green("✓")} ${bold(`Conectado a Backcode · proyecto «${projectName}»`)}
+  Escuchando las tareas que aceptes en la app. En la app ya verás "Conectado".
+
+  ${bold("Y ahora:")}
+  1. Propón una idea o acepta una tarea del backlog desde la app.
+  2. Aquí verás a Claude trabajar; en la app, el progreso en vivo y el PR al acabar.
+  3. Si Claude tiene una duda, te llegará la pregunta a la app.
+
+  ${dim(`Repo: ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · Ctrl+C para parar (las tareas en curso vuelven a la cola)`)}
+`);
+}
+
 async function main(): Promise<void> {
   const { db, storage, uid } = await connect(cfg);
   store = new Store(db, storage, cfg, uid);
@@ -236,6 +254,9 @@ async function main(): Promise<void> {
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
+
+  const project = await store.projectInfo();
+  printConnected(project.name);
 
   // Mapa del repo para la IA que prepara los encargos: al arrancar y cada 6 h, sin bloquear la cola.
   const knowledgeAbort = new AbortController();
