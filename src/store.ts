@@ -21,6 +21,7 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
+import { connectStorageEmulator, getBytes, getStorage, ref, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
 import type { Quota } from "./quota.js";
 
@@ -35,9 +36,18 @@ export interface Feature {
   branch?: string;
   promptHash?: string;
   attempts?: number;
+  /** Imágenes y documentos que adjuntó quien propuso la tarea. */
+  attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
   sessionId?: string;
   result?: FeatureResult;
+}
+
+export interface Attachment {
+  path: string;
+  name: string;
+  contentType: string;
+  size: number;
 }
 
 /** Mensaje del hilo de la tarea. */
@@ -65,32 +75,46 @@ export interface FeatureResult {
 const LOCK_LEASE_MS = 60_000;
 export const FEATURE_LEASE_MS = 5 * 60_000;
 
-/** Debe coincidir con promptHash() en functions/src/index.ts. */
-export function promptHash(title: string, refinedPrompt: string, acceptanceCriteria: string[]): string {
-  return createHash("sha256").update(JSON.stringify({ title, refinedPrompt, acceptanceCriteria })).digest("hex");
+/** Debe coincidir con promptHash() en functions/src/index.ts. Los adjuntos forman parte de la huella. */
+export function promptHash(title: string, refinedPrompt: string, acceptanceCriteria: string[], attachments: string[] = []): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ title, refinedPrompt, acceptanceCriteria, ...(attachments.length ? { attachments } : {}) }))
+    .digest("hex");
 }
 
 /**
  * El runner se autentica como el usuario dueño de la runner key (token con claim runner=true).
  * Todo lo que hace pasa por las Security Rules: solo puede mover las tareas asignadas a ese usuario.
  */
-export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; uid: string }> {
+export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string }> {
   const app = initializeApp(cfg.firebase);
   const auth = getAuth(app);
   const db = getFirestore(app);
+  const storage = getStorage(app);
   const fns = getFunctions(app, cfg.functionsRegion);
   if (cfg.emulators) {
     connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
     connectFirestoreEmulator(db, "127.0.0.1", 8080);
     connectFunctionsEmulator(fns, "127.0.0.1", 5001);
+    connectStorageEmulator(storage, "127.0.0.1", 9199);
   }
   const { data } = await httpsCallable<{ key: string }, { token: string }>(fns, "runnerSignIn")({ key: cfg.runnerKey });
   const { user } = await signInWithCustomToken(auth, data.token);
-  return { db, uid: user.uid };
+  return { db, storage, uid: user.uid };
 }
 
 export class Store {
-  constructor(private db: Firestore, private cfg: RunnerConfig, readonly uid: string) {}
+  constructor(
+    private db: Firestore,
+    private storage: FirebaseStorage,
+    private cfg: RunnerConfig,
+    readonly uid: string,
+  ) {}
+
+  /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
+  async download(path: string): Promise<Uint8Array> {
+    return new Uint8Array(await getBytes(ref(this.storage, path), 25 * 1024 * 1024));
+  }
 
   project() {
     return doc(this.db, "projects", this.cfg.projectId);
@@ -177,7 +201,7 @@ export class Store {
     const project = await getDoc(this.project());
     const group = await getDoc(doc(this.db, "groups", project.get("groupId")));
     if (!((group.get("members") ?? {}) as Record<string, string>)[this.uid]) return "Ya no eres miembro del grupo";
-    const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? []);
+    const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? [], (feature.attachments ?? []).map((a) => a.path));
     if (feature.promptHash !== expected) return "El prompt cambió después de aceptar la tarea";
     if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return "Nombre de rama no válido";
     return null;

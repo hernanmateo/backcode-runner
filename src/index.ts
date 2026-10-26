@@ -6,6 +6,7 @@ import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { commitPushAndOpenPr, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
+import { materializeAttachments } from "./attachments.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
 import { buildFollowUpPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
@@ -54,6 +55,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const resuming = !!feature.sessionId;
   const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
   await store.event(id, "start", resuming ? `Continuando la conversación en ${wt.branch}` : `Worktree ${wt.branch} creado desde ${cfg.remote}/${cfg.baseBranch}`);
+  const attachments = await materializeAttachments(store, cfg.projectId, wt.path, feature.attachments ?? []);
+  if (attachments.length && !resuming) await store.event(id, "start", `${attachments.length} adjunto(s) disponibles para Claude`);
 
   const previousPr = feature.result?.prUrl;
   let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
@@ -87,7 +90,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             return fail(`No se pudo publicar la rama o abrir el PR: ${String(err).slice(0, 500)}`);
           }
           await store.event(id, "pr", prUrl);
-          const what = cfg.pullRequest === "push-only" ? "Rama publicada" : "PR en borrador abierto";
+          const what = cfg.pullRequest === "push-only" ? "Rama publicada (este runner está configurado para no abrir PR: es lo esperado, la persona lo abrirá)" : "PR en borrador abierto";
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
       ),
@@ -116,7 +119,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   try {
     const prompt = resuming
       ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr)
-      : buildUserPrompt(id, feature);
+      : buildUserPrompt(id, feature, attachments);
     const messages = query({
       prompt,
       options: {
@@ -227,8 +230,8 @@ async function drain(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { db, uid } = await connect(cfg);
-  store = new Store(db, cfg, uid);
+  const { db, storage, uid } = await connect(cfg);
+  store = new Store(db, storage, cfg, uid);
   console.log(`[backcode] usuario ${uid} · proyecto ${cfg.projectId} · repo ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · runner ${cfg.runnerId}`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();

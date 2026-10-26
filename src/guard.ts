@@ -5,6 +5,7 @@ import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 // Rutas (relativas al worktree, separador /) que Claude nunca puede modificar.
 // Cubren CI/CD, configuración de agentes, hooks de git y secretos.
 const DEFAULT_PROTECTED = [
+  /^\.backcode-attachments(\/|$)/, // adjuntos de la tarea: se leen, no se modifican ni se suben
   /^\.git(\/|$)/,
   /^\.github\/(workflows|actions)\//,
   /^\.claude(\/|$)/,

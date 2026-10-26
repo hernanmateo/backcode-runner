@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -50,6 +50,15 @@ export async function createWorktree(opts: {
   // -B reinicia la rama si existía de un intento anterior.
   await git(opts.repoPath, ["worktree", "add", "-B", branch, path, `${opts.remote}/${opts.baseBranch}`]);
   return { path, branch, resumed: false };
+}
+
+/** Excluye una ruta de git en el repo (info/exclude, compartido por los worktrees) sin tocar su .gitignore. */
+export async function excludeFromGit(worktree: string, pattern: string): Promise<void> {
+  const common = await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const file = join(common, "info", "exclude");
+  mkdirSync(join(common, "info"), { recursive: true });
+  const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+  if (!current.split("\n").includes(pattern)) appendFileSync(file, `${current.endsWith("\n") || !current ? "" : "\n"}${pattern}\n`);
 }
 
 /** Los worktrees se conservan para poder continuar la conversación; se borran tras `days` sin uso. */

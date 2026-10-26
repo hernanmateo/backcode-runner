@@ -15,6 +15,8 @@ const Env = z.object({
   BACKCODE_FIREBASE_API_KEY: z.string().min(1),
   BACKCODE_FIREBASE_AUTH_DOMAIN: z.string().optional(),
   BACKCODE_FIREBASE_PROJECT_ID: z.string().min(1),
+  // Bucket de Storage (adjuntos de las tareas). Proyectos nuevos: <id>.firebasestorage.app.
+  BACKCODE_FIREBASE_STORAGE_BUCKET: z.string().optional(),
   BACKCODE_FUNCTIONS_REGION: z.string().default("us-central1"),
   BACKCODE_USE_EMULATORS: z.enum(["0", "1"]).default("0"),
   BACKCODE_RUNNER_KEY: z.string().regex(/^[A-Za-z0-9]{1,128}\.[A-Za-z0-9_-]{43}$/, "Runner key no válida: cópiala de la app (Perfil → Runner key)"),
@@ -40,7 +42,7 @@ const Env = z.object({
 export const ENV_KEYS = Object.keys(Env.shape);
 
 export interface RunnerConfig {
-  firebase: { apiKey: string; authDomain?: string; projectId: string };
+  firebase: { apiKey: string; authDomain?: string; projectId: string; storageBucket: string };
   functionsRegion: string;
   emulators: boolean;
   runnerKey: string;
@@ -87,7 +89,7 @@ export function loadConfig(): RunnerConfig {
   for (const key of Object.keys(process.env)) if (key.startsWith("BACKCODE_")) delete process.env[key];
 
   return {
-    firebase: { apiKey: env.BACKCODE_FIREBASE_API_KEY, authDomain: env.BACKCODE_FIREBASE_AUTH_DOMAIN, projectId: env.BACKCODE_FIREBASE_PROJECT_ID },
+    firebase: { apiKey: env.BACKCODE_FIREBASE_API_KEY, authDomain: env.BACKCODE_FIREBASE_AUTH_DOMAIN, projectId: env.BACKCODE_FIREBASE_PROJECT_ID, storageBucket: env.BACKCODE_FIREBASE_STORAGE_BUCKET || `${env.BACKCODE_FIREBASE_PROJECT_ID}.appspot.com` },
     functionsRegion: env.BACKCODE_FUNCTIONS_REGION,
     emulators: env.BACKCODE_USE_EMULATORS === "1",
     runnerKey: env.BACKCODE_RUNNER_KEY,
