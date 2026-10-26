@@ -11,7 +11,8 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 - Para abrir PRs:
   - **GitHub**: `gh auth login`
   - **Bitbucket**: un API token (ver más abajo; `npm run connect` te lo pide)
-- Para publicar OTA (proyectos Expo): `npx eas-cli login` con una cuenta con acceso al proyecto de Expo
+- Para publicar OTA (proyectos Expo): `npx eas-cli login` con una cuenta con acceso al proyecto de Expo y, si el repo publica con su
+  propio script (p. ej. xprem), lo que ese script necesite en tu copia local (p. ej. `EOO_TOKEN` en el `.env`)
 
 ## Conectar un proyecto
 1. En la app: **Proyecto → Conectar paso a paso**. Indica la carpeta del repo en tu ordenador, la rama base y dónde abrir los PR
@@ -84,7 +85,20 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 |---|---|---|
 | **Abrir PR** | cualquier miembro | Para tareas con solo la rama subida: abre el PR (sin volver a ejecutar a Claude). |
 | **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. |
-| **Publicar OTA** | admins y owner | Solo en repos Expo con `eas.json`. Comprueba que el último commit de la rama base está en verde, instala dependencias y ejecuta `eas update` al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
+| **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
+
+### Cómo publica el OTA cada proyecto
+El runner lo detecta al arrancar, leyendo la rama base:
+1. **Script propio**: si el `package.json` de la app tiene `ota:publish` (p. ej. un servidor **xprem** propio), ejecuta
+   `<pnpm|yarn|npm> run ota:publish <rama> --yes -m "<mensaje>"` en una copia limpia de la rama base. La rama es `preview` o
+   `prod` (en xprem, el canal `production` del binario apunta a la rama `prod`). Se copian a esa copia los `.env`/`.env.local`
+   locales ignorados por git (el script saca de ahí su token) y el registro de la última publicación (`.expo/eoas-last-publish-*`)
+   para que su guarda de cambios nativos funcione; la copia se borra al acabar. Nunca se pasa `--allow-native` ni porcentajes:
+   si el script se niega, la app muestra su motivo.
+2. **EAS Update**: si la config de Expo tiene `updates.url` en `u.expo.dev`, ejecuta `eas update --channel <canal>`.
+3. Si no hay ninguno, no se ofrece OTA y la terminal lo avisa (EAS Update se activa con `npx eas-cli update:configure`).
+
+El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
 ## Mapa e icono del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato

@@ -115,7 +115,7 @@ export class Store {
   /** Avisos sobre la configuración (rama base, alojamiento…) que la app muestra junto al estado del runner. */
   warnings: RepoWarning[] = [];
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde) y publicar OTA (canales). La app lo usa para ofrecerlo. */
-  capabilities: { pr: "github" | "bitbucket" | null; ota: { channels: string[] } | null } = { pr: null, ota: null };
+  capabilities: { pr: "github" | "bitbucket" | null; ota: { channels: string[]; via: "eas" | "script" } | null } = { pr: null, ota: null };
 
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
   async download(path: string): Promise<Uint8Array> {

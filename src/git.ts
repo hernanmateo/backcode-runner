@@ -93,13 +93,28 @@ export async function findRepoIcon(repoPath: string, commit: string): Promise<{ 
  * Detecta una app Expo publicable por OTA en el commit dado: carpeta con eas.json y app.json (con "expo")
  * o app.config.*. Devuelve la carpeta y los canales de eas.json (por defecto preview y production).
  */
-export async function findExpoApp(repoPath: string, commit: string): Promise<{ appDir: string; channels: string[] } | null> {
+/**
+ * Cómo publica OTA el repo:
+ * - `script`: la app tiene un script `ota:publish` propio (p. ej. un servidor xprem); se respeta, con sus guardas.
+ * - `eas`: EAS Update configurado (`updates.url` en u.expo.dev).
+ * Sin ninguno de los dos, la app Expo no tiene OTA (`ota: null`) y se dice por qué en `reason`.
+ */
+export interface ExpoApp {
+  appDir: string;
+  channels: string[];
+  ota: "script" | "eas" | null;
+  /** Gestor de paquetes según el lockfile (para instalar y ejecutar el script). */
+  pm: "npm" | "pnpm" | "yarn" | "bun";
+}
+
+export async function findExpoApp(repoPath: string, commit: string): Promise<ExpoApp | null> {
   const files = (await git(repoPath, ["ls-tree", "-r", "--name-only", commit])).split("\n").filter((f) => !/(^|\/)node_modules\//.test(f));
-  const show = (path: string) => git(repoPath, ["show", `${commit}:${path}`]);
+  const show = (path: string) => git(repoPath, ["show", `${commit}:${path}`]).catch(() => "");
   for (const eas of files.filter((f) => /(^|\/)eas\.json$/.test(f))) {
     const dir = eas.includes("/") ? eas.slice(0, eas.lastIndexOf("/") + 1) : "";
-    const hasConfig = files.includes(`${dir}app.json`) ? /"expo"\s*:/.test(await show(`${dir}app.json`).catch(() => "")) : files.some((f) => new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}app\\.config\\.(js|ts|mjs|cjs)$`).test(f));
-    if (!hasConfig) continue;
+    const configFile = [`${dir}app.json`, ...["js", "ts", "mjs", "cjs"].map((e) => `${dir}app.config.${e}`)].find((f) => files.includes(f));
+    const config = configFile ? await show(configFile) : "";
+    if (!configFile || (configFile.endsWith("app.json") && !/"expo"\s*:/.test(config))) continue;
     let channels: string[] = [];
     try {
       const build = (JSON.parse(await show(eas)) as { build?: Record<string, { channel?: string }> }).build ?? {};
@@ -108,7 +123,16 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<{ a
       // eas.json no válido: canales por defecto
     }
     const known = channels.filter((c) => c === "preview" || c === "production");
-    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"] };
+    let scripts: Record<string, string> = {};
+    try {
+      scripts = (JSON.parse(await show(`${dir}package.json`)) as { scripts?: Record<string, string> }).scripts ?? {};
+    } catch {
+      // sin package.json propio (monorepo): solo EAS
+    }
+    const has = (f: string) => files.includes(`${dir}${f}`) || files.includes(f);
+    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
+    const ota = scripts["ota:publish"] ? "script" : /u\.expo\.dev\//.test(config) ? "eas" : null;
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, pm };
   }
   return null;
 }

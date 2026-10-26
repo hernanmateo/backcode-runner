@@ -6,7 +6,7 @@ import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { checkRepo, commitPushAndOpenPr, describeWarning, findExpoApp, remoteHead, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
-import { runAction, type Action, type ActionResult } from "./actions.js";
+import { OTA_MISSING, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
@@ -291,7 +291,8 @@ async function main(): Promise<void> {
   prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
   store.warnings = repo.warnings;
   const expoApp = await findExpoApp(cfg.repoPath, await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch)).catch(() => null);
-  store.capabilities = { pr: prHost?.kind ?? null, ota: expoApp ? { channels: expoApp.channels } : null };
+  store.capabilities = { pr: prHost?.kind ?? null, ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null };
+  if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ OTA desactivado. ${OTA_MISSING}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
