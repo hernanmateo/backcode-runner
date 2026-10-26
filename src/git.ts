@@ -89,6 +89,30 @@ export async function findRepoIcon(repoPath: string, commit: string): Promise<{ 
   return { data: await show(best.path), contentType: /\.png$/i.test(best.path) ? "image/png" : "image/jpeg" };
 }
 
+/**
+ * Detecta una app Expo publicable por OTA en el commit dado: carpeta con eas.json y app.json (con "expo")
+ * o app.config.*. Devuelve la carpeta y los canales de eas.json (por defecto preview y production).
+ */
+export async function findExpoApp(repoPath: string, commit: string): Promise<{ appDir: string; channels: string[] } | null> {
+  const files = (await git(repoPath, ["ls-tree", "-r", "--name-only", commit])).split("\n").filter((f) => !/(^|\/)node_modules\//.test(f));
+  const show = (path: string) => git(repoPath, ["show", `${commit}:${path}`]);
+  for (const eas of files.filter((f) => /(^|\/)eas\.json$/.test(f))) {
+    const dir = eas.includes("/") ? eas.slice(0, eas.lastIndexOf("/") + 1) : "";
+    const hasConfig = files.includes(`${dir}app.json`) ? /"expo"\s*:/.test(await show(`${dir}app.json`).catch(() => "")) : files.some((f) => new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}app\\.config\\.(js|ts|mjs|cjs)$`).test(f));
+    if (!hasConfig) continue;
+    let channels: string[] = [];
+    try {
+      const build = (JSON.parse(await show(eas)) as { build?: Record<string, { channel?: string }> }).build ?? {};
+      channels = [...new Set(Object.values(build).map((p) => p.channel).filter((c): c is string => !!c && /^[a-z0-9-]{1,40}$/i.test(c)))];
+    } catch {
+      // eas.json no válido: canales por defecto
+    }
+    const known = channels.filter((c) => c === "preview" || c === "production");
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"] };
+  }
+  return null;
+}
+
 /** Excluye una ruta de git en el repo (info/exclude, compartido por los worktrees) sin tocar su .gitignore. */
 export async function excludeFromGit(worktree: string, pattern: string): Promise<void> {
   const common = await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);

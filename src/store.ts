@@ -114,6 +114,8 @@ export class Store {
 
   /** Avisos sobre la configuración (rama base, alojamiento…) que la app muestra junto al estado del runner. */
   warnings: RepoWarning[] = [];
+  /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde) y publicar OTA (canales). La app lo usa para ofrecerlo. */
+  capabilities: { pr: "github" | "bitbucket" | null; ota: { channels: string[] } | null } = { pr: null, ota: null };
 
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
   async download(path: string): Promise<Uint8Array> {
@@ -145,7 +147,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(`Ya tienes un runner activo para este proyecto (${holder})`);
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings });
+        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities });
       });
     await take();
     const timer = setInterval(() => {
@@ -220,6 +222,36 @@ export class Store {
   async thread(id: string): Promise<ThreadMessage[]> {
     const snap = await getDocs(collection(this.feature(id), "messages"));
     return snap.docs.map((d) => d.data() as ThreadMessage).sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
+  }
+
+  // --- Acciones (mergear PR, publicar OTA): las pide un admin y las ejecuta su runner ---
+
+  /** Acciones pendientes que pedí yo en este proyecto. */
+  myActions() {
+    return query(collection(this.project(), "actions"), where("requestedBy", "==", this.uid), where("status", "==", "pending"));
+  }
+
+  async claimAction(id: string): Promise<Record<string, unknown> | null> {
+    const ref = doc(this.project(), "actions", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "pending" || d.get("requestedBy") !== this.uid) return null;
+      tx.update(ref, { status: "running", updatedAt: serverTimestamp() });
+      return d.data();
+    });
+  }
+
+  async finishAction(id: string, ok: boolean, result: Record<string, unknown>): Promise<void> {
+    const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
+    await updateDoc(doc(this.project(), "actions", id), { status: ok ? "done" : "failed", result: clean, updatedAt: serverTimestamp() });
+  }
+
+  async prUrlOf(featureId: string): Promise<string | undefined> {
+    return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
+  }
+
+  async markMerged(featureId: string, sha?: string): Promise<void> {
+    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "" } });
   }
 
   knowledge() {

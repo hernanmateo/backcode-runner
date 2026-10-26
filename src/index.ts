@@ -4,8 +4,9 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { checkRepo, commitPushAndOpenPr, describeWarning, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, describeWarning, findExpoApp, remoteHead, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
+import { runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
@@ -260,6 +261,8 @@ async function main(): Promise<void> {
   cfg.pullRequest = repo.pullRequest;
   prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
   store.warnings = repo.warnings;
+  const expoApp = await findExpoApp(cfg.repoPath, await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch)).catch(() => null);
+  store.capabilities = { pr: prHost?.kind ?? null, ota: expoApp ? { channels: expoApp.channels } : null };
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
@@ -300,11 +303,37 @@ async function main(): Promise<void> {
     },
   );
 
+  // Acciones pedidas desde la app por este usuario (mergear PR, publicar OTA), de una en una.
+  let actionsBusy = false;
+  let pendingActions: string[] = [];
+  const drainActions = async () => {
+    if (actionsBusy) return;
+    actionsBusy = true;
+    try {
+      while (!stopping && pendingActions.length) {
+        const id = pendingActions.shift()!;
+        const action = await store.claimAction(id);
+        if (!action) continue;
+        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? "")}`);
+        const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action).catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
+        await store.finishAction(id, ok, result as Record<string, unknown>);
+        console.log(`[action] ${ok ? "hecha" : "falló"}: ${result.url ?? result.error ?? ""}`);
+      }
+    } finally {
+      actionsBusy = false;
+    }
+  };
+  const unsubscribeActions = onSnapshot(store.myActions(), (snap) => {
+    pendingActions = snap.docs.map((d) => d.id);
+    void drainActions();
+  });
+
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
     console.log("[backcode] parando…");
     unsubscribe();
+    unsubscribeActions();
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
     knowledgeAbort.abort();
