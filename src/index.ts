@@ -161,10 +161,11 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     for await (const msg of messages) {
       if (msg.type === "assistant") {
         for (const block of msg.message.content) {
-          if (block.type === "tool_use") {
-            const input = block.input as Record<string, unknown>;
-            const detail = String(input.description ?? input.file_path ?? input.pattern ?? input.title ?? "");
-            await store.event(id, "tool", `${block.name}${detail ? `: ${detail}` : ""}`);
+          if (block.type === "text" && block.text.trim()) {
+            // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
+            await store.event(id, "say", block.text.trim().replace(/\s+/g, " ").slice(0, 400));
+          } else if (block.type === "tool_use") {
+            await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
           }
         }
       } else if (msg.type === "system" && msg.subtype === "init") {
@@ -202,6 +203,34 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
   return { status: "failed", result: { ...result, error: result.error ?? "Claude terminó sin abrir un PR (ver resumen)" }, sessionId };
+}
+
+/** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */
+function describeTool(name: string, input: Record<string, unknown>, root: string): string {
+  const rel = (p: unknown) => String(p ?? "").replace(`${root}/`, "").replace(root, ".");
+  const short = (s: unknown, n = 140) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+  switch (name) {
+    case "Read":
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+    case "NotebookEdit":
+      return `${name}: ${rel(input.file_path ?? input.notebook_path)}`;
+    case "Bash":
+      return `Bash: ${short(input.description) || short(input.command)}${input.description && input.command ? ` — ${short(input.command, 80)}` : ""}`;
+    case "Grep":
+      return `Grep: ${short(input.pattern, 80)}${input.path ? ` en ${rel(input.path)}` : ""}${input.glob ? ` (${short(input.glob, 40)})` : ""}`;
+    case "Glob":
+      return `Glob: ${short(input.pattern, 100)}`;
+    case "TodoWrite": {
+      const todos = (input.todos as { content?: string; status?: string }[] | undefined) ?? [];
+      const doing = todos.find((t) => t.status === "in_progress") ?? todos.find((t) => t.status === "pending");
+      const done = todos.filter((t) => t.status === "completed").length;
+      return `Plan: ${done}/${todos.length}${doing?.content ? ` — ${short(doing.content, 120)}` : ""}`;
+    }
+    default:
+      return `${name.replace(/^mcp__backcode__/, "")}${input.title ? `: ${short(input.title)}` : ""}`;
+  }
 }
 
 async function drain(): Promise<void> {
