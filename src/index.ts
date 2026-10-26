@@ -377,5 +377,9 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error("[backcode] error fatal:", err.message ?? err);
+  if (/runner key/i.test(String(err.message ?? err))) {
+    console.error("  → Tu llave ya no vale (al generar una nueva se revoca la anterior). En la app: Proyecto → Conectar → Configurar de nuevo →");
+    console.error("    Generar llave → Copiar configuración, y aquí `npm run connect`: la nueva se copia a todos tus proyectos.");
+  }
   process.exit(1);
 });
