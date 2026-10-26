@@ -246,6 +246,16 @@ export class Store {
     await updateDoc(doc(this.project(), "actions", id), { status: ok ? "done" : "failed", result: clean, updatedAt: serverTimestamp() });
   }
 
+  async featureInfo(featureId: string): Promise<{ title: string; branch?: string; prUrl?: string; summary?: string; refinedPrompt: string }> {
+    const d = await getDoc(this.feature(featureId));
+    const result = (d.get("result") as FeatureResult | undefined) ?? {};
+    return { title: String(d.get("title") ?? ""), branch: d.get("branch") as string | undefined, prUrl: result.prUrl, summary: result.summary, refinedPrompt: String(d.get("refinedPrompt") ?? "") };
+  }
+
+  async setPrUrl(featureId: string, url: string): Promise<void> {
+    await updateDoc(this.feature(featureId), { "result.prUrl": url });
+  }
+
   async prUrlOf(featureId: string): Promise<string | undefined> {
     return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
   }

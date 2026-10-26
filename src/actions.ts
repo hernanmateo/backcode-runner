@@ -10,7 +10,7 @@ import type { Store } from "./store.js";
 // mergear el PR de una tarea o publicar un OTA de Expo. Los comandos son fijos: nunca los decide Claude.
 
 export interface Action {
-  type: "merge" | "ota";
+  type: "merge" | "ota" | "openPr";
   featureId?: string;
   channel?: "preview" | "production";
   message?: string;
@@ -34,7 +34,20 @@ function requireGreen(checks: Checks, what: string): ActionResult | null {
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
+  if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
   return publishOta(cfg, host, action.channel ?? "preview", action.message ?? "Backcode");
+}
+
+/** Abre el PR de una tarea cuya rama ya está subida (p. ej. hecha en modo "solo rama"), sin ejecutar a Claude. */
+async function openPr(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
+  if (!host) return { ok: false, result: { error: "Tu runner no tiene PRs configurados (GitHub o Bitbucket con token): configúralo en Conectar" } };
+  const f = await store.featureInfo(featureId);
+  if (f.prUrl?.startsWith("https://")) return { ok: true, result: { url: f.prUrl } };
+  if (!f.branch) return { ok: false, result: { error: "La tarea no tiene rama" } };
+  const body = `${f.summary || f.refinedPrompt}\n\n---\nBackcode feature \`${featureId}\` · rama \`${f.branch}\`\n\n🤖 Generado por Backcode runner con [Claude Code](https://claude.com/claude-code)`;
+  const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: f.branch, base: cfg.baseBranch, title: f.title, body });
+  await store.setPrUrl(featureId, url);
+  return { ok: true, result: { url } };
 }
 
 async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
