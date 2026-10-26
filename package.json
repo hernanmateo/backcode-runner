@@ -23,5 +23,8 @@
   "description": "Runner local de Backcode: escucha las tareas que aceptas en la app y las implementa con Claude Code en una rama propia.",
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.6"
   }
 }
