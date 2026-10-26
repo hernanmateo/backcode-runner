@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, remoteHead, removeWorktree, SECRET_PATTERNS } from "./git.js";
+import { createDetachedWorktree, findRepoIcon, remoteHead, removeWorktree, SECRET_PATTERNS } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import type { Store } from "./store.js";
 
@@ -24,6 +24,21 @@ Sections (skip any that don't apply):
 Rules: be factual and only describe what you find in the files; prefer exact paths and commands; max ~1500 words. Never include secrets, credentials, tokens, keys, connection strings or personal data, even if you see them. Explore with Glob/Grep/Read efficiently (manifests, README, CLAUDE.md, top-level dirs, a few representative files). Your final message must be only the Markdown map.`;
 
 export async function refreshKnowledge(cfg: RunnerConfig, store: Store, env: Record<string, string>, signal: AbortSignal): Promise<void> {
+  await refreshMap(cfg, store, env, signal);
+  await refreshIcon(cfg, store).catch((err) => console.warn(`[icon] ${(err as Error).message}`));
+}
+
+/** Icono del repo para la app (una vez; luego solo si no se encontró antes y cambia la rama base). */
+async function refreshIcon(cfg: RunnerConfig, store: Store): Promise<void> {
+  const saved = await store.knowledgeState();
+  if (!saved.exists || saved.iconPath || !saved.commit) return;
+  const icon = await findRepoIcon(cfg.repoPath, saved.commit);
+  if (!icon) return;
+  await store.saveRepoIcon(icon.data, icon.contentType);
+  console.log("[icon] icono del proyecto subido desde el repo");
+}
+
+async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, string>, signal: AbortSignal): Promise<void> {
   if (cfg.knowledge === "off") return;
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const saved = await store.knowledgeState();

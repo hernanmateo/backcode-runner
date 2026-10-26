@@ -21,7 +21,7 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
-import { connectStorageEmulator, getBytes, getStorage, ref, type FirebaseStorage } from "firebase/storage";
+import { connectStorageEmulator, getBytes, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
 import type { Quota } from "./quota.js";
 
@@ -223,13 +223,26 @@ export class Store {
   }
 
   /** Commit y fecha del mapa del repositorio guardado (si existe). */
-  async knowledgeState(): Promise<{ commit?: string; updatedAt?: number }> {
+  async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string }> {
     const d = await getDoc(this.knowledge());
-    return { commit: d.get("commit") as string | undefined, updatedAt: (d.get("updatedAt") as Timestamp | undefined)?.toMillis() };
+    return {
+      exists: d.exists(),
+      commit: d.get("commit") as string | undefined,
+      updatedAt: (d.get("updatedAt") as Timestamp | undefined)?.toMillis(),
+      iconPath: d.get("iconPath") as string | undefined,
+    };
+  }
+
+  /** Sube el icono encontrado en el repo y lo enlaza en el mapa (el documento ya debe existir). */
+  async saveRepoIcon(data: Buffer, contentType: string): Promise<void> {
+    const path = `projects/${this.cfg.projectId}/branding/repo`;
+    await uploadBytes(ref(this.storage, path), new Uint8Array(data), { contentType });
+    await setDoc(this.knowledge(), { iconPath: path, updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
   }
 
   async saveKnowledge(summary: string, commit: string, costUsd: number): Promise<void> {
-    await setDoc(this.knowledge(), { summary, commit, costUsd, updatedBy: this.uid, updatedAt: serverTimestamp() });
+    // merge: conserva el icono del repo (iconPath) al regenerar el mapa.
+    await setDoc(this.knowledge(), { summary, commit, costUsd, updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
   }
 
   /** Publica la cuota del plan de este usuario en todos sus grupos (es de la cuenta, no del proyecto). */

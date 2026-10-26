@@ -52,6 +52,42 @@ export async function createWorktree(opts: {
   return { path, branch, resumed: false };
 }
 
+/**
+ * Busca el icono del proyecto en el repo, leyendo de git en el commit dado (sin worktree ni ejecutar nada):
+ * primero el `expo.icon` de cualquier app.json; si no, apple-touch-icon, icon, logo o favicon en PNG/JPG.
+ */
+export async function findRepoIcon(repoPath: string, commit: string): Promise<{ data: Buffer; contentType: string } | null> {
+  const listing = await git(repoPath, ["ls-tree", "-r", "-l", commit]);
+  const files = listing
+    .split("\n")
+    .map((line) => /^\d+ blob [0-9a-f]+\s+(\d+)\t(.+)$/.exec(line))
+    .filter((m): m is RegExpExecArray => !!m)
+    .map((m) => ({ size: Number(m[1]), path: m[2] }))
+    .filter((f) => !/(^|\/)(node_modules|dist|build|\.git|Pods)\//.test(f.path));
+  const show = async (path: string) => (await run("git", [...NO_HOOKS, "show", `${commit}:${path}`], { cwd: repoPath, encoding: "buffer", maxBuffer: 5 * 1024 * 1024 })).stdout as Buffer;
+  const ok = (f?: { size: number; path: string }) => !!f && f.size > 512 && f.size < 2 * 1024 * 1024 && /\.(png|jpe?g)$/i.test(f.path);
+
+  const candidates: { size: number; path: string }[] = [];
+  for (const appJson of files.filter((f) => /(^|\/)app\.json$/.test(f.path))) {
+    try {
+      const icon = JSON.parse((await show(appJson.path)).toString("utf8"))?.expo?.icon;
+      if (typeof icon !== "string") continue;
+      const dir = appJson.path.includes("/") ? appJson.path.slice(0, appJson.path.lastIndexOf("/") + 1) : "";
+      const target = files.find((f) => f.path === (dir + icon.replace(/^\.\//, "")));
+      if (ok(target)) candidates.push(target!);
+    } catch {
+      // app.json no válido: se ignora
+    }
+  }
+  if (!candidates.length) {
+    const rank = (p: string) => ["apple-touch-icon", "app-icon", "icon", "logo", "favicon"].findIndex((n) => new RegExp(`(^|/)${n}[^/]*$`, "i").test(p));
+    candidates.push(...files.filter((f) => ok(f) && rank(f.path) >= 0).sort((a, b) => rank(a.path) - rank(b.path) || b.size - a.size));
+  }
+  const best = candidates[0];
+  if (!best) return null;
+  return { data: await show(best.path), contentType: /\.png$/i.test(best.path) ? "image/png" : "image/jpeg" };
+}
+
 /** Excluye una ruta de git en el repo (info/exclude, compartido por los worktrees) sin tocar su .gitignore. */
 export async function excludeFromGit(worktree: string, pattern: string): Promise<void> {
   const common = await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
