@@ -108,6 +108,40 @@ export async function pruneOldWorktrees(repoPath: string, worktreesDir: string, 
   await git(repoPath, ["worktree", "prune"]).catch(() => undefined);
 }
 
+/**
+ * Ajusta la configuración al repo real antes de empezar: si la rama base no existe en el remoto se usa
+ * la rama por defecto del repo (p. ej. master), y si el remoto no es GitHub no se intenta abrir PR con gh.
+ * Devuelve avisos legibles para la terminal y para la app.
+ */
+/** Aviso de configuración: código + datos, para que la app lo muestre traducido. */
+export type RepoWarning = { code: "baseBranchFallback"; configured: string; used: string } | { code: "notGithub"; host: string };
+
+export function describeWarning(w: RepoWarning): string {
+  return w.code === "baseBranchFallback"
+    ? `La rama base "${w.configured}" no existe en el repo; se usa "${w.used}" (la rama por defecto). Cámbiala en la app (Conectar → ¿Dónde está tu código?).`
+    : `El repo está en ${w.host}, no en GitHub: se sube la rama sin abrir PR (ábrelo desde ${w.host}).`;
+}
+
+export async function checkRepo(repoPath: string, remote: string, baseBranch: string, pullRequest: "github" | "push-only"): Promise<{ baseBranch: string; pullRequest: "github" | "push-only"; warnings: RepoWarning[] }> {
+  const warnings: RepoWarning[] = [];
+  const url = await git(repoPath, ["remote", "get-url", remote]).catch(() => "");
+  if (!url) throw new Error(`El repo ${repoPath} no tiene el remoto "${remote}"`);
+  const heads = await git(repoPath, ["ls-remote", "--symref", remote, "HEAD", `refs/heads/${baseBranch}`]);
+  const defaultBranch = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(heads)?.[1];
+  const hasBase = heads.split("\n").some((l) => l.endsWith(`refs/heads/${baseBranch}`));
+  if (!hasBase) {
+    if (!defaultBranch) throw new Error(`La rama ${baseBranch} no existe en ${remote}`);
+    warnings.push({ code: "baseBranchFallback", configured: baseBranch, used: defaultBranch });
+    baseBranch = defaultBranch;
+  }
+  if (pullRequest === "github" && !/github\.com[:/]/.test(url)) {
+    const host = /@?([a-z0-9.-]+\.[a-z]+)[:/]/i.exec(url)?.[1] ?? "otro servidor";
+    warnings.push({ code: "notGithub", host });
+    pullRequest = "push-only";
+  }
+  return { baseBranch, pullRequest, warnings };
+}
+
 /** Último commit de la rama base en el remoto (hace fetch antes). */
 export async function remoteHead(repoPath: string, remote: string, baseBranch: string): Promise<string> {
   await git(repoPath, ["fetch", remote, baseBranch]);

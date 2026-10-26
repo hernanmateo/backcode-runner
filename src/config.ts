@@ -41,6 +41,7 @@ const Env = z.object({
 /** Variables que admite el .env (las únicas que acepta `npm run connect`). */
 export const ENV_KEYS = Object.keys(Env.shape);
 
+/** baseBranch y pullRequest se ajustan al arrancar según el repo real (checkRepo). */
 export interface RunnerConfig {
   firebase: { apiKey: string; authDomain?: string; projectId: string; storageBucket: string };
   functionsRegion: string;

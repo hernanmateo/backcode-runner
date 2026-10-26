@@ -4,7 +4,7 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { commitPushAndOpenPr, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, describeWarning, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { materializeAttachments } from "./attachments.js";
 import { refreshKnowledge } from "./knowledge.js";
@@ -251,6 +251,12 @@ async function main(): Promise<void> {
   const { db, storage, uid } = await connect(cfg);
   store = new Store(db, storage, cfg, uid);
   console.log(`[backcode] usuario ${uid} · proyecto ${cfg.projectId} · repo ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · runner ${cfg.runnerId}`);
+  // Ajusta rama base y modo de PR al repo real; los avisos se ven en la terminal y en la app.
+  const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest);
+  cfg.baseBranch = repo.baseBranch;
+  cfg.pullRequest = repo.pullRequest;
+  store.warnings = repo.warnings;
+  for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);

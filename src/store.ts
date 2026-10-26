@@ -23,6 +23,7 @@ import {
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
 import { connectStorageEmulator, getBytes, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
+import type { RepoWarning } from "./git.js";
 import type { Quota } from "./quota.js";
 
 export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed" | "waiting";
@@ -111,6 +112,9 @@ export class Store {
     readonly uid: string,
   ) {}
 
+  /** Avisos sobre la configuración (rama base, alojamiento…) que la app muestra junto al estado del runner. */
+  warnings: RepoWarning[] = [];
+
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
   async download(path: string): Promise<Uint8Array> {
     return new Uint8Array(await getBytes(ref(this.storage, path), 25 * 1024 * 1024));
@@ -141,7 +145,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(`Ya tienes un runner activo para este proyecto (${holder})`);
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS) });
+        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings });
       });
     await take();
     const timer = setInterval(() => {
