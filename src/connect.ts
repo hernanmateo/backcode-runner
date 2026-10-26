@@ -79,8 +79,11 @@ if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket" && !values.get("BACKCODE
   let token = fromOtherProjects("BACKCODE_BITBUCKET_TOKEN");
   if (email && token) console.log("  · Se reutiliza tu API token de Bitbucket de este ordenador.");
   else if (process.stdin.isTTY) {
-    console.log("\nBitbucket: crea un API token en bitbucket.org → ⚙️ Ajustes personales → API tokens, con permisos de");
-    console.log("lectura de cuenta y de lectura/escritura de repositorios y pull requests. Se guarda solo en este ordenador.\n");
+    console.log("\nBitbucket necesita un API token (se guarda solo en este ordenador):");
+    console.log("  1. https://id.atlassian.com/manage-profile/security/api-tokens → «Create API token with scopes»");
+    console.log("  2. App: Bitbucket. Permisos: read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket,");
+    console.log("     read:pullrequest:bitbucket, write:pullrequest:bitbucket");
+    console.log("  3. Usa el email de esa cuenta de Atlassian (no tu usuario de Bitbucket).\n");
     email = await ask("Email de tu cuenta Atlassian: ");
     token = await ask("API token (no se muestra): ", true);
   }
