@@ -21,7 +21,8 @@ npm run connect   # pega la configuración que te da la app (Proyecto → Conect
 
 También puedes hacerlo a mano: `cp .env.example .env && chmod 600 .env`, rellenarlo y `npm start`.
 
-Un `.env` corresponde a un proyecto. Para trabajar en varios, crea un fichero por proyecto y lanza un runner por cada uno:
+Un `.env` corresponde a un proyecto. Puedes tener tantos runners activos como proyectos: `npm run all` arranca uno por cada
+`.env.<proyecto>` que hayas creado con `npm run connect`, con los logs juntos. También puedes lanzarlos por separado:
 ```bash
 npm start -- --env .env.web
 npm start -- --env .env.api

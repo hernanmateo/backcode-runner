@@ -6,7 +6,8 @@
     "build": "tsc",
     "start": "tsc && node dist/index.js",
     "connect": "tsc && node dist/connect.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "all": "tsc && node dist/all.js"
   },
   "type": "module",
   "dependencies": {
