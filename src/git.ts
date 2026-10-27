@@ -181,6 +181,8 @@ export interface ExpoApp {
   appDir: string;
   channels: string[];
   ota: "script" | "eas" | null;
+  /** Texto del script `ota:publish` (si `ota` es `script`), para no repetirle la rama si ya la lleva. */
+  otaScript?: string;
   /** Gestor de paquetes según el lockfile (para instalar y ejecutar el script). */
   pm: "npm" | "pnpm" | "yarn" | "bun";
   /** Perfiles de `build` de eas.json (las builds para testers usan `production`, la de tienda). */
@@ -214,7 +216,7 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
     const has = (f: string) => files.includes(`${dir}${f}`) || files.includes(f);
     const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
     const ota = scripts["ota:publish"] ? "script" : /u\.expo\.dev\//.test(config) ? "eas" : null;
-    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, pm, buildProfiles };
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, otaScript: scripts["ota:publish"], pm, buildProfiles };
   }
   return null;
 }

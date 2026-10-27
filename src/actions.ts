@@ -5,6 +5,7 @@ import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
+import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
@@ -109,9 +110,6 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   return { ok: true, result: { url: prUrl, sha } };
 }
 
-/** En xprem la rama de producción es `prod` (el canal `production` del binario apunta a ella). */
-const SCRIPT_BRANCH: Record<string, string> = { production: "prod", preview: "preview" };
-
 async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string) {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
@@ -129,6 +127,9 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     if (blocked) return { ok: false, result: blocked };
   }
 
+  const scriptArgs = app.ota === "script" ? otaScriptArgs(app.otaScript ?? "", app.pm, channel, message) : null;
+  if (scriptArgs && "error" in scriptArgs) return { ok: false, result: { error: t("act.otaFixedBranch", { fixed: scriptArgs.fixed, channel }) } };
+
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_ota", commit);
   const dir = join(wt, app.appDir);
   const repoAppDir = join(cfg.repoPath, app.appDir);
@@ -136,16 +137,12 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     await installFrozen(app, wt, dir);
 
     let out: string;
-    if (app.ota === "script") {
+    if (scriptArgs) {
       // El script del repo (p. ej. xprem) lee sus secretos de los .env locales (ignorados por git) y recuerda la
       // última publicación en .expo/ para su guarda de cambios nativos: se copian a la copia limpia y se devuelven.
       await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
       copyLastPublish(repoAppDir, dir);
-      const branch = SCRIPT_BRANCH[channel] ?? channel;
-      // --yes: la confirmación ya se hizo en la app. Nunca --allow-native ni porcentajes: si el script se niega, se
-      // muestra su motivo.
-      const args = ["run", "ota:publish", ...(app.pm === "npm" ? ["--"] : []), branch, "--yes", "-m", message.slice(0, 200)];
-      out = await exec([app.pm, ...args], dir);
+      out = await exec([app.pm, ...scriptArgs.args], dir);
       copyLastPublish(dir, repoAppDir);
     } else {
       // Siempre al 100 % y para todas las plataformas (sin despliegue gradual).

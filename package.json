@@ -7,7 +7,8 @@
     "start": "tsc && node dist/index.js",
     "connect": "tsc && node dist/connect.js",
     "dev": "tsx src/index.ts",
-    "all": "tsc && node dist/all.js"
+    "all": "tsc && node dist/all.js",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "type": "module",
   "dependencies": {
