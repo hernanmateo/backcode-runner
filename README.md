@@ -49,11 +49,24 @@ mensaje final). Antes de iniciar sesión (`npm run connect`, errores al arrancar
 
 ## Arrancarlo cada día
 ```bash
-git pull && npm run all        # un runner por cada proyecto conectado, con los logs juntos ([proyecto] delante)
+npm run all                    # un runner por cada proyecto conectado, con los logs juntos ([proyecto] delante)
 npm start -- --env .env.<id>   # o solo uno
 ```
 Deja la terminal abierta mientras quieras que trabaje. **Ctrl+C** los para: una tarea a medias vuelve a la cola y se retoma al
 volver a arrancar. Si lanzas dos runners tuyos para el mismo proyecto, el segundo se niega a arrancar.
+
+**Se actualiza solo.** Cada 2 minutos mira si la rama del runner tiene commits nuevos (una consulta mínima, sin descargar
+nada). Si los hay y tu copia está limpia: `git pull --ff-only`, `npm install` si cambiaron dependencias, comprueba que compila
+y espera a quedar libre (sin tarea ni acción en marcha; no interrumpe nada ni coge trabajo nuevo mientras) para reiniciarse con
+la versión nueva en el mismo terminal. Con `npm run all` lo hace una sola vez para todos los proyectos. Si tu copia tiene
+cambios sin guardar o commits locales, o la versión nueva no compila, avisa y sigue con la actual (entonces, `git pull` a mano).
+
+**Publicar OTA exige probarlo antes** (botón Publicar de la app, también los rollbacks): el runner compila la app en Release
+con el JS incrustado, en la copia limpia que va a publicar, la abre en un simulador propio («Backcode OTA test», no toca los
+tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica. Un OTA que cierra la app al arrancar no
+tiene arreglo por OTA (el móvil no llega a descargar el siguiente). Requisitos: Mac con Xcode, y que la app compile en tu
+máquina (sus `.env` y ficheros de Firebase locales, como `GoogleService-Info.plist`, se copian solos). La primera vez por
+proyecto tarda ~10 min (compilación nativa); después, unos minutos.
 
 ## Cambiar la ruta del repo, la rama base o los PR
 App → Proyecto → Conectar → **Configurar de nuevo** → cambia lo que quieras → "Ya tengo una llave en este ordenador" → **Copiar
