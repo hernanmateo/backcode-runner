@@ -4,9 +4,9 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { checkRepo, commitPushAndOpenPr, describeWarning, findExpoApp, remoteHead, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, describeWarning, findExpoApp, remoteHead, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
-import { OTA_MISSING, runAction, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, OTA_MISSING, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
@@ -312,6 +312,10 @@ async function main(): Promise<void> {
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
+  // Al arrancar, tu copia local de la rama base se pone al día si es seguro (p. ej. tras merges hechos por otros).
+  const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message, changed: [] as string[] }));
+  logLocalSync(cfg, local);
+  if (local.status === "updated") await installIfNeeded(cfg.repoPath, local.changed ?? []);
 
   const project = await store.projectInfo();
   printConnected(project.name);

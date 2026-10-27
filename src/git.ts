@@ -215,6 +215,30 @@ export async function isAncestor(repoPath: string, ancestor: string, commit: str
   );
 }
 
+/**
+ * Pone al día tu copia local de la rama base (p. ej. tras mergear un PR desde la app) SOLO si es seguro: estás en esa
+ * rama, sin cambios pendientes, y es un avance limpio (fast-forward). Si no, no toca nada y dice por qué.
+ */
+export async function syncLocalBase(repoPath: string, remote: string, baseBranch: string): Promise<{ status: "updated" | "uptodate" | "skipped"; reason?: string; commits?: number; changed?: string[] }> {
+  await git(repoPath, ["fetch", "--quiet", remote, baseBranch]);
+  const branch = await git(repoPath, ["branch", "--show-current"]).catch(() => "");
+  const target = `${remote}/${baseBranch}`;
+  const behind = Number(await git(repoPath, ["rev-list", "--count", `${baseBranch}..${target}`]).catch(() => "0"));
+  if (!behind) return { status: "uptodate" };
+  if (branch !== baseBranch) {
+    // En otra rama: se avanza la rama base sin cambiar de rama, solo si es fast-forward (git fetch lo comprueba).
+    const ok = await git(repoPath, ["fetch", "--quiet", remote, `${baseBranch}:${baseBranch}`]).then(() => true, () => false);
+    return ok ? { status: "updated", commits: behind } : { status: "skipped", reason: `tu ${baseBranch} local tiene commits que no están en ${target}` };
+  }
+  if (await git(repoPath, ["status", "--porcelain", "--untracked-files=no"])) return { status: "skipped", reason: "tienes cambios sin guardar en tu copia" };
+  const before = await git(repoPath, ["rev-parse", "HEAD"]);
+  const ok = await git(repoPath, ["merge", "--ff-only", "--quiet", target]).then(() => true, () => false);
+  if (!ok) return { status: "skipped", reason: `tu ${baseBranch} local tiene commits que no están en ${target}` };
+  // Ficheros cambiados: para saber si hay que reinstalar dependencias en tu copia.
+  const changed = (await git(repoPath, ["diff", "--name-only", before, "HEAD"])).split("\n").filter(Boolean);
+  return { status: "updated", commits: behind, changed };
+}
+
 export async function remoteHead(repoPath: string, remote: string, baseBranch: string): Promise<string> {
   await git(repoPath, ["fetch", remote, baseBranch]);
   return git(repoPath, ["rev-parse", `${remote}/${baseBranch}`]);

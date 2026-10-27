@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, findExpoApp, isAncestor, remoteHead, removeWorktree } from "./git.js";
+import { createDetachedWorktree, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import type { Store } from "./store.js";
 
@@ -58,6 +58,10 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   if (blocked) return { ok: false, result: blocked };
   const { sha } = await host.merge(prUrl);
   await store.markMerged(featureId, sha);
+  // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
+  const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message }));
+  logLocalSync(cfg, local);
+  if (local.status === "updated" && "changed" in local) await installIfNeeded(cfg.repoPath, local.changed ?? []);
   // La rama ya no existe: la copia de trabajo de la tarea sobra.
   await removeWorktree(cfg.repoPath, join(cfg.worktreesDir, featureId)).catch(() => undefined);
   return { ok: true, result: { url: prUrl, sha } };
@@ -163,4 +167,48 @@ function exec([cmd, ...args]: string[], cwd: string): Promise<string> {
       else reject(new Error(`${cmd} ${args.slice(0, 2).join(" ")} terminó con código ${code}:\n${out.slice(-2800)}`));
     });
   });
+}
+
+export function logLocalSync(cfg: RunnerConfig, r: { status: string; reason?: string; commits?: number }): void {
+  if (r.status === "updated") console.log(`[backcode] tu copia local de ${cfg.baseBranch} se ha puesto al día (${r.commits} commit(s))`);
+  else if (r.status === "skipped") console.warn(`\x1b[33m⚠ tu copia local de ${cfg.baseBranch} va por detrás de ${cfg.remote} y no la he tocado: ${r.reason}. Haz git pull cuando puedas.\x1b[0m`);
+}
+
+const LOCKFILES: Record<string, string[]> = {
+  "pnpm-lock.yaml": ["pnpm", "install", "--frozen-lockfile"],
+  "yarn.lock": ["yarn", "install", "--frozen-lockfile"],
+  "bun.lock": ["bun", "install", "--frozen-lockfile"],
+  "bun.lockb": ["bun", "install", "--frozen-lockfile"],
+  "package-lock.json": ["npm", "install"],
+};
+
+/**
+ * Tras poner al día tu copia: si cambiaron dependencias (package.json o lockfile), instala con el gestor del repo en
+ * cada carpeta con lockfile afectada (en un monorepo, la raíz). Es lo mismo que harías tú tras un git pull.
+ */
+export async function installIfNeeded(repoPath: string, changed: string[]): Promise<void> {
+  const deps = changed.filter((f) => /(^|\/)(package\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|package-lock\.json|pnpm-workspace\.yaml)$/.test(f));
+  if (!deps.length) return;
+  const dirs = new Set<string>();
+  for (const f of deps) {
+    // Sube desde la carpeta del fichero hasta encontrar un lockfile (la raíz en un monorepo).
+    let dir = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "";
+    for (;;) {
+      if (Object.keys(LOCKFILES).some((l) => existsSync(join(repoPath, dir, l)))) {
+        dirs.add(dir);
+        break;
+      }
+      if (!dir) break;
+      dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+    }
+  }
+  for (const dir of dirs) {
+    const lock = Object.keys(LOCKFILES).find((l) => existsSync(join(repoPath, dir, l)))!;
+    const cmd = LOCKFILES[lock];
+    console.log(`[backcode] han cambiado dependencias: ${cmd.join(" ")} en ${dir || "la raíz"}…`);
+    await exec(cmd, join(repoPath, dir)).then(
+      () => console.log("[backcode] dependencias instaladas"),
+      (e: Error) => console.warn(`\x1b[33m⚠ no he podido instalar las dependencias (${e.message.split("\n")[0]}). Hazlo a mano en ${dir || "la raíz"}.\x1b[0m`),
+    );
+  }
 }
