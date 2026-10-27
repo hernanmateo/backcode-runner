@@ -2,20 +2,26 @@ import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
+import { createDetachedWorktree, type ExpoApp, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
-// mergear el PR de una tarea o publicar un OTA de Expo (EAS Update o el script `ota:publish` del repo, p. ej. xprem). Los comandos son fijos: nunca los decide Claude.
+// mergear el PR de una tarea, publicar un OTA de Expo (EAS Update o el script `ota:publish` del repo, p. ej. xprem) o
+// hacer una build local con EAS y enviarla a testers (TestFlight / Internal Testing). Los comandos son fijos: nunca los
+// decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr";
+  type: "merge" | "ota" | "openPr" | "build";
   featureId?: string;
   channel?: "preview" | "production";
   message?: string;
   /** Rollback: volver a publicar este commit (una versión anterior ya publicada) en lugar del último de la rama base. */
   commit?: string;
+  /** Build para testers: plataformas, versión de tienda (x.y.z) y runtimeVersion escritas a mano en la app. */
+  platforms?: ("ios" | "android")[];
+  version?: string;
+  runtimeVersion?: string;
 }
 export interface ActionResult {
   url?: string;
@@ -27,6 +33,13 @@ export interface ActionResult {
 }
 
 const OTA_TIMEOUT_MS = 25 * 60_000;
+/** Una build local (sobre todo la de iOS) puede tardar bastante más que un OTA. */
+const BUILD_TIMEOUT_MS = 90 * 60_000;
+/** Perfil de eas.json de las builds para testers: el de tienda (TestFlight e Internal Testing solo aceptan builds de tienda). */
+const BUILD_PROFILE = "production";
+// Las mismas comprobaciones que firestore.rules: llegan a la build como variables de entorno.
+const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+const RUNTIME_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,39}$/;
 
 /** Solo se continúa con todo en verde (o sin checks configurados). */
 function requireGreen(checks: Checks, what: string): ActionResult | null {
@@ -37,6 +50,7 @@ function requireGreen(checks: Checks, what: string): ActionResult | null {
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
+  if (action.type === "build") return publishBuild(cfg, host, action);
   return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
 }
 
@@ -102,11 +116,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   const dir = join(wt, app.appDir);
   const repoAppDir = join(cfg.repoPath, app.appDir);
   try {
-    // Dependencias con el gestor del repo (lockfile en la app o en la raíz del monorepo).
-    const has = (f: string) => existsSync(join(dir, f)) || existsSync(join(wt, f));
-    const frozen = { pnpm: ["pnpm", "install", "--frozen-lockfile"], yarn: ["yarn", "install", "--frozen-lockfile"], bun: ["bun", "install", "--frozen-lockfile"], npm: ["npm", "ci"] }[app.pm];
-    const installDir = existsSync(join(dir, "package.json")) && !has("pnpm-workspace.yaml") ? dir : wt;
-    await exec(frozen, installDir);
+    await installFrozen(app, wt, dir);
 
     let out: string;
     if (app.ota === "script") {
@@ -139,6 +149,89 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   }
 }
 
+/**
+ * Build LOCAL con EAS (`eas build --local`, en este ordenador) y envío a testers con `eas submit`: iOS va a TestFlight
+ * y Android al track `internal` de Google Play (Internal Testing). Usa el perfil `production` de eas.json y la sesión
+ * de EAS de quien lo pide (credenciales gestionadas por EAS); no se toca `ios/` ni `android/`.
+ * La versión y la runtimeVersion llegan como APP_VERSION y RUNTIME_VERSION: la configuración de la app (app.config.js)
+ * tiene que leerlas. Antes de compilar se comprueba con `expo config` que de verdad se aplican.
+ */
+async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action: Action) {
+  const platforms = (["ios", "android"] as const).filter((p) => action.platforms?.includes(p));
+  const version = action.version ?? "";
+  const runtimeVersion = action.runtimeVersion ?? "";
+  if (!platforms.length) return { ok: false, result: { error: "Elige iOS, Android o las dos" } };
+  if (!VERSION_RE.test(version)) return { ok: false, result: { error: `Versión no válida: «${version}» (formato x.y.z, p. ej. 1.0.16)` } };
+  if (!RUNTIME_VERSION_RE.test(runtimeVersion)) return { ok: false, result: { error: `runtimeVersion no válida: «${runtimeVersion}»` } };
+  if (platforms.includes("ios") && process.platform !== "darwin") return { ok: false, result: { error: "La build local de iOS necesita un Mac con Xcode: tu runner no corre en macOS" } };
+
+  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  const app = await findExpoApp(cfg.repoPath, commit);
+  if (!app) return { ok: false, result: { error: "El repositorio no es una app Expo con eas.json" } };
+  if (!app.buildProfiles.includes(BUILD_PROFILE)) return { ok: false, result: { error: `Falta el perfil «${BUILD_PROFILE}» en el build de eas.json` } };
+  if (host) {
+    const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
+    if (blocked) return { ok: false, result: blocked };
+  }
+
+  const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_build", commit);
+  const dir = join(wt, app.appDir);
+  const env = { APP_VERSION: version, RUNTIME_VERSION: runtimeVersion };
+  const done: string[] = [];
+  let url: string | undefined;
+  try {
+    await installFrozen(app, wt, dir);
+    // Sin esto, una app que no lea las variables saldría con la versión de app.json sin que nadie se entere.
+    const resolved = parseJson(await exec(["npx", "expo", "config", "--json", "--type", "public"], dir, { env })) as { version?: unknown; runtimeVersion?: unknown } | null;
+    if (resolved?.version !== version || resolved?.runtimeVersion !== runtimeVersion) {
+      const got = `version=${JSON.stringify(resolved?.version)}, runtimeVersion=${JSON.stringify(resolved?.runtimeVersion)}`;
+      return { ok: false, result: { sha: commit, error: `La configuración de la app no aplica la versión pedida (sale ${got}): su app.config.js tiene que leer APP_VERSION y RUNTIME_VERSION.` } };
+    }
+    let log = "";
+    for (const platform of platforms) {
+      const artifact = join(wt, `backcode-build.${platform === "ios" ? "ipa" : "aab"}`);
+      try {
+        log += await exec(["npx", "--yes", "eas-cli@latest", "build", "--local", "--platform", platform, "--profile", BUILD_PROFILE, "--output", artifact, "--non-interactive"], dir, { env, timeoutMs: BUILD_TIMEOUT_MS });
+        // Perfil de submit por defecto de EAS (`production` si existe). iOS → TestFlight; Android → su track
+        // (`internal`, el de EAS por defecto).
+        const out = await exec(["npx", "--yes", "eas-cli@latest", "submit", "--platform", platform, "--path", artifact, "--non-interactive"], dir, { env });
+        log += out;
+        url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop() ?? url;
+        done.push(platform);
+      } catch (err) {
+        const before = done.length ? `Ya enviada: ${done.join(", ")}. ` : "";
+        return { ok: false, result: { url, sha: commit, error: `${before}${platform}: ${String((err as Error).message)}`.slice(-3000) } };
+      }
+    }
+    return { ok: true, result: { url, sha: commit, log: `${done.join(" + ")} · ${version} (runtime ${runtimeVersion})\n${log.slice(-1400)}` } };
+  } catch (err) {
+    return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    await removeWorktree(cfg.repoPath, wt);
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+/** Primer objeto JSON de una salida que puede llevar avisos antes o después. */
+function parseJson(out: string): unknown {
+  const start = out.indexOf("{");
+  const end = out.lastIndexOf("}");
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(out.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+/** Dependencias con el gestor del repo (lockfile en la app o en la raíz del monorepo). */
+async function installFrozen(app: ExpoApp, wt: string, dir: string): Promise<void> {
+  const has = (f: string) => existsSync(join(dir, f)) || existsSync(join(wt, f));
+  const frozen = { pnpm: ["pnpm", "install", "--frozen-lockfile"], yarn: ["yarn", "install", "--frozen-lockfile"], bun: ["bun", "install", "--frozen-lockfile"], npm: ["npm", "ci"] }[app.pm];
+  const installDir = existsSync(join(dir, "package.json")) && !has("pnpm-workspace.yaml") ? dir : wt;
+  await exec(frozen, installDir);
+}
+
 export const OTA_MISSING =
   "La app no tiene OTA configurado: ni EAS Update (updates.url en u.expo.dev; se activa con `npx eas-cli update:configure`) ni un script `ota:publish` propio en su package.json.";
 
@@ -164,16 +257,16 @@ function copyLastPublish(fromAppDir: string, toAppDir: string): void {
 }
 
 /** Ejecuta un comando y devuelve su salida; falla con las últimas líneas si el código no es 0. */
-function exec([cmd, ...args]: string[], cwd: string): Promise<string> {
+function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     const add = (d: Buffer) => {
       out = (out + d.toString()).slice(-200_000);
     };
     child.stdout.on("data", add);
     child.stderr.on("data", add);
-    const timer = setTimeout(() => child.kill("SIGTERM"), OTA_TIMEOUT_MS);
+    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? OTA_TIMEOUT_MS);
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(e);

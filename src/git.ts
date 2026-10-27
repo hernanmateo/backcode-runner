@@ -182,6 +182,8 @@ export interface ExpoApp {
   ota: "script" | "eas" | null;
   /** Gestor de paquetes según el lockfile (para instalar y ejecutar el script). */
   pm: "npm" | "pnpm" | "yarn" | "bun";
+  /** Perfiles de `build` de eas.json (las builds para testers usan `production`, la de tienda). */
+  buildProfiles: string[];
 }
 
 export async function findExpoApp(repoPath: string, commit: string): Promise<ExpoApp | null> {
@@ -193,8 +195,10 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
     const config = configFile ? await show(configFile) : "";
     if (!configFile || (configFile.endsWith("app.json") && !/"expo"\s*:/.test(config))) continue;
     let channels: string[] = [];
+    let buildProfiles: string[] = [];
     try {
       const build = (JSON.parse(await show(eas)) as { build?: Record<string, { channel?: string }> }).build ?? {};
+      buildProfiles = Object.keys(build);
       channels = [...new Set(Object.values(build).map((p) => p.channel).filter((c): c is string => !!c && /^[a-z0-9-]{1,40}$/i.test(c)))];
     } catch {
       // eas.json no válido: canales por defecto
@@ -209,7 +213,7 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
     const has = (f: string) => files.includes(`${dir}${f}`) || files.includes(f);
     const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
     const ota = scripts["ota:publish"] ? "script" : /u\.expo\.dev\//.test(config) ? "eas" : null;
-    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, pm };
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, pm, buildProfiles };
   }
   return null;
 }

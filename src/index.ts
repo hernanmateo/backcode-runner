@@ -331,7 +331,12 @@ async function main(): Promise<void> {
   prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
   store.warnings = repo.warnings;
   const expoApp = await findExpoApp(cfg.repoPath, await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch)).catch(() => null);
-  store.capabilities = { pr: prHost?.kind ?? null, ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null };
+  store.capabilities = {
+    pr: prHost?.kind ?? null,
+    ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null,
+    // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
+    build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
+  };
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ OTA desactivado. ${OTA_MISSING}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
@@ -431,7 +436,7 @@ async function main(): Promise<void> {
         const id = pendingActions.shift()!;
         const action = await store.claimAction(id);
         if (!action) continue;
-        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? "")}`);
+        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action).catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
         await store.finishAction(id, ok, result as Record<string, unknown>);
         console.log(`[action] ${ok ? "hecha" : "falló"}: ${result.url ?? result.error ?? ""}`);
