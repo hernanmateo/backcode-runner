@@ -57,7 +57,8 @@ export async function createWorktree(opts: {
  * Busca el icono del proyecto en el repo, leyendo de git en el commit dado (sin worktree ni ejecutar nada):
  * primero el `expo.icon` de cualquier app.json; si no, apple-touch-icon, icon, logo o favicon en PNG/JPG.
  */
-export async function findRepoIcon(repoPath: string, commit: string): Promise<{ data: Buffer; contentType: string } | null> {
+/** `hint`: ruta propuesta por la IA al generar el mapa; se usa si la config de Expo no dice nada y solo si el fichero existe y es válido. */
+export async function findRepoIcon(repoPath: string, commit: string, hint?: string): Promise<{ data: Buffer; contentType: string } | null> {
   const listing = await git(repoPath, ["ls-tree", "-r", "-l", commit]);
   const files = listing
     .split("\n")
@@ -86,6 +87,10 @@ export async function findRepoIcon(repoPath: string, commit: string): Promise<{ 
     if (!icon) continue;
     const dir = cfgFile.path.includes("/") ? cfgFile.path.slice(0, cfgFile.path.lastIndexOf("/") + 1) : "";
     const target = files.find((f) => f.path === dir + icon.replace(/^\.\//, ""));
+    if (ok(target)) candidates.push(target!);
+  }
+  if (!candidates.length && hint) {
+    const target = files.find((f) => f.path === hint.replace(/^\.\//, ""));
     if (ok(target)) candidates.push(target!);
   }
   if (!candidates.length) {

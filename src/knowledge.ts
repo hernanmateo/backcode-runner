@@ -21,7 +21,7 @@ Sections (skip any that don't apply):
 ## Convenciones — code style, patterns, testing approach, naming.
 ## Zonas sensibles — auth, payments, migrations, infra or anything risky to touch.
 
-Rules: be factual and only describe what you find in the files; prefer exact paths and commands; max ~1500 words. Never include secrets, credentials, tokens, keys, connection strings or personal data, even if you see them. Explore with Glob/Grep/Read efficiently (manifests, README, CLAUDE.md, top-level dirs, a few representative files). Your final message must be only the Markdown map.`;
+Rules: be factual and only describe what you find in the files; prefer exact paths and commands; max ~1500 words. Never include secrets, credentials, tokens, keys, connection strings or personal data, even if you see them. Explore with Glob/Grep/Read efficiently (manifests, README, CLAUDE.md, top-level dirs, a few representative files). Your final message must be only the Markdown map, followed by ONE last line with the repository-relative path of the image (PNG or JPG) that is the product's icon or logo — for a mobile app, its app icon — written exactly as \`ICON: path/to/icon.png\`, or \`ICON: none\` if there isn't a clear one.`;
 
 export async function refreshKnowledge(cfg: RunnerConfig, store: Store, env: Record<string, string>, signal: AbortSignal): Promise<void> {
   await refreshMap(cfg, store, env, signal);
@@ -32,7 +32,7 @@ export async function refreshKnowledge(cfg: RunnerConfig, store: Store, env: Rec
 async function refreshIcon(cfg: RunnerConfig, store: Store): Promise<void> {
   const saved = await store.knowledgeState();
   if (!saved.exists || saved.iconPath || !saved.commit) return;
-  const icon = await findRepoIcon(cfg.repoPath, saved.commit);
+  const icon = await findRepoIcon(cfg.repoPath, saved.commit, saved.iconHint);
   if (!icon) return;
   await store.saveRepoIcon(icon.data, icon.contentType);
   console.log("[icon] icono del proyecto subido desde el repo");
@@ -74,10 +74,14 @@ async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, s
         if (msg.subtype === "success") summary = msg.result.trim();
       }
     }
+    // Última línea "ICON: …": pista del icono para cuando las reglas fijas no lo encuentran (se valida antes de usarla).
+    const iconLine = /\n?ICON:\s*`?([^`\n]*?)`?\s*$/.exec(summary);
+    const iconHint = iconLine && /^[\w./ @+-]{1,300}\.(png|jpe?g)$/i.test(iconLine[1]) && !iconLine[1].includes("..") && !iconLine[1].startsWith("/") ? iconLine[1] : undefined;
+    if (iconLine) summary = summary.slice(0, iconLine.index).trim();
     if (summary.length < 200) throw new Error("el análisis no devolvió un mapa útil");
     const leaked = SECRET_PATTERNS.filter(([re]) => re.test(summary)).map(([, label]) => label);
     if (leaked.length) throw new Error(`descartado: parece contener ${leaked.join(", ")}`);
-    await store.saveKnowledge(summary.slice(0, MAX_CHARS), commit, costUsd);
+    await store.saveKnowledge(summary.slice(0, MAX_CHARS), commit, costUsd, iconHint);
     console.log(`[knowledge] mapa del proyecto actualizado ($${costUsd.toFixed(3)})`);
   } finally {
     await removeWorktree(cfg.repoPath, path);

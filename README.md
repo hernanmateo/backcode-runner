@@ -127,7 +127,8 @@ convenciones. La IA que prepara los encargos lo usa para escribir prompts con ru
 `BACKCODE_KNOWLEDGE=off`.
 
 También busca el **icono del proyecto** en el repo (el `icon` de `app.json` o de `app.config.js/ts`, `apple-touch-icon`, `logo`,
-`favicon`…) leyéndolo
+`favicon`…; si la config de Expo no lo dice, usa la ruta que propone la IA al generar el mapa, siempre que exista en el repo y sea
+una imagen válida) leyéndolo
 de git y lo sube para mostrarlo en la app, salvo que un admin elija otro.
 
 ## Uso y cuota

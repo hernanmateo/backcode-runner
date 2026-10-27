@@ -289,13 +289,14 @@ export class Store {
   }
 
   /** Commit y fecha del mapa del repositorio guardado (si existe). */
-  async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string }> {
+  async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string; iconHint?: string }> {
     const d = await getDoc(this.knowledge());
     return {
       exists: d.exists(),
       commit: d.get("commit") as string | undefined,
       updatedAt: (d.get("updatedAt") as Timestamp | undefined)?.toMillis(),
       iconPath: d.get("iconPath") as string | undefined,
+      iconHint: d.get("iconHint") as string | undefined,
     };
   }
 
@@ -306,10 +307,12 @@ export class Store {
     await setDoc(this.knowledge(), { iconPath: path, updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
   }
 
-  async saveKnowledge(summary: string, commit: string, costUsd: number): Promise<void> {
+  async saveKnowledge(summary: string, commit: string, costUsd: number, iconHint?: string): Promise<void> {
     // merge: conserva el icono del repo (iconPath) al regenerar el mapa.
     // totalCostUsd/runs: coste acumulado de todos los mapas generados (las reglas comprueban que suma exactamente costUsd).
-    await setDoc(this.knowledge(), { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
+    const data = { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp() };
+    // Si el servidor aún no admite iconHint (reglas sin desplegar), el mapa se guarda igual sin la pista.
+    await setDoc(this.knowledge(), { ...data, iconHint: iconHint ?? deleteField() }, { merge: true }).catch(() => setDoc(this.knowledge(), data, { merge: true }));
   }
 
   /** Publica la cuota del plan de este usuario en todos sus grupos (es de la cuenta, no del proyecto). */
