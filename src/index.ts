@@ -1,4 +1,6 @@
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
+import { RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { onSnapshot } from "firebase/firestore";
@@ -48,6 +50,8 @@ let refreshQuota: () => Promise<void> = async () => undefined;
 let prHost: PrHost | undefined;
 let pending: string[] = [];
 let busy = false;
+/** Hay versión nueva: se termina lo que esté en marcha, no se coge nada más y se reinicia. */
+let restarting = false;
 let stopping = false;
 
 type RunOutcome = { status: "done" | "failed" | "waiting"; result: FeatureResult; sessionId?: string };
@@ -269,7 +273,7 @@ async function drain(): Promise<void> {
   if (busy) return;
   busy = true;
   try {
-    while (!stopping && pending.length > 0) {
+    while (!stopping && !restarting && pending.length > 0) {
       const id = pending.shift()!;
       const feature = await store.claim(id);
       if (!feature) continue;
@@ -445,7 +449,7 @@ async function main(): Promise<void> {
     if (actionsBusy) return;
     actionsBusy = true;
     try {
-      while (!stopping && pendingActions.length) {
+      while (!stopping && !restarting && pendingActions.length) {
         const id = pendingActions.shift()!;
         const action = await store.claimAction(id);
         if (!action) continue;
@@ -482,6 +486,50 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // Actualización automática: con versión nueva lista se espera a estar libre (sin tarea ni acción en marcha; no se
+  // interrumpe nada) y se reinicia. Con `npm run all` lo comprueba él una sola vez y avisa con SIGUSR2; solo, este runner.
+  const restartWhenIdle = async () => {
+    if (restarting || stopping) return;
+    restarting = true;
+    console.log(`[backcode] ${t("update.waiting")}`);
+    while (busy || actionsBusy) await new Promise((r) => setTimeout(r, 1000));
+    stopping = true;
+    unsubscribe();
+    stopLang();
+    unsubscribeActions();
+    clearInterval(knowledgeTimer);
+    clearInterval(quotaTimer);
+    clearInterval(conflictsTimer);
+    clearInterval(updateTimer);
+    stopQuotaRequests();
+    knowledgeAbort.abort();
+    await releaseLock();
+    console.log(`[backcode] ${t("update.restarting")}`);
+    if (process.env.BACKCODE_SUPERVISED === "1") process.exit(RESTART_CODE);
+    relaunch();
+  };
+  process.on("SIGUSR2", () => void restartWhenIdle());
+  const checkUpdate = () => {
+    if (process.env.BACKCODE_SUPERVISED === "1" || restarting || stopping) return;
+    void updateIfAvailable()
+      .then((ready) => {
+        if (ready) void restartWhenIdle();
+      })
+      .catch(() => undefined);
+  };
+  const updateTimer = setInterval(checkUpdate, UPDATE_EVERY_MS);
+  setTimeout(checkUpdate, 15_000);
+}
+
+/** Vuelve a arrancar este mismo runner (mismos argumentos, mismo terminal) con el código nuevo. */
+function relaunch(): never {
+  const execve = (process as unknown as { execve?: (file: string, args: string[], env: NodeJS.ProcessEnv) => never }).execve;
+  if (execve) execve(process.execPath, [process.execPath, ...process.argv.slice(1)], process.env);
+  const child = spawn(process.execPath, process.argv.slice(1), { stdio: "inherit" });
+  child.on("exit", (code) => process.exit(code ?? 0));
+  // Este proceso solo espera al nuevo (Node antiguo sin process.execve).
+  return undefined as never;
 }
 
 main().catch((err) => {
