@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
+import { smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
 
@@ -135,14 +136,21 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   const repoAppDir = join(cfg.repoPath, app.appDir);
   try {
     await installFrozen(app, wt, dir);
+    // Los .env locales (ignorados por git): los usan la prueba de arranque y el script del repo.
+    await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
+
+    // Prueba de arranque obligatoria: un OTA que cierra la app al arrancar no se puede arreglar con otro OTA (el móvil
+    // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback).
+    const smoke = await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir);
+    if (!smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
 
     let out: string;
     if (scriptArgs) {
-      // El script del repo (p. ej. xprem) lee sus secretos de los .env locales (ignorados por git) y recuerda la
-      // última publicación en .expo/ para su guarda de cambios nativos: se copian a la copia limpia y se devuelven.
-      await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
+      // El script del repo (p. ej. xprem) recuerda la última publicación en .expo/ para su guarda de cambios nativos:
+      // se copia a la copia limpia y se devuelve.
       copyLastPublish(repoAppDir, dir);
-      out = await exec([app.pm, ...scriptArgs.args], dir);
+      // El script del repo puede tener su propia prueba de arranque: ya está hecha (arriba) con este mismo commit.
+      out = await exec([app.pm, ...scriptArgs.args], dir, { env: { BACKCODE_SMOKE_DONE: "1" } });
       copyLastPublish(dir, repoAppDir);
     } else {
       // Siempre al 100 % y para todas las plataformas (sin despliegue gradual).
@@ -153,7 +161,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     for (const f of rollbackTo ? [] : await store.mergedNotDeployed(channel).catch(() => [])) {
       if (await isAncestor(cfg.repoPath, f.sha, commit)) await store.markDeployed(f.id, channel, commit).catch(() => undefined);
     }
-    return { ok: true, result: { url, sha: commit, log: out.slice(-1500) } };
+    return { ok: true, result: { url, sha: commit, log: `${smoke.detail}\n${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -254,6 +262,18 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
   } finally {
     await removeWorktree(cfg.repoPath, wt);
     rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+/** Variables `env` del perfil de build de eas.json del canal (las que lleva el bundle publicado). */
+function profileEnv(dir: string, channel: string): Record<string, string> {
+  try {
+    const eas = JSON.parse(readFileSync(join(dir, "eas.json"), "utf8")) as { build?: Record<string, { env?: Record<string, string>; channel?: string }> };
+    const profiles = eas.build ?? {};
+    const profile = profiles[channel] ?? Object.values(profiles).find((p) => p.channel === channel);
+    return profile?.env ?? {};
+  } catch {
+    return {};
   }
 }
 
