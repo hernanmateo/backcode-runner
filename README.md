@@ -9,7 +9,7 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 - [Claude Code](https://claude.com/claude-code) con tu sesión iniciada: ejecuta `claude` una vez y haz login
 - `git` con permiso de push al repositorio del proyecto
 - Para abrir PRs:
-  - **GitHub**: `gh auth login`
+  - **GitHub**: `gh auth login` (solo si tus repos están en GitHub)
   - **Bitbucket**: un API token (ver más abajo; `npm run connect` te lo pide)
 - Para publicar OTA (proyectos Expo): `npx eas-cli login` con una cuenta con acceso al proyecto de Expo y, si el repo publica con su
   propio script (p. ej. xprem), lo que ese script necesite en tu copia local (p. ej. `EOO_TOKEN` en el `.env`)
