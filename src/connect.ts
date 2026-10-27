@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +109,37 @@ function askHidden(question: string): Promise<string> {
   });
 }
 
+/** workspace/repo de Bitbucket del remoto del proyecto (o null si no es Bitbucket o no se puede leer). */
+function bitbucketRepo(repo: string, remote: string): string | null {
+  try {
+    const url = execFileSync("git", ["-C", repo, "remote", "get-url", remote], { encoding: "utf8" }).trim();
+    const m = /bitbucket\.org[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url);
+    return m ? `${m[1]}/${m[2]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Comprueba un API token de Bitbucket con la API (lectura): cuenta, acceso al repo y a sus PR. Devuelve el problema en
+ * castellano llano o null si está bien. Los permisos de escritura no se pueden comprobar sin escribir.
+ */
+async function bitbucketProblem(email: string, token: string, repo: string | null): Promise<string | null> {
+  const headers = { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`, Accept: "application/json" };
+  const get = (path: string) => fetch(`https://api.bitbucket.org/2.0${path}`, { headers }).then((r) => r.status, () => 0);
+  const user = await get("/user");
+  if (user === 0) return null; // sin red: no se puede comprobar ahora; el runner avisará si falla
+  if (user === 401) return "el email o el token no son correctos (¿es el email de Atlassian y has copiado el token entero?)";
+  if (user === 403) return "al token le falta el permiso read:user:bitbucket";
+  if (user >= 400) return `Bitbucket respondió ${user} al comprobar la cuenta`;
+  if (!repo) return null;
+  const r = await get(`/repositories/${repo}`);
+  if (r === 403 || r === 404) return `el token no tiene acceso a ${repo} (falta read:repository:bitbucket o tu cuenta no es miembro del repo)`;
+  const prs = await get(`/repositories/${repo}/pullrequests?pagelen=1`);
+  if (prs === 403) return "al token le falta el permiso read:pullrequest:bitbucket";
+  return null;
+}
+
 const projectId = values.get("BACKCODE_PROJECT_ID") ?? "";
 const repoPath = (values.get("BACKCODE_REPO_PATH") ?? "").replace(/^~(?=\/)/, homedir());
 if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
@@ -144,24 +175,46 @@ if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
   }
 }
 
-// Bitbucket: el API token no pasa por la app; se reutiliza o se pide aquí y se queda en este .env.
-if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket" && !values.get("BACKCODE_BITBUCKET_TOKEN")) {
-  let email = fromOtherProjects("BACKCODE_BITBUCKET_EMAIL");
-  let token = fromOtherProjects("BACKCODE_BITBUCKET_TOKEN");
-  if (email && token) console.log("  · Se reutiliza tu API token de Bitbucket de este ordenador.");
-  else if (process.stdin.isTTY) {
-    console.log("\nBitbucket necesita un API token (se guarda solo en este ordenador):");
-    console.log("  1. https://id.atlassian.com/manage-profile/security/api-tokens → «Create API token with scopes»");
-    console.log("  2. App: Bitbucket. Permisos: read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket,");
-    console.log("     read:pullrequest:bitbucket, write:pullrequest:bitbucket");
-    console.log("  3. Usa el email de esa cuenta de Atlassian (no tu usuario de Bitbucket).\n");
-    email = await ask("Email de tu cuenta Atlassian: ");
+// Bitbucket: el API token no pasa por la app; se reutiliza el de este ordenador o se pide aquí, y siempre se valida
+// contra la API de Bitbucket antes de guardarlo (así un error de copia o un permiso que falta se ve ahora, no en el
+// primer PR). Si cambia, se actualiza en todos tus proyectos de Bitbucket.
+if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket") {
+  const repo = bitbucketRepo(repoPath, values.get("BACKCODE_REMOTE") || "origin");
+  let email = values.get("BACKCODE_BITBUCKET_EMAIL") || fromOtherProjects("BACKCODE_BITBUCKET_EMAIL");
+  let token = values.get("BACKCODE_BITBUCKET_TOKEN") || fromOtherProjects("BACKCODE_BITBUCKET_TOKEN");
+  let problem = email && token ? await bitbucketProblem(email, token, repo) : "no hay ningún API token en este ordenador";
+  if (!problem) console.log("  · Se reutiliza tu API token de Bitbucket de este ordenador (comprobado).");
+  else if (email && token) console.warn(`\n⚠ Tu API token de Bitbucket guardado no sirve: ${problem}.`);
+  for (let attempt = 0; problem && attempt < 3 && process.stdin.isTTY; attempt++) {
+    if (attempt === 0) {
+      console.log("\nBitbucket necesita un API token (se guarda solo en este ordenador):");
+      console.log("  1. https://id.atlassian.com/manage-profile/security/api-tokens → «Create API token with scopes»");
+      console.log("  2. App: Bitbucket. Permisos: read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket,");
+      console.log("     read:pullrequest:bitbucket, write:pullrequest:bitbucket");
+      console.log("  3. Cópialo al crearlo: Atlassian solo lo muestra una vez.");
+      console.log("  4. Usa el email de esa cuenta de Atlassian (no tu usuario de Bitbucket).\n");
+    } else console.warn(`\n✗ ${problem}. Vuelve a intentarlo.\n`);
+    email = (await ask(`Email de tu cuenta Atlassian${email ? ` [${email}]` : ""}: `)) || email;
     token = await askHidden("API token (no se muestra al escribirlo ni al pegarlo): ");
+    problem = email && token ? await bitbucketProblem(email, token, repo) : "faltan el email o el token";
+    if (!problem) console.log("  ✓ Token de Bitbucket comprobado.");
   }
-  if (email && token) {
+  if (!problem && email && token) {
     values.set("BACKCODE_BITBUCKET_EMAIL", email);
     values.set("BACKCODE_BITBUCKET_TOKEN", token);
-  } else console.warn("  · Sin API token de Bitbucket: se subirá la rama sin abrir PR.");
+    // El mismo token sirve para todos tus proyectos de Bitbucket de este ordenador.
+    for (const c of otherConfigs().filter((x) => x.file !== `.env.${projectId}` && valueIn(x.text, "BACKCODE_PULL_REQUEST") === "bitbucket" && valueIn(x.text, "BACKCODE_BITBUCKET_TOKEN") !== token)) {
+      let text = c.text;
+      for (const [k, v] of [["BACKCODE_BITBUCKET_EMAIL", email], ["BACKCODE_BITBUCKET_TOKEN", token]] as const) {
+        text = new RegExp(`^${k}=.*$`, "m").test(text) ? text.replace(new RegExp(`^${k}=.*$`, "m"), `${k}=${v}`) : `${text.trimEnd()}\n${k}=${v}\n`;
+      }
+      writeFileSync(join(KIT_DIR, c.file), text, { mode: 0o600 });
+      console.log(`  · Token de Bitbucket actualizado también en ${c.file} (reinicia ese runner para usarlo).`);
+    }
+  } else {
+    values.delete("BACKCODE_BITBUCKET_TOKEN");
+    console.warn(`  · Sin un API token de Bitbucket válido (${problem}): se subirá la rama sin abrir PR. Vuelve a lanzar npm run connect para añadirlo.`);
+  }
 }
 if (!existsSync(join(repoPath, ".git"))) {
   console.error(`\n✗ ${repoPath} no es un repositorio git. Corrige la ruta en la app (paso "Tu repositorio") y vuelve a copiar.`);

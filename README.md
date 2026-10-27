@@ -15,8 +15,8 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
   propio script (p. ej. xprem), lo que ese script necesite en tu copia local (p. ej. `EOO_TOKEN` en el `.env`)
 
 ## Conectar un proyecto
-1. En la app: **Proyecto → Conectar paso a paso**. Indica la carpeta del repo en tu ordenador, la rama base y dónde abrir los PR
-   (GitHub, Bitbucket o solo subir la rama).
+1. En la app: **Proyecto → Conectar paso a paso**. Primero el proyecto: la carpeta del repo en tu ordenador, la rama base y dónde
+   abrir los PR (GitHub, Bitbucket o solo subir la rama); eso decide qué hace falta preparar en el ordenador.
 2. En la carpeta del runner lanza `npm run connect`: se queda esperando la configuración.
    ```bash
    git clone https://github.com/hernanmateo/backcode-runner.git && cd backcode-runner   # solo la primera vez en este ordenador
@@ -57,7 +57,9 @@ Al arrancar, el runner comprueba el repo real y se adapta (y te lo avisa en la t
 4. En la guía de la app elige **"Abrir PR en Bitbucket"** y, al hacer `npm run connect`, introduce el **email de esa cuenta de
    Atlassian** (no el usuario de Bitbucket) y el token (no se muestra al escribirlo).
 
-El token se guarda solo en tu `.env.<proyecto>` y se reutiliza para tus otros proyectos de Bitbucket. Lo usa el runner para abrir
+`npm run connect` **comprueba el token** contra la API de Bitbucket antes de guardarlo y, si falla, te dice por qué (email o
+token incorrectos, falta un permiso o no tienes acceso al repo) y te deja reintentarlo. Si el guardado deja de valer (caduca o lo
+cambias), te pide otro y lo actualiza en todos tus proyectos de Bitbucket. El token se guarda solo en tu `.env.<proyecto>`. Lo usa el runner para abrir
 y mergear PRs; Claude nunca tiene acceso a él.
 
 ## Qué hace con cada tarea
