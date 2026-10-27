@@ -56,6 +56,15 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   if (!host) return { ok: false, result: { error: "Este proyecto no tiene PRs (solo se sube la rama): mergea desde tu repositorio" } };
   const prUrl = await store.prUrlOf(featureId);
   if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: "La tarea no tiene PR abierto" } };
+  // Antes, el estado real del PR: puede haberse mergeado o cerrado a mano en GitHub/Bitbucket.
+  const pr = await host.prState(prUrl).catch(() => null);
+  if (pr?.state === "merged") {
+    await store.markMerged(featureId, pr.sha);
+    return { ok: true, result: { url: prUrl, sha: pr.sha } };
+  }
+  if (pr?.state === "closed") {
+    return { ok: false, result: { error: `El PR está cerrado sin mergear en ${host.kind === "github" ? "GitHub" : "Bitbucket"}: reábrelo allí para mergearlo, o descarta esta tarea si ya no hace falta (p. ej. si otro PR lo sustituye).`, url: prUrl } };
+  }
   const blocked = requireGreen(await host.prChecks(prUrl), "PR");
   if (blocked) return { ok: false, result: blocked };
   const { sha } = await host.merge(prUrl);
