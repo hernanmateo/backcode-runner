@@ -106,8 +106,9 @@ no están en el remoto), no toca nada y lo avisa en la terminal para que hagas `
 ### Cómo publica el OTA cada proyecto
 El runner lo detecta al arrancar, leyendo la rama base:
 1. **Script propio**: si el `package.json` de la app tiene `ota:publish` (p. ej. un servidor **xprem** propio), ejecuta
-   `<pnpm|yarn|npm> run ota:publish <rama> --yes -m "<mensaje>"` en una copia limpia de la rama base. La rama es `preview` o
-   `prod` (en xprem, el canal `production` del binario apunta a la rama `prod`). Se copian a esa copia los `.env`/`.env.local`
+   `<pnpm|yarn|npm> run ota:publish <rama> --yes -m "<mensaje>"` en una copia limpia de la rama base. El runner le pasa `prod` o
+   `preview` y el script de cada repo los traduce a sus ramas reales de xprem (p. ej. Castellers usa `prod`/`preview` y Backcode
+   `main`/`dev`). Se copian a esa copia los `.env`/`.env.local`
    locales ignorados por git (el script saca de ahí su token) y el registro de la última publicación (`.expo/eoas-last-publish-*`)
    para que su guarda de cambios nativos funcione; la copia se borra al acabar. Nunca se pasa `--allow-native` ni porcentajes:
    si el script se niega, la app muestra su motivo.
