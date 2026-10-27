@@ -71,6 +71,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       await pushBranch(wt.path, cfg.remote, wt.branch).catch(() => undefined);
       await store.event(id, "start", `Rama actualizada con ${cfg.remote}/${cfg.baseBranch} (sin conflictos)`);
       await store.setConflicts(id, []).catch(() => undefined);
+    } else if (sync?.status === "uptodate") {
+      // Ya contiene la base: si quedaba una marca de conflictos de antes, sobra.
+      if (feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
     } else if (sync?.status === "conflicts") {
       conflicts = sync.files;
       await store.event(id, "start", `Conflictos con ${cfg.remote}/${cfg.baseBranch} en: ${conflicts.join(", ")}`);
@@ -106,6 +109,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           const footer = `\n\n---\nBackcode feature \`${id}\` · ${files.length} fichero(s) · rama \`${wt.branch}\`\n\n🤖 Generado por Backcode runner con [Claude Code](https://claude.com/claude-code)`;
           try {
             prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: cfg.baseBranch, branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
+            // Si la rama tenía conflictos con la base, ya están resueltos y subidos: se quita la marca (y el botón de
+            // mergear vuelve a aparecer) sin esperar a la comprobación periódica.
+            if (conflicts.length || feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
           } catch (err) {
             await store.event(id, "error", `open_pull_request: ${String(err)}`);
             return fail(`No se pudo publicar la rama o abrir el PR: ${String(err).slice(0, 500)}`);

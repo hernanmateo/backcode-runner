@@ -45,6 +45,8 @@ export interface Feature {
   sessionId?: string;
   /** Modelo elegido en la app ("auto" = el que sugirió el refinador) y la sugerencia. */
   model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
+  /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
+  conflicts?: string[];
   suggestedModel?: "haiku" | "sonnet" | "opus" | "fable";
   result?: FeatureResult;
 }
