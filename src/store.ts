@@ -49,6 +49,10 @@ export interface Feature {
   /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
   conflicts?: string[];
   suggestedModel?: "haiku" | "sonnet" | "opus" | "fable";
+  /** Modo plan: antes de tocar código, Claude propone un plan que quien la ejecuta refina en el hilo y aprueba. */
+  planFirst?: boolean;
+  /** Plan aprobado (desde ahí, la sesión implementa). */
+  planApproved?: { by: string };
   result?: FeatureResult;
 }
 
@@ -62,7 +66,7 @@ export interface Attachment {
 /** Mensaje del hilo de la tarea. */
 export interface ThreadMessage {
   author: "user" | "claude";
-  kind: "message" | "question" | "summary";
+  kind: "message" | "question" | "summary" | "plan";
   text: string;
   at?: Timestamp;
 }
@@ -85,6 +89,8 @@ export interface FeatureResult {
   /** Pasos a mano tras mergear (desplegar reglas, migraciones…): la app los muestra con botón de copiar y, si el repo
    * declara un destino backcode:deploy:<deployTarget>, con botón para ejecutarlo con el runner de un admin. */
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];
+  /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
+  planReady?: boolean;
   error?: string;
 }
 
@@ -255,9 +261,9 @@ export class Store {
     return null;
   }
 
-  /** Añade un mensaje de Claude al hilo de la tarea. */
-  async postMessage(id: string, kind: "question" | "summary", text: string): Promise<void> {
-    await addDoc(collection(this.feature(id), "messages"), { author: "claude", kind, text: text.slice(0, 4000), at: serverTimestamp() });
+  /** Añade un mensaje de Claude al hilo de la tarea (un plan puede ser bastante más largo que el resto). */
+  async postMessage(id: string, kind: "question" | "summary" | "plan", text: string): Promise<void> {
+    await addDoc(collection(this.feature(id), "messages"), { author: "claude", kind, text: text.slice(0, kind === "plan" ? 20_000 : 4000), at: serverTimestamp() });
   }
 
   /** Hilo completo de la tarea, en orden. */
