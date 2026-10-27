@@ -15,7 +15,7 @@ import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
-import { buildFollowUpPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildApprovedPlanPrompt, buildFollowUpPrompt, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
 
 const cfg = (() => {
@@ -63,6 +63,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const project = await store.projectInfo();
   // Con sesión previa, es una conversación: se continúa la misma sesión en el mismo worktree y rama.
   const resuming = !!feature.sessionId;
+  // Modo plan: hasta que quien la ejecuta aprueba el plan, Claude solo lee el repo y propone (o rehace) el plan.
+  const planning = !!feature.planFirst && !feature.planApproved;
   const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
   await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
   // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
@@ -94,10 +96,25 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
   const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
   let question: string | undefined; // pregunta de Claude (ask_user)
+  let planned = false; // modo plan: ya propuso el plan en esta vuelta
   const prServer = createSdkMcpServer({
     name: "backcode",
     version: "1.0.0",
     tools: [
+      tool(
+        "propose_plan",
+        "Plan mode only: send your implementation plan (Markdown) to the person who accepted this task. They review it in the app, ask for changes or approve it; once approved, this same session continues and implements it. Call it once per turn with the complete plan, then end your turn.",
+        { plan: z.string().min(50).max(20_000) },
+        async ({ plan }) => {
+          const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+          if (!planning) return fail(t("plan.notPlanning"));
+          if (planned) return fail(t("plan.already"));
+          planned = true;
+          await store.postMessage(id, "plan", plan);
+          await store.event(id, "plan", plan.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 300) ?? "");
+          return { content: [{ type: "text" as const, text: t("plan.sent") }] };
+        },
+      ),
       tool(
         "open_pull_request",
         `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${deployNames.length ? ` This repo can run these deploy targets from the app (set deployTarget to the matching one instead of, or as well as, the command): ${deployNames.join(", ")}.` : ""}`,
@@ -168,9 +185,22 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let result: FeatureResult = { branch: wt.branch, prUrl: previousPr };
   let sessionId = feature.sessionId;
   try {
-    const prompt = resuming
-      ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr, { base: cfg.baseBranch, files: conflicts })
-      : buildUserPrompt(id, feature, attachments);
+    const thread = resuming ? await store.thread(id) : [];
+    // Lo que escribió quien la ejecuta desde el último mensaje de Claude.
+    const replies = thread.slice(thread.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user");
+    // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
+    const justApproved = !!feature.planApproved && !previousPr && thread.filter((m) => m.author === "claude").pop()?.kind === "plan";
+    const prompt = planning
+      ? resuming
+        ? buildPlanFollowUpPrompt(replies)
+        : buildPlanPrompt(id, feature, attachments)
+      : justApproved
+        ? buildApprovedPlanPrompt(replies)
+        : resuming
+          ? buildFollowUpPrompt(replies, !!previousPr, { base: cfg.baseBranch, files: conflicts })
+          : buildUserPrompt(id, feature, attachments);
+    if (planning) await store.event(id, "start", t(resuming ? "run.replanning" : "run.planning"));
+    else if (justApproved) await store.event(id, "start", t("run.planApproved"));
     const model = modelFor(feature, cfg.model);
     if (model) await store.event(id, "say", t("run.model", { model }));
     const messages = query({
@@ -190,7 +220,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         settingSources: [],
         // dontAsk: todo lo que no esté en allowedTools se deniega sin preguntar.
         permissionMode: "dontAsk",
-        allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user"],
+        // Planificando solo puede leer el repo y proponer el plan (o preguntar); sin editar ni ejecutar comandos.
+        allowedTools: planning
+          ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user"]
+          : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user"],
         disallowedTools: ["WebFetch", "WebSearch", "Agent", "Task"],
         hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected)] }] },
         sandbox: {
@@ -250,9 +283,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     // El worktree se conserva: la conversación puede continuar (se limpia tras días sin uso).
   }
 
-  // El resumen de cada vuelta queda en el hilo; si preguntó, la pregunta ya está publicada.
-  if (!question && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
+  // El resumen de cada vuelta queda en el hilo; si preguntó o propuso un plan, eso ya está publicado.
+  if (!question && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
   if (question && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
+  // Plan propuesto: espera a que lo aprueben o pidan cambios (como una pregunta).
+  if (planned && !result.error) return { status: "waiting", result: { ...result, planReady: true, error: undefined }, sessionId };
+  if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan") }, sessionId };
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
