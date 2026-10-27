@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
@@ -204,11 +204,21 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
   try {
     await installFrozen(app, wt, dir);
     // Sin esto, una app que no lea las variables saldría con la versión de app.json sin que nadie se entere.
-    const resolved = parseJson(await exec(["npx", "expo", "config", "--json", "--type", "public"], dir, { env })) as { version?: unknown; runtimeVersion?: unknown } | null;
+    const resolved = parseJson(await exec(["npx", "expo", "config", "--json", "--type", "public"], dir, { env })) as {
+      version?: unknown;
+      runtimeVersion?: unknown;
+      ios?: { googleServicesFile?: unknown };
+      android?: { googleServicesFile?: unknown };
+    } | null;
     if (resolved?.version !== version || resolved?.runtimeVersion !== runtimeVersion) {
       const got = `version=${JSON.stringify(resolved?.version)}, runtimeVersion=${JSON.stringify(resolved?.runtimeVersion)}`;
       return { ok: false, result: { sha: commit, error: t("build.versionNotApplied", { got }) } };
     }
+    // Los ficheros de Firebase (GoogleService-Info.plist / google-services.json) suelen estar ignorados por git: sin
+    // copiarlos, el prebuild de la copia limpia falla con ENOENT. Solo estos: un .env local de desarrollo no debe
+    // acabar dentro del binario de la tienda.
+    const services = [resolved?.ios?.googleServicesFile, resolved?.android?.googleServicesFile].filter((f): f is string => typeof f === "string");
+    await copyLocalFiles(cfg.repoPath, wt, services.map((f) => join(app.appDir, f)));
     let log = "";
     for (const platform of platforms) {
       const artifact = join(wt, `backcode-build.${platform === "ios" ? "ipa" : "aab"}`);
@@ -308,6 +318,7 @@ async function copyLocalFiles(repo: string, wt: string, paths: string[]): Promis
     if (!existsSync(from) || existsSync(join(wt, p))) continue;
     const ignored = await new Promise<boolean>((resolve) => spawn("git", ["check-ignore", "-q", p], { cwd: repo }).on("close", (code) => resolve(code === 0)));
     if (!ignored) continue;
+    mkdirSync(dirname(join(wt, p)), { recursive: true });
     copyFileSync(from, join(wt, p));
     chmodSync(join(wt, p), 0o600);
   }
