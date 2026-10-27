@@ -339,6 +339,7 @@ async function main(): Promise<void> {
   const expoApp = await findExpoApp(cfg.repoPath, await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch)).catch(() => null);
   store.capabilities = {
     pr: prHost?.kind ?? null,
+    expo: !!expoApp,
     ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null,
     // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
