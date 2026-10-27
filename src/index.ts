@@ -124,12 +124,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const prompt = resuming
       ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr)
       : buildUserPrompt(id, feature, attachments);
+    const model = modelFor(feature, cfg.model);
+    if (model) await store.event(id, "say", `Modelo: ${model}`);
     const messages = query({
       prompt,
       options: {
         resume: feature.sessionId,
         cwd: wt.path,
-        model: cfg.model,
+        model,
         abortController: abort,
         env: agentEnv(),
         systemPrompt: {
@@ -175,6 +177,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         const models = Object.values(msg.modelUsage ?? {});
         result = {
           ...result,
+          model,
+          models: Object.fromEntries(
+            Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
+          ),
           costUsd: msg.total_cost_usd,
           turns: msg.num_turns,
           tokens: {
@@ -278,6 +284,15 @@ ${green("✓")} ${bold(`Conectado a Backcode · proyecto «${projectName}»`)}
 
   ${dim(`Repo: ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · Ctrl+C para parar (las tareas en curso vuelven a la cola)`)}
 `);
+}
+
+/**
+ * Modelo de una tarea: el elegido en la app; en "auto", el que sugirió el refinador según la complejidad; si no hay
+ * ninguno, BACKCODE_MODEL o el de la configuración de Claude Code.
+ */
+function modelFor(feature: Feature, fallback?: string): string | undefined {
+  if (feature.model && feature.model !== "auto") return feature.model;
+  return feature.suggestedModel ?? fallback;
 }
 
 async function main(): Promise<void> {

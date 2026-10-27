@@ -69,6 +69,13 @@ y mergear PRs; Claude nunca tiene acceso a él.
 5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó) o `failed` (con el motivo). La app muestra la actividad
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
 
+## Modelo de cada tarea
+Al refinar una idea, la IA sugiere un modelo según la complejidad: **Haiku** (cambios triviales), **Sonnet** (la mayoría) u
+**Opus** (cambios grandes o delicados), con el motivo. En la tarea se elige **Auto** (usa el sugerido) o uno fijo; cualquiera
+puede cambiarlo antes de aceptarla y, después, quien la aceptó mientras no se está ejecutando. Si la tarea no trae modelo, se
+usa `BACKCODE_MODEL` o, si está vacío, el de tu Claude Code. La ficha de la tarea muestra el coste y los tokens **por modelo**
+realmente usado (Claude Code puede usar otros para subtareas).
+
 ## Conversación con Claude (hilo por tarea)
 - Si Claude necesita una aclaración, la tarea pasa a **Necesita respuesta** y la pregunta aparece en el hilo de la app.
 - Quien la aceptó responde (o pide más cambios cuando ya hay PR) desde la app: el runner **retoma la misma sesión** en la misma

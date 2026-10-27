@@ -42,6 +42,9 @@ export interface Feature {
   attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
   sessionId?: string;
+  /** Modelo elegido en la app ("auto" = el que sugirió el refinador) y la sugerencia. */
+  model?: "auto" | "haiku" | "sonnet" | "opus";
+  suggestedModel?: "haiku" | "sonnet" | "opus";
   result?: FeatureResult;
 }
 
@@ -71,6 +74,10 @@ export interface FeatureResult {
   turns?: number;
   /** Tokens de todos los modelos usados en la tarea (incluye subagentes). */
   tokens?: { input: number; output: number; cache: number };
+  /** Modelo pedido para la ejecución (vacío = el de la configuración de Claude Code). */
+  model?: string;
+  /** Coste y tokens por modelo realmente usado (Claude Code puede usar varios, p. ej. Haiku para subtareas). */
+  models?: Record<string, { costUsd: number; tokens: number }>;
   error?: string;
 }
 
