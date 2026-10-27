@@ -61,6 +61,12 @@ y espera a quedar libre (sin tarea ni acción en marcha; no interrumpe nada ni c
 la versión nueva en el mismo terminal. Con `npm run all` lo hace una sola vez para todos los proyectos. Si tu copia tiene
 cambios sin guardar o commits locales, o la versión nueva no compila, avisa y sigue con la actual (entonces, `git pull` a mano).
 
+**Si el ordenador se apaga o el runner se cae a mitad:** la sesión de Claude se guarda en cuanto empieza y el runner renueva
+un «sigo vivo» en la tarea (y en cada acción: merge, OTA, build…). Si deja de renovarlo, la app marca la tarea **Detenida** y
+el asignado o un admin puede **reintentarla** (vuelve a su cola; al volver, el runner la continúa donde la dejó), **liberarla**
+o **descartarla**. Una acción a medias deja de bloquear publicar a todo el proyecto y sale como *Interrumpida*; al volver,
+el runner la marca así (si era un OTA o un merge, comprueba si llegó a hacerse antes de repetirlo).
+
 **Publicar OTA exige probarlo antes** (botón Publicar de la app, también los rollbacks): el runner compila la app en Release
 con el JS incrustado, en la copia limpia que va a publicar, la abre en un simulador propio («Backcode OTA test», no toca los
 tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica. Un OTA que cierra la app al arrancar no

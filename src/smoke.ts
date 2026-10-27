@@ -48,8 +48,13 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
     return { ok: false, detail: t("smoke.noSimulator", { error: (err as Error).message.slice(0, 300) }) };
   }
 
-  // Compila en Release, instala en el simulador de pruebas y abre la app (sin Metro: JS incrustado).
-  const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler"], appDir, { ...env, CI: "1" }, BUILD_MS);
+  // Compila en Release, instala en el simulador de pruebas y abre la app (sin Metro: JS incrustado). `run:ios` toca
+  // ficheros del repo al generar el proyecto nativo (p. ej. los scripts ios/android de package.json): se deshacen al
+  // acabar, para que lo que se publica sea exactamente el commit (y el script del repo no lo vea «sucio»).
+  const touchedBefore = await changedTracked(appDir);
+  const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler"], appDir, { ...env, CI: "1" }, BUILD_MS).finally(() =>
+    restoreTracked(appDir, touchedBefore),
+  );
   if (!build.ok) return { ok: false, detail: t("smoke.build", { log: tail(build.out) }) };
 
   // Por si run:ios no llegó a abrirla.
@@ -61,6 +66,20 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
   await run("xcrun", ["simctl", "terminate", udid, bundleId]).catch(() => undefined);
   if (!alive) return { ok: false, detail: t("smoke.crashed"), screenshot };
   return { ok: true, detail: t("smoke.ok", { seconds: ALIVE_MS / 1000 }), screenshot };
+}
+
+/** Ficheros versionados con cambios en la copia (los que ya lo estaban antes no se tocan). */
+async function changedTracked(dir: string): Promise<Set<string>> {
+  const out = await run("git", ["status", "--porcelain", "--untracked-files=no"], dir).catch(() => "");
+  return new Set(out.split("\n").filter(Boolean).map((l) => l.slice(3)));
+}
+
+/** Deshace lo que la build haya cambiado en ficheros versionados del repo. */
+async function restoreTracked(dir: string, before: Set<string>): Promise<void> {
+  const root = (await run("git", ["rev-parse", "--show-toplevel"], dir).catch(() => "")).trim();
+  if (!root) return;
+  const changed = [...(await changedTracked(dir))].filter((f) => !before.has(f));
+  if (changed.length) await run("git", ["checkout", "--", ...changed], root).catch(() => undefined);
 }
 
 /** El simulador de pruebas: se crea la primera vez (último iOS, un iPhone) y se deja encendido para las siguientes. */

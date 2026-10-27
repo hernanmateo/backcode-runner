@@ -87,6 +87,8 @@ export interface FeatureResult {
 
 const LOCK_LEASE_MS = 60_000;
 export const FEATURE_LEASE_MS = 5 * 60_000;
+/** «Sigo vivo» de las acciones (merge, OTA, builds…): se renueva cada minuto mientras dura. */
+export const ACTION_LEASE_MS = 3 * 60_000;
 
 /** Debe coincidir con promptHash() en functions/src/index.ts. Los adjuntos forman parte de la huella. */
 export function promptHash(title: string, refinedPrompt: string, acceptanceCriteria: string[], attachments: string[] = []): string {
@@ -273,9 +275,28 @@ export class Store {
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || d.get("requestedBy") !== this.uid) return null;
-      tx.update(ref, { status: "running", updatedAt: serverTimestamp() });
+      tx.update(ref, { status: "running", updatedAt: serverTimestamp(), leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
       return d.data();
     });
+  }
+
+  /** «Sigo vivo» de una acción en marcha: si el runner se cae, la app deja de tratarla como en curso al caducar. */
+  async extendActionLease(id: string): Promise<void> {
+    await updateDoc(doc(this.project(), "actions", id), { leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
+  }
+
+  /** Al arrancar: las acciones propias que se quedaron «en marcha» (el runner se cayó) se marcan como interrumpidas. */
+  async recoverActions(): Promise<void> {
+    const snap = await getDocs(query(collection(this.project(), "actions"), where("requestedBy", "==", this.uid), where("status", "==", "running")));
+    for (const d of snap.docs) {
+      await updateDoc(d.ref, { status: "failed", result: { error: t("store.actionInterrupted") }, updatedAt: serverTimestamp() }).catch(() => undefined);
+      console.log(`[recover] action ${d.id} -> failed`);
+    }
+  }
+
+  /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */
+  async setSession(id: string, sessionId: string): Promise<void> {
+    await updateDoc(this.feature(id), { sessionId }).catch(() => undefined);
   }
 
   async finishAction(id: string, ok: boolean, result: Record<string, unknown>): Promise<void> {
