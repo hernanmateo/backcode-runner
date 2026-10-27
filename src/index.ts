@@ -165,7 +165,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text.trim()) {
             // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
-            await store.event(id, "say", block.text.trim().replace(/\s+/g, " ").slice(0, 400));
+            await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
           } else if (block.type === "tool_use") {
             await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
           }
@@ -214,7 +214,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 /** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */
 function describeTool(name: string, input: Record<string, unknown>, root: string): string {
   const rel = (p: unknown) => String(p ?? "").replace(`${root}/`, "").replace(root, ".");
-  const short = (s: unknown, n = 140) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+  // Hasta ~900 caracteres (la app lo muestra plegado y se expande al tocarlo); se conservan los saltos de línea.
+  const short = (s: unknown, n = 900) => String(s ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, n);
   switch (name) {
     case "Read":
     case "Write":
@@ -223,7 +224,7 @@ function describeTool(name: string, input: Record<string, unknown>, root: string
     case "NotebookEdit":
       return `${name}: ${rel(input.file_path ?? input.notebook_path)}`;
     case "Bash":
-      return `Bash: ${short(input.description) || short(input.command)}${input.description && input.command ? ` — ${short(input.command, 80)}` : ""}`;
+      return `Bash: ${input.description ? `${short(input.description, 200)} — ${short(input.command, 700)}` : short(input.command)}`;
     case "Grep":
       return `Grep: ${short(input.pattern, 80)}${input.path ? ` en ${rel(input.path)}` : ""}${input.glob ? ` (${short(input.glob, 40)})` : ""}`;
     case "Glob":
