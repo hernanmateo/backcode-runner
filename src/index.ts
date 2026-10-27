@@ -397,7 +397,10 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error("[backcode] error fatal:", err.message ?? err);
-  if (/runner key/i.test(String(err.message ?? err))) {
+  if (/runner key/i.test(String(err.message ?? err)) && cfg.emulators) {
+    console.error("  → Este runner apunta a los EMULADORES locales y no conocen tu llave: probablemente se reiniciaron sin sus datos");
+    console.error("    (proyectos, tareas y llaves). Vuelve a crear el proyecto en la app de desarrollo y conéctalo, o usa producción.");
+  } else if (/runner key/i.test(String(err.message ?? err))) {
     console.error("  → Tu llave ya no vale (al generar una nueva se revoca la anterior). En la app: Proyecto → Conectar → Configurar de nuevo →");
     console.error("    Generar llave → Copiar configuración, y aquí `npm run connect`: la nueva se copia a todos tus proyectos.");
   }
