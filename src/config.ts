@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { setLangOverride, t } from "./i18n.js";
 
 /** Carpeta del kit (donde están .env e instructions/). Claude nunca puede leerla. */
 export const KIT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,8 +20,8 @@ const Env = z.object({
   BACKCODE_FIREBASE_STORAGE_BUCKET: z.string().optional(),
   BACKCODE_FUNCTIONS_REGION: z.string().default("us-central1"),
   BACKCODE_USE_EMULATORS: z.enum(["0", "1"]).default("0"),
-  BACKCODE_RUNNER_KEY: z.string().regex(/^[A-Za-z0-9]{1,128}\.[A-Za-z0-9_-]{43}$/, "Runner key no válida: cópiala de la app (Perfil → Runner key)"),
-  BACKCODE_PROJECT_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "Id de proyecto no válido (lo ves en la app, dentro del grupo)"),
+  BACKCODE_RUNNER_KEY: z.string().regex(/^[A-Za-z0-9]{1,128}\.[A-Za-z0-9_-]{43}$/, t("cfg.badKey")),
+  BACKCODE_PROJECT_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, t("cfg.badProject")),
   BACKCODE_REPO_PATH: z.string().min(1),
   BACKCODE_BASE_BRANCH: z.string().regex(/^[A-Za-z0-9._\/-]+$/).default("main"),
   BACKCODE_REMOTE: z.string().regex(/^[A-Za-z0-9._-]+$/).default("origin"),
@@ -40,6 +41,8 @@ const Env = z.object({
   BACKCODE_KNOWLEDGE_MODEL: z.string().default("haiku"),
   BACKCODE_ALLOWED_DOMAINS: z.string().default("registry.npmjs.org"),
   BACKCODE_PROTECTED_PATHS: z.string().default(""),
+  // Idioma del runner (por defecto, el de tu perfil en la app).
+  BACKCODE_LANG: z.enum(["es", "en", "ca"]).optional(),
 });
 
 /** Variables que admite el .env (las únicas que acepta `npm run connect`). */
@@ -76,18 +79,19 @@ export function loadConfig(): RunnerConfig {
   const argIdx = process.argv.indexOf("--env");
   const envFile = resolve(KIT_DIR, argIdx > 0 ? process.argv[argIdx + 1] : process.env.BACKCODE_ENV_FILE ?? ".env");
   if (!existsSync(envFile)) {
-    throw new Error(`No existe ${envFile}. Copia .env.example a .env y rellena tus datos.`);
+    throw new Error(t("cfg.noEnv", { file: envFile }));
   }
   // El .env contiene tu runner key: no debe ser legible por otros usuarios del sistema.
   if ((statSync(envFile).mode & 0o077) !== 0) {
-    throw new Error(`${envFile} es legible por otros usuarios. Ejecuta: chmod 600 ${envFile}`);
+    throw new Error(t("cfg.perms", { file: envFile }));
   }
   process.loadEnvFile(envFile);
   // Variables vacías en el .env = usar el valor por defecto.
+  setLangOverride(process.env.BACKCODE_LANG);
   const parsed = Env.safeParse(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== "")));
   if (!parsed.success) {
-    const problems = parsed.error.issues.map((i) => `  · ${i.path.join(".")}: ${i.message === "Invalid input: expected string, received undefined" ? "falta" : i.message}`);
-    throw new Error(`Revisa ${envFile}:\n${problems.join("\n")}`);
+    const problems = parsed.error.issues.map((i) => `  · ${i.path.join(".")}: ${i.message === "Invalid input: expected string, received undefined" ? t("cfg.missing") : i.message}`);
+    throw new Error(`${t("cfg.review", { file: envFile })}\n${problems.join("\n")}`);
   }
   const env = parsed.data;
 

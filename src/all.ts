@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { KIT_DIR } from "./config.js";
+import { t } from "./i18n.js";
 
 // `npm run all`: un runner por cada proyecto configurado (.env.<proyecto> creados con `npm run connect`),
 // todos a la vez. Cada línea de log lleva delante el proyecto. Ctrl+C los para a todos limpiamente.
@@ -10,11 +11,11 @@ import { KIT_DIR } from "./config.js";
 const COLORS = [36, 35, 33, 32, 34, 31];
 const files = readdirSync(KIT_DIR).filter((f) => /^\.env\.[A-Za-z0-9_-]+$/.test(f) && f !== ".env.example");
 if (files.length === 0) {
-  console.error("No hay proyectos configurados. Conecta uno con `npm run connect` (app → Proyecto → Conectar mi Claude Code).");
+  console.error(t("all.none"));
   process.exit(1);
 }
 
-console.log(`Arrancando ${files.length} runner(s): ${files.map((f) => f.slice(5)).join(", ")}\n`);
+console.log(`${t("all.starting", { n: files.length, list: files.map((f) => f.slice(5)).join(", ") })}\n`);
 let alive = files.length;
 for (const [i, file] of files.entries()) {
   const projectId = /BACKCODE_PROJECT_ID=(.+)/.exec(readFileSync(join(KIT_DIR, file), "utf8"))?.[1]?.trim() ?? file.slice(5);
@@ -24,7 +25,7 @@ for (const [i, file] of files.entries()) {
     createInterface({ input: stream }).on("line", (line) => console.log(`${tag} ${line}`));
   }
   child.on("exit", (code) => {
-    console.log(`${tag} terminado (${code ?? 0})`);
+    console.log(`${tag} ${t("all.exited", { code: code ?? 0 })}`);
     if (--alive === 0) process.exit(0);
   });
 }

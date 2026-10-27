@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, type ExpoApp, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
+import { t } from "./i18n.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
@@ -44,7 +45,7 @@ const RUNTIME_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,39}$/;
 /** Solo se continúa con todo en verde (o sin checks configurados). */
 function requireGreen(checks: Checks, what: string): ActionResult | null {
   if (checks.state === "green" || checks.state === "none") return null;
-  return { error: `${what}: los checks no están en verde (${checks.state === "pending" ? "en curso" : "fallan"})`, checks: checks.pending };
+  return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
@@ -56,20 +57,20 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
 
 /** Abre el PR de una tarea cuya rama ya está subida (p. ej. hecha en modo "solo rama"), sin ejecutar a Claude. */
 async function openPr(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
-  if (!host) return { ok: false, result: { error: "Tu runner no tiene PRs configurados (GitHub o Bitbucket con token): configúralo en Conectar" } };
+  if (!host) return { ok: false, result: { error: t("act.noHostOpen") } };
   const f = await store.featureInfo(featureId);
   if (f.prUrl?.startsWith("https://")) return { ok: true, result: { url: f.prUrl } };
-  if (!f.branch) return { ok: false, result: { error: "La tarea no tiene rama" } };
-  const body = `${f.summary || f.refinedPrompt}\n\n---\nBackcode feature \`${featureId}\` · rama \`${f.branch}\`\n\n🤖 Generado por Backcode runner con [Claude Code](https://claude.com/claude-code)`;
+  if (!f.branch) return { ok: false, result: { error: t("act.noBranch") } };
+  const body = `${f.summary || f.refinedPrompt}\n\n---\n${t("pr.footerBranch", { id: featureId, branch: f.branch })}\n\n${t("pr.generated")}`;
   const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: f.branch, base: cfg.baseBranch, title: f.title, body });
   await store.setPrUrl(featureId, url);
   return { ok: true, result: { url } };
 }
 
 async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
-  if (!host) return { ok: false, result: { error: "Este proyecto no tiene PRs (solo se sube la rama): mergea desde tu repositorio" } };
+  if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
   const prUrl = await store.prUrlOf(featureId);
-  if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: "La tarea no tiene PR abierto" } };
+  if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: t("act.noPr") } };
   // Antes, el estado real del PR: puede haberse mergeado o cerrado a mano en GitHub/Bitbucket.
   const pr = await host.prState(prUrl).catch(() => null);
   if (pr?.state === "merged") {
@@ -77,7 +78,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
     return { ok: true, result: { url: prUrl, sha: pr.sha } };
   }
   if (pr?.state === "closed") {
-    return { ok: false, result: { error: `El PR está cerrado sin mergear en ${host.kind === "github" ? "GitHub" : "Bitbucket"}: reábrelo allí para mergearlo, o descarta esta tarea si ya no hace falta (p. ej. si otro PR lo sustituye).`, url: prUrl } };
+    return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl } };
   }
   const blocked = requireGreen(await host.prChecks(prUrl), "PR");
   if (blocked) return { ok: false, result: blocked };
@@ -99,13 +100,13 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
   if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
-    return { ok: false, result: { error: `El commit ${rollbackTo.slice(0, 7)} no está en ${cfg.remote}/${cfg.baseBranch}: no se puede volver a él` } };
+    return { ok: false, result: { error: t("act.notInBase", { sha: rollbackTo.slice(0, 7), base: `${cfg.remote}/${cfg.baseBranch}` }) } };
   }
   const commit = rollbackTo ?? head;
   const app = await findExpoApp(cfg.repoPath, commit);
-  if (!app) return { ok: false, result: { error: "El repositorio no es una app Expo con eas.json" } };
-  if (!app.ota) return { ok: false, result: { error: OTA_MISSING } };
-  if (!app.channels.includes(channel)) return { ok: false, result: { error: `El canal ${channel} no está en eas.json` } };
+  if (!app) return { ok: false, result: { error: t("act.notExpo") } };
+  if (!app.ota) return { ok: false, result: { error: otaMissing() } };
+  if (!app.channels.includes(channel)) return { ok: false, result: { error: t("act.noChannel", { channel }) } };
   // En un rollback no se esperan los checks: esa versión ya se publicó antes y hay prisa por deshacer.
   if (host && !rollbackTo) {
     const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
@@ -160,15 +161,15 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
   const platforms = (["ios", "android"] as const).filter((p) => action.platforms?.includes(p));
   const version = action.version ?? "";
   const runtimeVersion = action.runtimeVersion ?? "";
-  if (!platforms.length) return { ok: false, result: { error: "Elige iOS, Android o las dos" } };
-  if (!VERSION_RE.test(version)) return { ok: false, result: { error: `Versión no válida: «${version}» (formato x.y.z, p. ej. 1.0.16)` } };
-  if (!RUNTIME_VERSION_RE.test(runtimeVersion)) return { ok: false, result: { error: `runtimeVersion no válida: «${runtimeVersion}»` } };
-  if (platforms.includes("ios") && process.platform !== "darwin") return { ok: false, result: { error: "La build local de iOS necesita un Mac con Xcode: tu runner no corre en macOS" } };
+  if (!platforms.length) return { ok: false, result: { error: t("build.noPlatform") } };
+  if (!VERSION_RE.test(version)) return { ok: false, result: { error: t("build.badVersion", { v: version }) } };
+  if (!RUNTIME_VERSION_RE.test(runtimeVersion)) return { ok: false, result: { error: t("build.badRuntime", { v: runtimeVersion }) } };
+  if (platforms.includes("ios") && process.platform !== "darwin") return { ok: false, result: { error: t("build.needMac") } };
 
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const app = await findExpoApp(cfg.repoPath, commit);
-  if (!app) return { ok: false, result: { error: "El repositorio no es una app Expo con eas.json" } };
-  if (!app.buildProfiles.includes(BUILD_PROFILE)) return { ok: false, result: { error: `Falta el perfil «${BUILD_PROFILE}» en el build de eas.json` } };
+  if (!app) return { ok: false, result: { error: t("build.notExpo") } };
+  if (!app.buildProfiles.includes(BUILD_PROFILE)) return { ok: false, result: { error: t("build.noProfile", { p: BUILD_PROFILE }) } };
   if (host) {
     const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
     if (blocked) return { ok: false, result: blocked };
@@ -185,7 +186,7 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
     const resolved = parseJson(await exec(["npx", "expo", "config", "--json", "--type", "public"], dir, { env })) as { version?: unknown; runtimeVersion?: unknown } | null;
     if (resolved?.version !== version || resolved?.runtimeVersion !== runtimeVersion) {
       const got = `version=${JSON.stringify(resolved?.version)}, runtimeVersion=${JSON.stringify(resolved?.runtimeVersion)}`;
-      return { ok: false, result: { sha: commit, error: `La configuración de la app no aplica la versión pedida (sale ${got}): su app.config.js tiene que leer APP_VERSION y RUNTIME_VERSION.` } };
+      return { ok: false, result: { sha: commit, error: t("build.versionNotApplied", { got }) } };
     }
     let log = "";
     for (const platform of platforms) {
@@ -199,7 +200,7 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
         url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop() ?? url;
         done.push(platform);
       } catch (err) {
-        const before = done.length ? `Ya enviada: ${done.join(", ")}. ` : "";
+        const before = done.length ? t("build.alreadySent", { list: done.join(", ") }) : "";
         return { ok: false, result: { url, sha: commit, error: `${before}${platform}: ${String((err as Error).message)}`.slice(-3000) } };
       }
     }
@@ -232,8 +233,7 @@ async function installFrozen(app: ExpoApp, wt: string, dir: string): Promise<voi
   await exec(frozen, installDir);
 }
 
-export const OTA_MISSING =
-  "La app no tiene OTA configurado: ni EAS Update (updates.url en u.expo.dev; se activa con `npx eas-cli update:configure`) ni un script `ota:publish` propio en su package.json.";
+export const otaMissing = () => t("act.otaMissing");
 
 /** Copia ficheros locales ignorados por git (p. ej. .env con el token del servidor de OTA) a la copia limpia. */
 async function copyLocalFiles(repo: string, wt: string, paths: string[]): Promise<void> {
@@ -274,14 +274,14 @@ function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve(out);
-      else reject(new Error(`${cmd} ${args.slice(0, 2).join(" ")} terminó con código ${code}:\n${out.slice(-2800)}`));
+      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: out.slice(-2800) })));
     });
   });
 }
 
 export function logLocalSync(cfg: RunnerConfig, r: { status: string; reason?: string; commits?: number }): void {
-  if (r.status === "updated") console.log(`[backcode] tu copia local de ${cfg.baseBranch} se ha puesto al día (${r.commits} commit(s))`);
-  else if (r.status === "skipped") console.warn(`\x1b[33m⚠ tu copia local de ${cfg.baseBranch} va por detrás de ${cfg.remote} y no la he tocado: ${r.reason}. Haz git pull cuando puedas.\x1b[0m`);
+  if (r.status === "updated") console.log(`[backcode] ${t("act.localUpdated", { base: cfg.baseBranch, n: r.commits ?? 0 })}`);
+  else if (r.status === "skipped") console.warn(`\x1b[33m⚠ ${t("act.localSkipped", { base: cfg.baseBranch, remote: cfg.remote, reason: r.reason ?? "" })}\x1b[0m`);
 }
 
 const LOCKFILES: Record<string, string[]> = {
@@ -315,10 +315,10 @@ export async function installIfNeeded(repoPath: string, changed: string[]): Prom
   for (const dir of dirs) {
     const lock = Object.keys(LOCKFILES).find((l) => existsSync(join(repoPath, dir, l)))!;
     const cmd = LOCKFILES[lock];
-    console.log(`[backcode] han cambiado dependencias: ${cmd.join(" ")} en ${dir || "la raíz"}…`);
+    console.log(`[backcode] ${t("act.depsChanged", { cmd: cmd.join(" "), dir: dir || t("act.root") })}`);
     await exec(cmd, join(repoPath, dir)).then(
-      () => console.log("[backcode] dependencias instaladas"),
-      (e: Error) => console.warn(`\x1b[33m⚠ no he podido instalar las dependencias (${e.message.split("\n")[0]}). Hazlo a mano en ${dir || "la raíz"}.\x1b[0m`),
+      () => console.log(`[backcode] ${t("act.depsOk")}`),
+      (e: Error) => console.warn(`\x1b[33m⚠ ${t("act.depsFail", { error: e.message.split("\n")[0], dir: dir || t("act.root") })}\x1b[0m`),
     );
   }
 }

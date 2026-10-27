@@ -4,9 +4,11 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
+import { lang, LANGUAGE_NAME, t } from "./i18n.js";
+import { checkMachine } from "./preflight.js";
 import { checkRepo, commitPushAndOpenPr, describeWarning, fetchBranches, findConflicts, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
-import { installIfNeeded, logLocalSync, OTA_MISSING, runAction, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
@@ -58,29 +60,29 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Con sesión previa, es una conversación: se continúa la misma sesión en el mismo worktree y rama.
   const resuming = !!feature.sessionId;
   const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
-  await store.event(id, "start", resuming ? `Continuando la conversación en ${wt.branch}` : `Worktree ${wt.branch} creado desde ${cfg.remote}/${cfg.baseBranch}`);
+  await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
   // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
   // Claude los resuelve en esta vuelta y el commit de open_pull_request cierra el merge.
   let conflicts: string[] = [];
   if (resuming) {
     const sync = await mergeBaseIntoBranch(wt.path, cfg.remote, cfg.baseBranch).catch((err: Error) => {
-      void store.event(id, "say", `No se pudo actualizar la rama con ${cfg.baseBranch}: ${err.message}`);
+      void store.event(id, "say", t("run.syncFail", { base: cfg.baseBranch, error: err.message }));
       return null;
     });
     if (sync?.status === "merged") {
       await pushBranch(wt.path, cfg.remote, wt.branch).catch(() => undefined);
-      await store.event(id, "start", `Rama actualizada con ${cfg.remote}/${cfg.baseBranch} (sin conflictos)`);
+      await store.event(id, "start", t("run.synced", { base: `${cfg.remote}/${cfg.baseBranch}` }));
       await store.setConflicts(id, []).catch(() => undefined);
     } else if (sync?.status === "uptodate") {
       // Ya contiene la base: si quedaba una marca de conflictos de antes, sobra.
       if (feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
     } else if (sync?.status === "conflicts") {
       conflicts = sync.files;
-      await store.event(id, "start", `Conflictos con ${cfg.remote}/${cfg.baseBranch} en: ${conflicts.join(", ")}`);
+      await store.event(id, "start", t("run.conflicts", { base: `${cfg.remote}/${cfg.baseBranch}`, files: conflicts.join(", ") }));
     }
   }
   const attachments = await materializeAttachments(store, cfg.projectId, wt.path, feature.attachments ?? []);
-  if (attachments.length && !resuming) await store.event(id, "start", `${attachments.length} adjunto(s) disponibles para Claude`);
+  if (attachments.length && !resuming) await store.event(id, "start", t("run.attachments", { n: attachments.length }));
 
   const previousPr = feature.result?.prUrl;
   let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
@@ -95,18 +97,18 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         { title: z.string().min(5).max(120), body: z.string().min(20).max(20_000) },
         async ({ title, body }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
-          if (prUrl) return fail(`Ya publicaste los cambios en esta vuelta: ${prUrl}`);
+          if (prUrl) return fail(t("pr.already", { url: prUrl }));
 
           const files = await stageAll(wt.path);
           if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, cfg.baseBranch)) === 0) {
-            return fail("No hay cambios en el worktree; no se puede abrir un PR vacío.");
+            return fail(t("pr.empty"));
           }
           const blocked = files.filter(isProtected);
-          if (blocked.length) return fail(`Cambios en rutas protegidas, revértelos antes de abrir el PR: ${blocked.join(", ")}`);
+          if (blocked.length) return fail(t("pr.protected", { files: blocked.join(", ") }));
           const secrets = await scanStagedForSecrets(wt.path);
-          if (secrets.length) return fail(`Posibles secretos en el diff, elimínalos: ${secrets.join("; ")}`);
+          if (secrets.length) return fail(t("pr.secrets", { list: secrets.join("; ") }));
 
-          const footer = `\n\n---\nBackcode feature \`${id}\` · ${files.length} fichero(s) · rama \`${wt.branch}\`\n\n🤖 Generado por Backcode runner con [Claude Code](https://claude.com/claude-code)`;
+          const footer = `\n\n---\n${t("pr.footer", { id, n: files.length, branch: wt.branch })}\n\n${t("pr.generated")}`;
           try {
             prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: cfg.baseBranch, branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
             // Si la rama tenía conflictos con la base, ya están resueltos y subidos: se quita la marca (y el botón de
@@ -114,10 +116,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             if (conflicts.length || feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
           } catch (err) {
             await store.event(id, "error", `open_pull_request: ${String(err)}`);
-            return fail(`No se pudo publicar la rama o abrir el PR: ${String(err).slice(0, 500)}`);
+            return fail(t("pr.failed", { error: String(err).slice(0, 500) }));
           }
           await store.event(id, "pr", prUrl);
-          const what = cfg.pullRequest === "push-only" ? "Rama publicada (este runner está configurado para no abrir PR: es lo esperado, la persona lo abrirá)" : "PR en borrador abierto";
+          const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
       ),
@@ -126,11 +128,11 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         "Ask the person who accepted this task a blocking clarification question. They answer in the app and this same session continues with their reply. After calling it, end your turn without further changes.",
         { question: z.string().min(5).max(2000) },
         async ({ question: q }) => {
-          if (question) return { content: [{ type: "text" as const, text: "Ya hay una pregunta pendiente; termina tu turno." }], isError: true };
+          if (question) return { content: [{ type: "text" as const, text: t("ask.pending") }], isError: true };
           question = q;
           await store.postMessage(id, "question", q);
           await store.event(id, "question", q.slice(0, 300));
-          return { content: [{ type: "text" as const, text: "Pregunta enviada. Termina tu turno ahora sin hacer más cambios; continuarás con la respuesta." }] };
+          return { content: [{ type: "text" as const, text: t("ask.sent") }] };
         },
       ),
     ],
@@ -148,7 +150,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr, { base: cfg.baseBranch, files: conflicts })
       : buildUserPrompt(id, feature, attachments);
     const model = modelFor(feature, cfg.model);
-    if (model) await store.event(id, "say", `Modelo: ${model}`);
+    if (model) await store.event(id, "say", t("run.model", { model }));
     const messages = query({
       prompt,
       options: {
@@ -160,7 +162,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: cfg.baseBranch, remote: cfg.remote }),
+          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: cfg.baseBranch, remote: cfg.remote, language: LANGUAGE_NAME[lang()] }),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
         settingSources: [],
@@ -217,7 +219,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       }
     }
   } catch (err) {
-    result.error = abort.signal.aborted ? (stopping ? "runner detenido" : `Timeout de ${cfg.timeoutMinutes} min`) : String(err);
+    result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
   } finally {
     clearTimeout(timeout);
     clearInterval(lease);
@@ -231,7 +233,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
-  return { status: "failed", result: { ...result, error: result.error ?? "Claude terminó sin abrir un PR (ver resumen)" }, sessionId };
+  return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr") }, sessionId };
 }
 
 /** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */
@@ -249,7 +251,7 @@ function describeTool(name: string, input: Record<string, unknown>, root: string
     case "Bash":
       return `Bash: ${input.description ? `${short(input.description, 200)} — ${short(input.command, 700)}` : short(input.command)}`;
     case "Grep":
-      return `Grep: ${short(input.pattern, 80)}${input.path ? ` en ${rel(input.path)}` : ""}${input.glob ? ` (${short(input.glob, 40)})` : ""}`;
+      return `Grep: ${short(input.pattern, 80)}${input.path ? ` ${t("run.in")} ${rel(input.path)}` : ""}${input.glob ? ` (${short(input.glob, 40)})` : ""}`;
     case "Glob":
       return `Glob: ${short(input.pattern, 100)}`;
     case "TodoWrite": {
@@ -298,15 +300,15 @@ function printConnected(projectName: string): void {
   const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
   console.log(`
-${green("✓")} ${bold(`Conectado a Backcode · proyecto «${projectName}»`)}
-  Escuchando las tareas que aceptes en la app. En la app ya verás "Conectado".
+${green("✓")} ${bold(t("conn.title", { name: projectName }))}
+  ${t("conn.listening")}
 
-  ${bold("Y ahora:")}
-  1. Propón una idea o acepta una tarea del backlog desde la app.
-  2. Aquí verás a Claude trabajar; en la app, el progreso en vivo y el PR al acabar.
-  3. Si Claude tiene una duda, te llegará la pregunta a la app.
+  ${bold(t("conn.now"))}
+  ${t("conn.step1")}
+  ${t("conn.step2")}
+  ${t("conn.step3")}
 
-  ${dim(`Repo: ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · Ctrl+C para parar (las tareas en curso vuelven a la cola)`)}
+  ${dim(t("conn.footer", { repo: cfg.repoPath, base: `${cfg.remote}/${cfg.baseBranch}` }))}
 `);
 }
 
@@ -321,9 +323,13 @@ function modelFor(feature: Feature, fallback?: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  // Sin el Claude Code del SDK no se puede ejecutar nada; Node antiguo, tampoco.
+  if (!(await checkMachine({ verbose: false }))) process.exit(1);
   const { db, storage, uid } = await connect(cfg);
   store = new Store(db, storage, cfg, uid);
-  console.log(`[backcode] usuario ${uid} · proyecto ${cfg.projectId} · repo ${cfg.repoPath} · base ${cfg.remote}/${cfg.baseBranch} · runner ${cfg.runnerId}`);
+  // Desde aquí, el idioma del perfil del usuario en la app (y en vivo si lo cambia).
+  const stopLang = await store.watchLang();
+  console.log(`[backcode] ${t("main.user", { uid, project: cfg.projectId, repo: cfg.repoPath, base: `${cfg.remote}/${cfg.baseBranch}`, runner: cfg.runnerId })}`);
   // Ajusta rama base y modo de PR al repo real; los avisos se ven en la terminal y en la app.
   const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest, !!cfg.bitbucket);
   cfg.baseBranch = repo.baseBranch;
@@ -337,7 +343,7 @@ async function main(): Promise<void> {
     // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
   };
-  if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ OTA desactivado. ${OTA_MISSING}\x1b[0m`);
+  if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
@@ -369,7 +375,7 @@ async function main(): Promise<void> {
         if (pr?.state === "merged") {
           await store.markMerged(f.id, pr.sha).catch((err) => console.warn(`[merge] ${(err as Error).message}`));
           await store.setConflicts(f.id, []).catch(() => undefined);
-          console.log(`[backcode] la tarea ${f.id} se mergeó fuera de la app: marcada como mergeada`);
+          console.log(`[backcode] ${t("main.mergedOutside", { id: f.id })}`);
           continue;
         }
         if (pr?.state === "closed") continue; // cerrado sin mergear: nada que vigilar
@@ -382,7 +388,7 @@ async function main(): Promise<void> {
       checked.set(f.id, key);
       if (files.join("\n") !== f.conflicts.join("\n")) {
         await store.setConflicts(f.id, files).catch(() => undefined);
-        if (files.length) console.warn(`\x1b[33m⚠ La tarea ${f.id} choca con ${cfg.baseBranch} en: ${files.join(", ")}\x1b[0m`);
+        if (files.length) console.warn(`\x1b[33m⚠ ${t("main.clash", { id: f.id, base: cfg.baseBranch, files: files.join(", ") })}\x1b[0m`);
       }
     }
   };
@@ -416,7 +422,7 @@ async function main(): Promise<void> {
         .map((d) => ({ id: d.id, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
         .sort((a, b) => a.priority - b.priority || a.at - b.at)
         .map((d) => d.id);
-      if (pending.length) console.log(`[queue] ${pending.length} pendiente(s)`);
+      if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
       void drain();
     },
     (err) => {
@@ -439,7 +445,7 @@ async function main(): Promise<void> {
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action).catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
         await store.finishAction(id, ok, result as Record<string, unknown>);
-        console.log(`[action] ${ok ? "hecha" : "falló"}: ${result.url ?? result.error ?? ""}`);
+        console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
       }
     } finally {
       actionsBusy = false;
@@ -453,8 +459,9 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
-    console.log("[backcode] parando…");
+    console.log(`[backcode] ${t("main.stopping")}`);
     unsubscribe();
+    stopLang();
     unsubscribeActions();
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
@@ -471,13 +478,13 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[backcode] error fatal:", err.message ?? err);
+  console.error(`[backcode] ${t("main.fatal")}`, err.message ?? err);
   if (/runner key/i.test(String(err.message ?? err)) && cfg.emulators) {
-    console.error("  → Este runner apunta a los EMULADORES locales y no conocen tu llave: probablemente se reiniciaron sin sus datos");
-    console.error("    (proyectos, tareas y llaves). Vuelve a crear el proyecto en la app de desarrollo y conéctalo, o usa producción.");
+    console.error(t("main.emu1"));
+    console.error(t("main.emu2"));
   } else if (/runner key/i.test(String(err.message ?? err))) {
-    console.error("  → Tu llave ya no vale (al generar una nueva se revoca la anterior). En la app: Proyecto → Conectar → Configurar de nuevo →");
-    console.error("    Generar llave → Copiar configuración, y aquí `npm run connect`: la nueva se copia a todos tus proyectos.");
+    console.error(t("main.key1"));
+    console.error(t("main.key2"));
   }
   process.exit(1);
 });

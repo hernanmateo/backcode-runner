@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ENV_KEYS, KIT_DIR } from "./config.js";
+import { t } from "./i18n.js";
+import { checkMachine } from "./preflight.js";
 
 // `npm run connect`: pega la configuración que genera la app (Proyecto → Conectar mi Claude Code),
 // se guarda como .env.<proyecto> con permisos 600 y arranca el runner. Leerla desde un prompt (y no
@@ -12,9 +14,11 @@ import { ENV_KEYS, KIT_DIR } from "./config.js";
 const END_MARK = "# fin";
 const allowed = new Set(ENV_KEYS);
 
-console.log("\nBackcode · conectar este ordenador\n");
-console.log("1. En la app: Proyecto → Conectar mi Claude Code → Copiar configuración");
-console.log("2. Pega aquí (⌘V) y pulsa Enter:\n");
+console.log(`\n${t("connect.title")}\n`);
+// Antes de pedir nada: Node y Claude Code (sin el binario del SDK no hay nada que hacer; la sesión solo se avisa).
+if (!(await checkMachine({ verbose: true }))) process.exit(1);
+console.log(`\n${t("connect.step1")}`);
+console.log(`${t("connect.step2")}\n`);
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 const values = new Map<string, string>();
@@ -25,12 +29,12 @@ for await (const raw of rl) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
   if (!m || !m[1].startsWith("BACKCODE_")) {
     // Solo variables de Backcode: nada de NODE_OPTIONS, PATH… que cambiarían cómo se ejecuta el runner.
-    console.error(`\n✗ Línea no reconocida: "${line.slice(0, 60)}". Copia de nuevo la configuración desde la app.`);
+    console.error(`\n✗ ${t("connect.badLine", { line: line.slice(0, 60) })}`);
     process.exit(1);
   }
   if (!allowed.has(m[1])) {
     // La app puede ser más nueva que este runner: se ignora y se sugiere actualizar.
-    console.warn(`  · ${m[1]} no la conoce esta versión del runner: se ignora (actualiza con git pull).`);
+    console.warn(`  · ${t("connect.unknownKey", { key: m[1] })}`);
     continue;
   }
   values.set(m[1], m[2]);
@@ -122,28 +126,28 @@ function bitbucketRepo(repo: string, remote: string): string | null {
 
 /**
  * Comprueba un API token de Bitbucket con la API (lectura): cuenta, acceso al repo y a sus PR. Devuelve el problema en
- * castellano llano o null si está bien. Los permisos de escritura no se pueden comprobar sin escribir.
+ * lenguaje llano o null si está bien. Los permisos de escritura no se pueden comprobar sin escribir.
  */
 async function bitbucketProblem(email: string, token: string, repo: string | null): Promise<string | null> {
   const headers = { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`, Accept: "application/json" };
   const get = (path: string) => fetch(`https://api.bitbucket.org/2.0${path}`, { headers }).then((r) => r.status, () => 0);
   const user = await get("/user");
   if (user === 0) return null; // sin red: no se puede comprobar ahora; el runner avisará si falla
-  if (user === 401) return "el email o el token no son correctos (¿es el email de Atlassian y has copiado el token entero?)";
-  if (user === 403) return "al token le falta el permiso read:user:bitbucket";
-  if (user >= 400) return `Bitbucket respondió ${user} al comprobar la cuenta`;
+  if (user === 401) return t("bb.badCreds");
+  if (user === 403) return t("bb.noReadUser");
+  if (user >= 400) return t("bb.status", { status: user });
   if (!repo) return null;
   const r = await get(`/repositories/${repo}`);
-  if (r === 403 || r === 404) return `el token no tiene acceso a ${repo} (falta read:repository:bitbucket o tu cuenta no es miembro del repo)`;
+  if (r === 403 || r === 404) return t("bb.noRepo", { repo });
   const prs = await get(`/repositories/${repo}/pullrequests?pagelen=1`);
-  if (prs === 403) return "al token le falta el permiso read:pullrequest:bitbucket";
+  if (prs === 403) return t("bb.noReadPr");
   return null;
 }
 
 const projectId = values.get("BACKCODE_PROJECT_ID") ?? "";
 const repoPath = (values.get("BACKCODE_REPO_PATH") ?? "").replace(/^~(?=\/)/, homedir());
 if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
-  console.error("\n✗ Falta el proyecto. Copia de nuevo la configuración desde la app.");
+  console.error(`\n✗ ${t("connect.noProject")}`);
   process.exit(1);
 }
 
@@ -160,18 +164,14 @@ if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
     }
   }
   if (!valid) {
-    console.error(
-      pasted
-        ? "\n✗ La llave que has pegado no es válida o ya se revocó (generar otra invalida la anterior). Genera una en la app (Conectar → Genera tu llave personal) y vuelve a copiar la configuración."
-        : "\n✗ No hay ninguna llave válida en este ordenador. Genera una en la app (Conectar → Genera tu llave personal) y vuelve a copiar la configuración.",
-    );
+    console.error(`\n✗ ${t(pasted ? "connect.keyInvalid" : "connect.noKey")}`);
     process.exit(1);
   }
-  if (valid !== pasted) console.log("  · Se reutiliza tu llave de este ordenador.");
+  if (valid !== pasted) console.log(`  · ${t("connect.keyReused")}`);
   values.set("BACKCODE_RUNNER_KEY", valid);
   for (const c of otherConfigs().filter((x) => sameBackend(x.text) && x.file !== `.env.${projectId}` && valueIn(x.text, "BACKCODE_RUNNER_KEY") !== valid)) {
     writeFileSync(join(KIT_DIR, c.file), c.text.replace(/^BACKCODE_RUNNER_KEY=.*$/m, `BACKCODE_RUNNER_KEY=${valid}`), { mode: 0o600 });
-    console.log(`  · Llave actualizada también en ${c.file} (reinicia ese runner para usarla).`);
+    console.log(`  · ${t("connect.keyCopied", { file: c.file })}`);
   }
 }
 
@@ -182,22 +182,22 @@ if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket") {
   const repo = bitbucketRepo(repoPath, values.get("BACKCODE_REMOTE") || "origin");
   let email = values.get("BACKCODE_BITBUCKET_EMAIL") || fromOtherProjects("BACKCODE_BITBUCKET_EMAIL");
   let token = values.get("BACKCODE_BITBUCKET_TOKEN") || fromOtherProjects("BACKCODE_BITBUCKET_TOKEN");
-  let problem = email && token ? await bitbucketProblem(email, token, repo) : "no hay ningún API token en este ordenador";
-  if (!problem) console.log("  · Se reutiliza tu API token de Bitbucket de este ordenador (comprobado).");
-  else if (email && token) console.warn(`\n⚠ Tu API token de Bitbucket guardado no sirve: ${problem}.`);
+  let problem = email && token ? await bitbucketProblem(email, token, repo) : t("bb.noToken");
+  if (!problem) console.log(`  · ${t("bb.reused")}`);
+  else if (email && token) console.warn(`\n⚠ ${t("bb.savedBad", { problem })}`);
   for (let attempt = 0; problem && attempt < 3 && process.stdin.isTTY; attempt++) {
     if (attempt === 0) {
-      console.log("\nBitbucket necesita un API token (se guarda solo en este ordenador):");
-      console.log("  1. https://id.atlassian.com/manage-profile/security/api-tokens → «Create API token with scopes»");
-      console.log("  2. App: Bitbucket. Permisos: read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket,");
+      console.log(`\n${t("bb.intro")}`);
+      console.log(`  ${t("bb.step1")}`);
+      console.log(`  ${t("bb.step2")}`);
       console.log("     read:pullrequest:bitbucket, write:pullrequest:bitbucket");
-      console.log("  3. Cópialo al crearlo: Atlassian solo lo muestra una vez.");
-      console.log("  4. Usa el email de esa cuenta de Atlassian (no tu usuario de Bitbucket).\n");
-    } else console.warn(`\n✗ ${problem}. Vuelve a intentarlo.\n`);
-    email = (await ask(`Email de tu cuenta Atlassian${email ? ` [${email}]` : ""}: `)) || email;
-    token = await askHidden("API token (no se muestra al escribirlo ni al pegarlo): ");
-    problem = email && token ? await bitbucketProblem(email, token, repo) : "faltan el email o el token";
-    if (!problem) console.log("  ✓ Token de Bitbucket comprobado.");
+      console.log(`  ${t("bb.step3")}`);
+      console.log(`  ${t("bb.step4")}\n`);
+    } else console.warn(`\n✗ ${t("bb.retry", { problem })}\n`);
+    email = (await ask(t("bb.askEmail", { current: email ? ` [${email}]` : "" }))) || email;
+    token = await askHidden(t("bb.askToken"));
+    problem = email && token ? await bitbucketProblem(email, token, repo) : t("bb.missing");
+    if (!problem) console.log(`  ${t("bb.ok")}`);
   }
   if (!problem && email && token) {
     values.set("BACKCODE_BITBUCKET_EMAIL", email);
@@ -209,15 +209,15 @@ if (values.get("BACKCODE_PULL_REQUEST") === "bitbucket") {
         text = new RegExp(`^${k}=.*$`, "m").test(text) ? text.replace(new RegExp(`^${k}=.*$`, "m"), `${k}=${v}`) : `${text.trimEnd()}\n${k}=${v}\n`;
       }
       writeFileSync(join(KIT_DIR, c.file), text, { mode: 0o600 });
-      console.log(`  · Token de Bitbucket actualizado también en ${c.file} (reinicia ese runner para usarlo).`);
+      console.log(`  · ${t("bb.copied", { file: c.file })}`);
     }
   } else {
     values.delete("BACKCODE_BITBUCKET_TOKEN");
-    console.warn(`  · Sin un API token de Bitbucket válido (${problem}): se subirá la rama sin abrir PR. Vuelve a lanzar npm run connect para añadirlo.`);
+    console.warn(`  · ${t("bb.without", { problem: problem ?? "" })}`);
   }
 }
 if (!existsSync(join(repoPath, ".git"))) {
-  console.error(`\n✗ ${repoPath} no es un repositorio git. Corrige la ruta en la app (paso "Tu repositorio") y vuelve a copiar.`);
+  console.error(`\n✗ ${t("connect.notRepo", { path: repoPath })}`);
   process.exit(1);
 }
 
@@ -225,8 +225,8 @@ const file = `.env.${projectId}`;
 const path = join(KIT_DIR, file);
 writeFileSync(path, [...values].map(([k, v]) => `${k}=${v}`).join("\n") + "\n", { mode: 0o600 });
 chmodSync(path, 0o600); // por si ya existía con otros permisos
-console.log(`\n✓ Guardado en ${file} (solo legible por ti)`);
-console.log(`  Las próximas veces basta con: npm start -- --env ${file}\n`);
+console.log(`\n${t("connect.saved", { file })}`);
+console.log(`  ${t("connect.next", { file })}\n`);
 
 const child = spawn(process.execPath, [join(KIT_DIR, "dist", "index.js"), "--env", file], { stdio: "inherit" });
 // Ctrl+C ya le llega al runner (mismo grupo de procesos); aquí solo se espera a que termine limpio.

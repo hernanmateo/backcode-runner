@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, findRepoIcon, remoteHead, removeWorktree, SECRET_PATTERNS } from "./git.js";
 import { createGuardHook } from "./guard.js";
+import { t } from "./i18n.js";
 import type { Store } from "./store.js";
 
 // Mapa del repositorio: Claude (modelo barato, solo lectura) resume el proyecto y se guarda en
@@ -35,7 +36,7 @@ async function refreshIcon(cfg: RunnerConfig, store: Store): Promise<void> {
   const icon = await findRepoIcon(cfg.repoPath, saved.commit, saved.iconHint);
   if (!icon) return;
   await store.saveRepoIcon(icon.data, icon.contentType);
-  console.log("[icon] icono del proyecto subido desde el repo");
+  console.log(`[icon] ${t("kn.icon")}`);
 }
 
 async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, string>, signal: AbortSignal): Promise<void> {
@@ -45,7 +46,7 @@ async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, s
   if (saved.commit === commit) return;
   if (saved.updatedAt && Date.now() - saved.updatedAt < MIN_AGE_MS) return;
 
-  console.log(`[knowledge] analizando ${cfg.remote}/${cfg.baseBranch} (${commit.slice(0, 7)}) para que la IA conozca el proyecto…`);
+  console.log(`[knowledge] ${t("kn.analyzing", { ref: `${cfg.remote}/${cfg.baseBranch}`, sha: commit.slice(0, 7) })}`);
   const path = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_knowledge", commit);
   const abort = new AbortController();
   signal.addEventListener("abort", () => abort.abort(), { once: true });
@@ -78,11 +79,11 @@ async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, s
     const iconLine = /\n?ICON:\s*`?([^`\n]*?)`?\s*$/.exec(summary);
     const iconHint = iconLine && /^[\w./ @+-]{1,300}\.(png|jpe?g)$/i.test(iconLine[1]) && !iconLine[1].includes("..") && !iconLine[1].startsWith("/") ? iconLine[1] : undefined;
     if (iconLine) summary = summary.slice(0, iconLine.index).trim();
-    if (summary.length < 200) throw new Error("el análisis no devolvió un mapa útil");
-    const leaked = SECRET_PATTERNS.filter(([re]) => re.test(summary)).map(([, label]) => label);
-    if (leaked.length) throw new Error(`descartado: parece contener ${leaked.join(", ")}`);
+    if (summary.length < 200) throw new Error(t("kn.empty"));
+    const leaked = SECRET_PATTERNS.filter(([re]) => re.test(summary)).map(([, label]) => t(label));
+    if (leaked.length) throw new Error(t("kn.leaked", { list: leaked.join(", ") }));
     await store.saveKnowledge(summary.slice(0, MAX_CHARS), commit, costUsd, iconHint);
-    console.log(`[knowledge] mapa del proyecto actualizado ($${costUsd.toFixed(3)})`);
+    console.log(`[knowledge] ${t("kn.updated", { cost: costUsd.toFixed(3) })}`);
   } finally {
     await removeWorktree(cfg.repoPath, path);
   }

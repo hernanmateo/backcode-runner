@@ -16,6 +16,8 @@ export function buildSystemAppend(vars: {
   branch: string;
   baseBranch: string;
   remote: string;
+  /** Idioma de quien ejecuta el runner (el de su perfil en la app), p. ej. "Spanish". */
+  language: string;
 }): string {
   // settingSources está vacío, así que el CLAUDE.md del repo se inyecta aquí como contexto.
   const claudeMdPath = join(vars.worktree, "CLAUDE.md");

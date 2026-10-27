@@ -26,6 +26,7 @@ import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/
 import { connectStorageEmulator, getBytes, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
 import type { RepoWarning } from "./git.js";
+import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 
 export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed" | "waiting";
@@ -128,6 +129,30 @@ export class Store {
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   capabilities: { pr: "github" | "bitbucket" | null; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null } = { pr: null, ota: null, build: null };
 
+  /**
+   * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
+   * que cambiarlo en la app aplica sin reiniciar. Resuelve tras la primera lectura (o si falla) con la baja del listener.
+   */
+  watchLang(): Promise<() => void> {
+    return new Promise((resolve) => {
+      let ready = false;
+      const done = () => {
+        if (!ready) {
+          ready = true;
+          resolve(unsubscribe);
+        }
+      };
+      const unsubscribe = onSnapshot(
+        doc(this.db, "users", this.uid),
+        (d) => {
+          setLang(d.get("lang"));
+          done();
+        },
+        done,
+      );
+    });
+  }
+
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
   async download(path: string): Promise<Uint8Array> {
     return new Uint8Array(await getBytes(ref(this.storage, path), 25 * 1024 * 1024));
@@ -156,14 +181,14 @@ export class Store {
         const holder = lock.get("holder") as string | undefined;
         const until = (lock.get("leaseUntil") as Timestamp | undefined)?.toMillis() ?? 0;
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
-          throw new Error(`Ya tienes un runner activo para este proyecto (${holder})`);
+          throw new Error(t("store.lockHeld", { holder }));
         }
         tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities });
       });
     await take();
     const timer = setInterval(() => {
       take().catch((err) => {
-        console.error("[lock] lease perdido, saliendo:", err.message);
+        console.error(`[lock] ${t("store.leaseLost")}`, err.message);
         process.exit(1);
       });
     }, LOCK_LEASE_MS / 3);
@@ -180,7 +205,7 @@ export class Store {
       const retry = ((d.get("attempts") as number | undefined) ?? 0) < this.cfg.maxAttempts;
       await updateDoc(d.ref, retry
         ? { status: "execute", runnerId: deleteField(), leaseUntil: deleteField() }
-        : { status: "failed", runnerId: deleteField(), leaseUntil: deleteField(), result: { error: "El runner se detuvo durante la ejecución" }, finishedAt: serverTimestamp() });
+        : { status: "failed", runnerId: deleteField(), leaseUntil: deleteField(), result: { error: t("store.orphan") }, finishedAt: serverTimestamp() });
       console.log(`[recover] ${d.id} -> ${retry ? "execute" : "failed"}`);
     }
   }
@@ -195,7 +220,7 @@ export class Store {
       // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
       const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
       if (attempts > limit) {
-        tx.update(ref, { status: "failed", result: { error: "Máximo de intentos alcanzado" }, finishedAt: serverTimestamp() });
+        tx.update(ref, { status: "failed", result: { error: t("store.maxAttempts") }, finishedAt: serverTimestamp() });
         return null;
       }
       tx.update(ref, {
@@ -214,13 +239,13 @@ export class Store {
    * desde que la acepté y la rama tiene el formato que genera acceptFeature.
    */
   async verifyAcceptance(id: string, feature: Feature): Promise<string | null> {
-    if (feature.assignee !== this.uid) return "La tarea no está asignada a este usuario";
+    if (feature.assignee !== this.uid) return t("store.notAssigned");
     const project = await getDoc(this.project());
     const group = await getDoc(doc(this.db, "groups", project.get("groupId")));
-    if (!((group.get("members") ?? {}) as Record<string, string>)[this.uid]) return "Ya no eres miembro del grupo";
+    if (!((group.get("members") ?? {}) as Record<string, string>)[this.uid]) return t("store.notMember");
     const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? [], (feature.attachments ?? []).map((a) => a.path));
-    if (feature.promptHash !== expected) return "El prompt cambió después de aceptar la tarea";
-    if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return "Nombre de rama no válido";
+    if (feature.promptHash !== expected) return t("store.promptChanged");
+    if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return t("store.badBranch");
     return null;
   }
 

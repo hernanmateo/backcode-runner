@@ -6,7 +6,10 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 
 ## Requisitos
 - macOS o Linux (el sandbox del sistema es obligatorio) y Node 22 o superior
-- [Claude Code](https://claude.com/claude-code) con tu sesión iniciada: ejecuta `claude` una vez y haz login
+- [Claude Code](https://docs.claude.com/claude-code) con tu sesión iniciada: `npm install -g @anthropic-ai/claude-code`, ejecuta
+  `claude` una vez y haz login. El runner usa el binario de Claude Code que trae el Agent SDK (`npm install`, sin
+  `--omit=optional`), pero comparte tu sesión. `npm run connect` comprueba Node, Claude Code y la sesión antes de pedirte nada
+  (sin Node 22 o sin el binario del SDK se para; sin sesión o sin la CLI, avisa)
 - `git` con permiso de push al repositorio del proyecto
 - Para abrir PRs:
   - **GitHub**: `gh auth login` (solo si tus repos están en GitHub)
@@ -32,6 +35,12 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 Si ya tienes otro proyecto conectado, en la guía elige **"Ya tengo una llave en este ordenador"**: `npm run connect` reutiliza la que
 tienes. Generar una nueva revoca la anterior; si lo haces, `npm run connect` comprueba la llave contra el servidor y copia la
 válida a tus otras configuraciones (reinicia esos runners para que la usen). Si no encuentra ninguna válida, te pide generar una.
+
+## Idioma
+La terminal, la actividad de las tareas y los errores que ves en la app salen en **el idioma de tu perfil en la app** (español,
+inglés o catalán; cambiarlo en la app aplica sin reiniciar). Claude también te escribe en ese idioma (preguntas, resúmenes y
+mensaje final). Antes de iniciar sesión (`npm run connect`, errores al arrancar) se usa el del sistema (`LANG`/`LC_ALL`).
+`BACKCODE_LANG=es|en|ca` (en el entorno o en el `.env`) lo fija y manda sobre todo.
 
 ## Arrancarlo cada día
 ```bash
@@ -184,7 +193,7 @@ Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa c
 
 ## Personalizar las instrucciones
 Edita [`instructions/AGENT.md`](instructions/AGENT.md). Admite estos marcadores: `{{projectName}}`, `{{worktree}}`, `{{branch}}`,
-`{{baseBranch}}`, `{{remote}}`, `{{projectContext}}` y `{{claudeMd}}`. Si quitas reglas de seguridad no se desactivan las barreras
+`{{baseBranch}}`, `{{remote}}`, `{{projectContext}}`, `{{claudeMd}}` y `{{language}}` (idioma de tu perfil, p. ej. `Spanish`). Si quitas reglas de seguridad no se desactivan las barreras
 técnicas, pero el agente pierde contexto sobre por qué existen.
 
 ## Variables del `.env`

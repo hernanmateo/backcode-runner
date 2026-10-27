@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PrHost } from "./hosts.js";
+import { t, type Key } from "./i18n.js";
 
 const run = promisify(execFile);
 
@@ -30,7 +31,7 @@ export async function mergeBaseIntoBranch(worktree: string, remote: string, base
   if (!files.length) {
     // Falló por otro motivo (no por conflictos): se deja como estaba.
     await git(worktree, ["merge", "--abort"]).catch(() => undefined);
-    throw new Error(`No se pudo mezclar ${base} en la rama`);
+    throw new Error(t("git.mergeFail", { base }));
   }
   return { status: "conflicts", files };
 }
@@ -87,7 +88,7 @@ export async function createWorktree(opts: {
   /** Continuar una conversación: reutiliza el worktree (o la rama publicada) en vez de empezar de la base. */
   resume?: boolean;
 }): Promise<{ path: string; branch: string; resumed: boolean }> {
-  if (!/^[A-Za-z0-9]{1,64}$/.test(opts.featureId)) throw new Error(`featureId no válido: ${opts.featureId}`);
+  if (!/^[A-Za-z0-9]{1,64}$/.test(opts.featureId)) throw new Error(t("git.badFeatureId", { id: opts.featureId }));
   const branch = opts.branch;
   const path = join(opts.worktreesDir, opts.featureId);
   mkdirSync(opts.worktreesDir, { recursive: true });
@@ -250,9 +251,9 @@ export type RepoWarning =
   | { code: "bitbucketNoToken" };
 
 export function describeWarning(w: RepoWarning): string {
-  if (w.code === "baseBranchFallback") return `La rama base "${w.configured}" no existe en el repo; se usa "${w.used}" (la rama por defecto). Cámbiala en la app (Conectar → ¿Dónde está tu código?).`;
-  if (w.code === "bitbucketNoToken") return "El repo está en Bitbucket pero falta el API token (BACKCODE_BITBUCKET_EMAIL y BACKCODE_BITBUCKET_TOKEN): se sube la rama sin abrir PR.";
-  return `El repo está en ${w.host}, que no es GitHub ni Bitbucket: se sube la rama sin abrir PR (ábrelo desde ${w.host}).`;
+  if (w.code === "baseBranchFallback") return t("git.baseFallback", { configured: w.configured, used: w.used });
+  if (w.code === "bitbucketNoToken") return t("git.bitbucketNoToken");
+  return t("git.notGithub", { host: w.host });
 }
 
 type PrMode = "github" | "bitbucket" | "push-only";
@@ -265,12 +266,12 @@ type PrMode = "github" | "bitbucket" | "push-only";
 export async function checkRepo(repoPath: string, remote: string, baseBranch: string, pullRequest: PrMode, hasBitbucketToken: boolean): Promise<{ baseBranch: string; pullRequest: PrMode; remoteUrl: string; warnings: RepoWarning[] }> {
   const warnings: RepoWarning[] = [];
   const url = await git(repoPath, ["remote", "get-url", remote]).catch(() => "");
-  if (!url) throw new Error(`El repo ${repoPath} no tiene el remoto "${remote}"`);
+  if (!url) throw new Error(t("git.noRemote", { repo: repoPath, remote }));
   const heads = await git(repoPath, ["ls-remote", "--symref", remote, "HEAD", `refs/heads/${baseBranch}`]);
   const defaultBranch = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(heads)?.[1];
   const hasBase = heads.split("\n").some((l) => l.endsWith(`refs/heads/${baseBranch}`));
   if (!hasBase) {
-    if (!defaultBranch) throw new Error(`La rama ${baseBranch} no existe en ${remote}`);
+    if (!defaultBranch) throw new Error(t("git.noBase", { base: baseBranch, remote }));
     warnings.push({ code: "baseBranchFallback", configured: baseBranch, used: defaultBranch });
     baseBranch = defaultBranch;
   }
@@ -309,12 +310,12 @@ export async function syncLocalBase(repoPath: string, remote: string, baseBranch
   if (branch !== baseBranch) {
     // En otra rama: se avanza la rama base sin cambiar de rama, solo si es fast-forward (git fetch lo comprueba).
     const ok = await git(repoPath, ["fetch", "--quiet", remote, `${baseBranch}:${baseBranch}`]).then(() => true, () => false);
-    return ok ? { status: "updated", commits: behind } : { status: "skipped", reason: `tu ${baseBranch} local tiene commits que no están en ${target}` };
+    return ok ? { status: "updated", commits: behind } : { status: "skipped", reason: t("git.localAhead", { base: baseBranch, target }) };
   }
-  if (await git(repoPath, ["status", "--porcelain", "--untracked-files=no"])) return { status: "skipped", reason: "tienes cambios sin guardar en tu copia" };
+  if (await git(repoPath, ["status", "--porcelain", "--untracked-files=no"])) return { status: "skipped", reason: t("git.dirty") };
   const before = await git(repoPath, ["rev-parse", "HEAD"]);
   const ok = await git(repoPath, ["merge", "--ff-only", "--quiet", target]).then(() => true, () => false);
-  if (!ok) return { status: "skipped", reason: `tu ${baseBranch} local tiene commits que no están en ${target}` };
+  if (!ok) return { status: "skipped", reason: t("git.localAhead", { base: baseBranch, target }) };
   // Ficheros cambiados: para saber si hay que reinstalar dependencias en tu copia.
   const changed = (await git(repoPath, ["diff", "--name-only", before, "HEAD"])).split("\n").filter(Boolean);
   return { status: "updated", commits: behind, changed };
@@ -349,14 +350,15 @@ export async function commitsAhead(worktree: string, remote: string, baseBranch:
   return Number(await git(worktree, ["rev-list", "--count", `${remote}/${baseBranch}..HEAD`]));
 }
 
-export const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "clave privada"],
-  [/\bAKIA[0-9A-Z]{16}\b/, "AWS access key"],
-  [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, "token de GitHub"],
-  [/\bsk-ant-[A-Za-z0-9_-]{20,}/, "API key de Anthropic"],
-  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/, "token de Slack"],
-  [/\bsk-[A-Za-z0-9]{32,}\b/, "API key"],
-  [/"private_key"\s*:\s*"-----BEGIN/, "service account de Google"],
+/** Patrón y clave del texto (se traduce al usarlo). */
+export const SECRET_PATTERNS: Array<[RegExp, Key]> = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "secret.privateKey"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "secret.aws"],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, "secret.github"],
+  [/\bsk-ant-[A-Za-z0-9_-]{20,}/, "secret.anthropic"],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/, "secret.slack"],
+  [/\bsk-[A-Za-z0-9]{32,}\b/, "secret.api"],
+  [/"private_key"\s*:\s*"-----BEGIN/, "secret.google"],
 ];
 
 /** Busca secretos en las líneas añadidas del diff staged. */
@@ -376,7 +378,7 @@ export async function scanStagedForSecrets(worktree: string): Promise<string[]> 
     if (line.startsWith("+++ ")) file = line.slice(6);
     else if (line.startsWith("+")) {
       for (const [re, label] of SECRET_PATTERNS) {
-        if (re.test(line)) findings.push(`${label} en ${file}`);
+        if (re.test(line)) findings.push(t("git.secretIn", { label: t(label), file }));
       }
     }
   }

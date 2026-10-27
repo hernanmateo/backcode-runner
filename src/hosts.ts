@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { t } from "./i18n.js";
 
 // Alojamiento del repo para PRs, checks y merge. Lo usa solo el runner (nunca Claude): las
 // credenciales son las del usuario (sesión de `gh` o API token de Bitbucket en su .env).
@@ -45,7 +46,7 @@ export function githubHost(repoPath: string): PrHost {
       if (/^https:\/\//.test(existing)) return existing;
       const out = await gh(["pr", "create", "--draft", "--base", base, "--head", branch, "--title", title, "--body", body], cwd);
       const url = out.split("\n").pop() ?? "";
-      if (!/^https:\/\//.test(url)) throw new Error(`gh no devolvió la URL del PR: ${out}`);
+      if (!/^https:\/\//.test(url)) throw new Error(t("host.ghNoUrl", { out }));
       return url;
     },
     async prChecks(prUrl) {
@@ -90,7 +91,7 @@ export function bitbucketRepo(remoteUrl: string): { workspace: string; slug: str
 
 export function bitbucketHost(remoteUrl: string, email: string, token: string): PrHost {
   const repo = bitbucketRepo(remoteUrl);
-  if (!repo) throw new Error(`No se reconoce el repo de Bitbucket en ${remoteUrl}`);
+  if (!repo) throw new Error(t("host.bbRepo", { url: remoteUrl }));
   const base = `https://api.bitbucket.org/2.0/repositories/${repo.workspace}/${repo.slug}`;
   // Los API tokens de Atlassian van con el email de la cuenta (con el usuario da 401).
   const auth = `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`;
@@ -104,7 +105,7 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
     if (!res.ok) throw new Error(`Bitbucket ${res.status}: ${text.slice(0, 300)}`);
     return (text ? JSON.parse(text) : {}) as T;
   };
-  const prId = (url: string) => /pull-requests\/(\d+)/.exec(url)?.[1] ?? Promise.reject(new Error(`URL de PR no válida: ${url}`));
+  const prId = (url: string) => /pull-requests\/(\d+)/.exec(url)?.[1] ?? Promise.reject(new Error(t("host.badPrUrl", { url })));
   type Pr = { id: number; links: { html: { href: string } }; merge_commit?: { hash: string } };
   const toChecks = (values: { name?: string; key: string; state: string }[]) =>
     summarize(values.map((v) => ({ name: v.name ?? v.key, state: v.state === "SUCCESSFUL" ? "ok" : v.state === "INPROGRESS" ? "pending" : "fail" })));
