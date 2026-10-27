@@ -120,8 +120,8 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 | **Build para testers** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
 
 ### Tu copia local se pone al día sola
-Tras mergear desde la app, y cada vez que arranca el runner, tu copia local de la rama base se actualiza con lo que hay en el
-remoto, **solo si es seguro**: estás en la rama base sin cambios pendientes y es un avance limpio (fast-forward). Si estás en otra
+Tras mergear, publicar un OTA, una build o un despliegue desde la app, y cada vez que arranca el runner, tu copia local de la
+rama base se actualiza con lo que hay en el remoto (lo que se publica es siempre la rama base del remoto, nunca tu copia local), **solo si es seguro**: estás en la rama base sin cambios pendientes y es un avance limpio (fast-forward). Si estás en otra
 rama, se avanza la rama base sin cambiar de rama. Si cambiaron dependencias (`package.json` o lockfile), instala con el gestor del
 repo (`pnpm`/`yarn`/`bun install --frozen-lockfile` o `npm install`). Si algo no cuadra (cambios sin guardar, commits locales que
 no están en el remoto), no toca nada y lo avisa en la terminal para que hagas `git pull` tú.

@@ -54,9 +54,23 @@ function requireGreen(checks: Checks, what: string): ActionResult | null {
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
-  if (action.type === "build") return publishBuild(cfg, host, action);
-  if (action.type === "deploy") return runDeploy(cfg, host, action.target ?? "");
-  return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
+  // OTA, build y despliegue publican la rama base del remoto (no tu copia local): después, tu copia se pone al día
+  // para que lo que ves en local sea lo que se acaba de publicar (p. ej. un merge que hizo otro y aún no tenías).
+  const done =
+    action.type === "build"
+      ? await publishBuild(cfg, host, action)
+      : action.type === "deploy"
+        ? await runDeploy(cfg, host, action.target ?? "")
+        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
+  await syncLocal(cfg);
+  return done;
+}
+
+/** Pone al día tu copia local de la rama base (solo si es seguro: ver syncLocalBase) e instala si cambiaron dependencias. */
+async function syncLocal(cfg: RunnerConfig): Promise<void> {
+  const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message }));
+  logLocalSync(cfg, local);
+  if (local.status === "updated" && "changed" in local) await installIfNeeded(cfg.repoPath, local.changed ?? []).catch(() => undefined);
 }
 
 /** Abre el PR de una tarea cuya rama ya está subida (p. ej. hecha en modo "solo rama"), sin ejecutar a Claude. */
@@ -89,9 +103,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   const { sha } = await host.merge(prUrl);
   await store.markMerged(featureId, sha);
   // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
-  const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message }));
-  logLocalSync(cfg, local);
-  if (local.status === "updated" && "changed" in local) await installIfNeeded(cfg.repoPath, local.changed ?? []);
+  await syncLocal(cfg);
   // La rama ya no existe: la copia de trabajo de la tarea sobra.
   await removeWorktree(cfg.repoPath, join(cfg.worktreesDir, featureId)).catch(() => undefined);
   return { ok: true, result: { url: prUrl, sha } };
