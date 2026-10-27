@@ -31,6 +31,11 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
    `npm run connect` la guarda en `.env.<proyecto>` (permisos 600, solo tú puedes leerlo) y arranca el runner.
    En la app verás **"¡Tu Claude Code está conectado!"** y en la terminal los siguientes pasos.
 
+**¿Aún no tienes el repo?** El runner de quien ya está conectado guarda en el proyecto la URL del repo (sin credenciales; solo
+GitHub o Bitbucket, https o `git@`). En el paso 1 de la guía, **"¿Aún no tienes el repo en este ordenador? Clónalo"** te deja
+elegir la carpeta (por defecto `~/Projects`) y te da el `git clone` listo para copiar. O no hagas nada: si la ruta de la
+configuración no existe, `npm run connect` te pregunta si lo clona ahí (con tus credenciales de git) antes de seguir.
+
 **La llave (runner key) es por usuario, no por proyecto.** Solo hace falta generarla en la app la primera vez en cada ordenador.
 Si ya tienes otro proyecto conectado, en la guía elige **"Ya tengo una llave en este ordenador"**: `npm run connect` reutiliza la que
 tienes. Generar una nueva revoca la anterior; si lo haces, `npm run connect` comprueba la llave contra el servidor y copia la

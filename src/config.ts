@@ -24,6 +24,8 @@ const Env = z.object({
   BACKCODE_PROJECT_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, t("cfg.badProject")),
   BACKCODE_REPO_PATH: z.string().min(1),
   BACKCODE_BASE_BRANCH: z.string().regex(/^[A-Za-z0-9._\/-]+$/).default("main"),
+  /** Solo para `npm run connect`: de dónde clonar el repo si aún no está en BACKCODE_REPO_PATH. */
+  BACKCODE_REPO_URL: z.string().optional(),
   BACKCODE_REMOTE: z.string().regex(/^[A-Za-z0-9._-]+$/).default("origin"),
   // "github": push + PR en borrador con gh. "push-only": solo push de la rama (repos sin GitHub o pruebas).
   BACKCODE_PULL_REQUEST: z.enum(["github", "bitbucket", "push-only"]).default("github"),

@@ -220,6 +220,15 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
 }
 
 /**
+ * URL del remoto sin credenciales, para que el equipo pueda clonar el repo (`git clone`): solo GitHub o Bitbucket,
+ * por https (sin usuario ni token) o por ssh (`git@…`). Cualquier otra cosa no se comparte.
+ */
+export function publicRepoUrl(remoteUrl: string): string | null {
+  const url = remoteUrl.trim().replace(/^https:\/\/[^@/]+@/, "https://");
+  return /^(https:\/\/(github\.com|bitbucket\.org)\/|git@(github\.com|bitbucket\.org):)[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(url) ? url : null;
+}
+
+/**
  * Destinos de despliegue que el repo ofrece a Backcode: scripts `backcode:deploy:<nombre>` de cualquier package.json
  * (en un monorepo, uno por app, web, api…). Solo estos: un `deploy` sin su línea `backcode:` nunca se ofrece.
  */

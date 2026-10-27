@@ -6,7 +6,7 @@ import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine } from "./preflight.js";
-import { checkRepo, commitPushAndOpenPr, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
@@ -334,6 +334,8 @@ async function main(): Promise<void> {
   const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest, !!cfg.bitbucket);
   cfg.baseBranch = repo.baseBranch;
   cfg.pullRequest = repo.pullRequest;
+  const repoUrl = publicRepoUrl(repo.remoteUrl);
+  if (repoUrl) await store.saveRepoUrl(repoUrl).catch(() => undefined);
   prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
   store.warnings = repo.warnings;
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);

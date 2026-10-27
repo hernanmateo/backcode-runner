@@ -1,9 +1,10 @@
-import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ENV_KEYS, KIT_DIR } from "./config.js";
+import { publicRepoUrl } from "./git.js";
 import { t } from "./i18n.js";
 import { checkMachine } from "./preflight.js";
 
@@ -174,6 +175,25 @@ if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) {
     console.log(`  · ${t("connect.keyCopied", { file: c.file })}`);
   }
 }
+
+// ¿Aún no tienes el repo? Si la ruta no existe y la app sabe de dónde viene, se ofrece clonarlo ahí (con tus credenciales
+// de git: https o ssh, como lo tengas configurado). Solo URLs de GitHub o Bitbucket sin credenciales.
+if (!existsSync(join(repoPath, ".git"))) {
+  const url = publicRepoUrl(values.get("BACKCODE_REPO_URL") ?? "");
+  if (url && !existsSync(repoPath) && process.stdin.isTTY) {
+    const answer = (await ask(`\n${t("connect.askClone", { path: repoPath, url })} `)).trim().toLowerCase();
+    if (["", "s", "si", "sí", "y", "yes"].includes(answer)) {
+      mkdirSync(dirname(repoPath), { recursive: true });
+      const ok = spawnSync("git", ["clone", url, repoPath], { stdio: "inherit" }).status === 0;
+      if (!ok) {
+        console.error(`\n✗ ${t("connect.cloneFailed", { url })}`);
+        process.exit(1);
+      }
+      console.log(`  ${t("connect.cloned", { path: repoPath })}`);
+    }
+  }
+}
+values.delete("BACKCODE_REPO_URL");
 
 // Bitbucket: el API token no pasa por la app; se reutiliza el de este ordenador o se pide aquí, y siempre se valida
 // contra la API de Bitbucket antes de guardarlo (así un error de copia o un permiso que falta se ve ahora, no en el

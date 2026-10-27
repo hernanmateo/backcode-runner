@@ -331,6 +331,12 @@ export class Store {
   }
 
   /** Commit y fecha del mapa del repositorio guardado (si existe). */
+  /** Guarda en el proyecto la URL pública del repo (para que quien aún no lo tiene pueda clonarlo desde Conectar). */
+  async saveRepoUrl(url: string): Promise<void> {
+    const project = await getDoc(this.project());
+    if (project.get("repoUrl") !== url) await updateDoc(this.project(), { repoUrl: url });
+  }
+
   async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string; iconHint?: string }> {
     const d = await getDoc(this.knowledge());
     return {
