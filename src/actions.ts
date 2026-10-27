@@ -141,7 +141,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
 
     // Prueba de arranque obligatoria: un OTA que cierra la app al arrancar no se puede arreglar con otro OTA (el móvil
     // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback).
-    const smoke = await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir);
+    const smoke = await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
     if (!smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
 
     let out: string;

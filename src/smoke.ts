@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { t } from "./i18n.js";
 
 /**
@@ -25,10 +26,21 @@ const BUILD_MS = 45 * 60_000;
 /** Tras abrirla, cuánto tiene que seguir viva la app (los cierres al arrancar pasan en los primeros segundos). */
 const ALIVE_MS = 15_000;
 
-export async function smokeTest(appDir: string, env: Record<string, string>, screenshotDir: string): Promise<SmokeResult> {
+export async function smokeTest(appDir: string, env: Record<string, string>, screenshotDir: string, sourceAppDir?: string): Promise<SmokeResult> {
   if (process.platform !== "darwin") return { ok: false, detail: t("smoke.needMac") };
-  const bundleId = (await appConfig(appDir, env))?.ios?.bundleIdentifier;
+  const config = await appConfig(appDir, env);
+  const bundleId = config?.ios?.bundleIdentifier;
   if (!bundleId) return { ok: false, detail: t("smoke.noBundleId") };
+  // Ficheros de Firebase que pide la config y no están en git (p. ej. GoogleService-Info.plist): de la copia de quien
+  // publica, como los .env. Sin ellos la build nativa no se puede generar.
+  if (sourceAppDir) {
+    for (const file of [config?.ios?.googleServicesFile, config?.android?.googleServicesFile]) {
+      if (file && !existsSync(join(appDir, file)) && existsSync(join(sourceAppDir, file))) {
+        mkdirSync(dirname(join(appDir, file)), { recursive: true });
+        copyFileSync(join(sourceAppDir, file), join(appDir, file));
+      }
+    }
+  }
   let udid: string;
   try {
     udid = await testSimulator();
@@ -74,7 +86,7 @@ async function testSimulator(): Promise<string> {
 }
 
 /** Config pública de Expo tal como la verá la build. */
-async function appConfig(dir: string, env: Record<string, string>): Promise<{ ios?: { bundleIdentifier?: string } } | null> {
+async function appConfig(dir: string, env: Record<string, string>): Promise<{ ios?: { bundleIdentifier?: string; googleServicesFile?: string }; android?: { googleServicesFile?: string } } | null> {
   const outText = await run("npx", ["expo", "config", "--json", "--type", "public"], dir, env).catch(() => "");
   const start = outText.indexOf("{");
   try {
