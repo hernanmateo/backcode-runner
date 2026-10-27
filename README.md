@@ -88,6 +88,14 @@ realmente usado (Claude Code puede usar otros para subtareas).
 - **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Dentro,
   `/remote-control` la abre en la app móvil de Claude. Ahí trabajas con tus permisos normales, fuera del sandbox del runner.
 
+## Conflictos con la rama principal
+Si otro PR se mergea antes y toca lo mismo que tu tarea, tu runner lo detecta (cada 5 minutos, solo cuando cambia alguna de las dos
+ramas; con git ≥ 2.38 sin tocar nada, con versiones anteriores en una copia temporal) y la tarea muestra **⚠️ Choca con la rama
+principal** con los ficheros. Pulsa **Actualizar con main**: al retomar la tarea, el runner mezcla lo último de la rama principal en
+la rama de la tarea; si no hay conflictos lo sube ya, y si los hay Claude los resuelve conservando los dos cambios, pasa los tests y
+el mismo PR se actualiza. Las rutas protegidas y los secretos se revisan solo sobre lo que cambia la tarea, no sobre lo que entró en
+la rama principal. Esto pasa siempre que se retoma una tarea (también al responder en el hilo).
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.

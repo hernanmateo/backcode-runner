@@ -4,7 +4,7 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { checkRepo, commitPushAndOpenPr, describeWarning, findExpoApp, remoteHead, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, describeWarning, fetchBranches, findConflicts, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, OTA_MISSING, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
@@ -59,6 +59,23 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const resuming = !!feature.sessionId;
   const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
   await store.event(id, "start", resuming ? `Continuando la conversación en ${wt.branch}` : `Worktree ${wt.branch} creado desde ${cfg.remote}/${cfg.baseBranch}`);
+  // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
+  // Claude los resuelve en esta vuelta y el commit de open_pull_request cierra el merge.
+  let conflicts: string[] = [];
+  if (resuming) {
+    const sync = await mergeBaseIntoBranch(wt.path, cfg.remote, cfg.baseBranch).catch((err: Error) => {
+      void store.event(id, "say", `No se pudo actualizar la rama con ${cfg.baseBranch}: ${err.message}`);
+      return null;
+    });
+    if (sync?.status === "merged") {
+      await pushBranch(wt.path, cfg.remote, wt.branch).catch(() => undefined);
+      await store.event(id, "start", `Rama actualizada con ${cfg.remote}/${cfg.baseBranch} (sin conflictos)`);
+      await store.setConflicts(id, []).catch(() => undefined);
+    } else if (sync?.status === "conflicts") {
+      conflicts = sync.files;
+      await store.event(id, "start", `Conflictos con ${cfg.remote}/${cfg.baseBranch} en: ${conflicts.join(", ")}`);
+    }
+  }
   const attachments = await materializeAttachments(store, cfg.projectId, wt.path, feature.attachments ?? []);
   if (attachments.length && !resuming) await store.event(id, "start", `${attachments.length} adjunto(s) disponibles para Claude`);
 
@@ -122,7 +139,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let sessionId = feature.sessionId;
   try {
     const prompt = resuming
-      ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr)
+      ? buildFollowUpPrompt(await store.thread(id).then((t) => t.slice(t.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user")), !!previousPr, { base: cfg.baseBranch, files: conflicts })
       : buildUserPrompt(id, feature, attachments);
     const model = modelFor(feature, cfg.model);
     if (model) await store.event(id, "say", `Modelo: ${model}`);
@@ -328,6 +345,27 @@ async function main(): Promise<void> {
   void learn();
   const knowledgeTimer = setInterval(learn, 6 * 60 * 60_000);
 
+  // Conflictos: cada 5 min se mira si las ramas de mis PR abiertos chocan con la rama base (solo cuando cambia alguna
+  // de las dos) y se marca en la tarea, para verlo antes de mergear.
+  const checked = new Map<string, string>();
+  const checkConflicts = async () => {
+    for (const f of await store.myOpenPrs().catch(() => [])) {
+      if (current?.id === f.id) continue; // se está ejecutando
+      if (!(await fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, f.branch).then(() => true, () => false))) continue;
+      const key = `${await remoteSha(cfg.repoPath, cfg.remote, cfg.baseBranch)}:${await remoteSha(cfg.repoPath, cfg.remote, f.branch)}`;
+      if (checked.get(f.id) === key) continue;
+      const files = await findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, f.branch).catch(() => null);
+      if (files === null) continue;
+      checked.set(f.id, key);
+      if (files.join("\n") !== f.conflicts.join("\n")) {
+        await store.setConflicts(f.id, files).catch(() => undefined);
+        if (files.length) console.warn(`\x1b[33m⚠ La tarea ${f.id} choca con ${cfg.baseBranch} en: ${files.join(", ")}\x1b[0m`);
+      }
+    }
+  };
+  void checkConflicts();
+  const conflictsTimer = setInterval(() => void checkConflicts(), 5 * 60_000);
+
   // Cuota del plan para el panel "Uso del equipo": al arrancar, tras cada tarea, cada 5 min y cuando alguien pulsa ↻
   // en la app. Leerla no llama al modelo ni consume. Nunca dos lecturas a la vez ni más de una cada 15 s.
   let quotaBusy = false;
@@ -397,6 +435,7 @@ async function main(): Promise<void> {
     unsubscribeActions();
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
+    clearInterval(conflictsTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();
     current?.abort.abort();

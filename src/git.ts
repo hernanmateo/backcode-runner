@@ -15,6 +15,68 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+/**
+ * Mezcla lo último de la rama base en la rama de una tarea (en su worktree), antes de retomarla. Sin conflictos queda
+ * hecho el commit de merge; con conflictos el merge queda a medias (marcas <<<<<<<) para que Claude los resuelva y el
+ * commit posterior lo cierre. Devuelve los ficheros en conflicto.
+ */
+export async function mergeBaseIntoBranch(worktree: string, remote: string, baseBranch: string): Promise<{ status: "uptodate" | "merged" | "conflicts"; files: string[] }> {
+  await git(worktree, ["fetch", "--quiet", remote, baseBranch]);
+  const base = `${remote}/${baseBranch}`;
+  if (await git(worktree, ["merge-base", "--is-ancestor", base, "HEAD"]).then(() => true, () => false)) return { status: "uptodate", files: [] };
+  const ok = await git(worktree, ["merge", "--no-edit", "--no-verify", base]).then(() => true, () => false);
+  if (ok) return { status: "merged", files: [] };
+  const files = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+  if (!files.length) {
+    // Falló por otro motivo (no por conflictos): se deja como estaba.
+    await git(worktree, ["merge", "--abort"]).catch(() => undefined);
+    throw new Error(`No se pudo mezclar ${base} en la rama`);
+  }
+  return { status: "conflicts", files };
+}
+
+/**
+ * ¿La rama de una tarea choca con la rama base? Prueba la mezcla en una copia temporal sin commitear y la deshace.
+ * Devuelve los ficheros en conflicto (vacío = se puede mergear sin problemas).
+ */
+export async function findConflicts(repoPath: string, worktreesDir: string, remote: string, baseBranch: string, branch: string): Promise<string[]> {
+  await git(repoPath, ["fetch", "--quiet", remote, baseBranch, `${branch}:refs/remotes/${remote}/${branch}`]);
+  // git >= 2.38: merge-tree lo calcula sin tocar ninguna copia de trabajo (sale con 1 si hay conflictos).
+  const fast = await run("git", [...NO_HOOKS, "merge-tree", "--write-tree", "--name-only", "--no-messages", `${remote}/${baseBranch}`, `${remote}/${branch}`], { cwd: repoPath }).then(
+    () => [] as string[],
+    (e: { code?: number; stdout?: string }) => (e.code === 1 ? String(e.stdout ?? "").split("\n").slice(1).filter(Boolean) : null),
+  );
+  if (fast) return fast;
+  // git más antiguo: se prueba la mezcla en una copia temporal sin commitear y se deshace.
+  const path = join(worktreesDir, "_conflicts");
+  mkdirSync(worktreesDir, { recursive: true });
+  await removeWorktree(repoPath, path);
+  await git(repoPath, ["worktree", "add", "--detach", path, `${remote}/${branch}`]);
+  try {
+    const clean = await git(path, ["merge", "--no-commit", "--no-ff", "--no-verify", `${remote}/${baseBranch}`]).then(() => true, () => false);
+    if (clean) return [];
+    return (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+  } finally {
+    await git(path, ["merge", "--abort"]).catch(() => undefined);
+    await removeWorktree(repoPath, path);
+  }
+}
+
+/** Sube la rama de una tarea (p. ej. tras mezclar la base sin conflictos): el PR se actualiza solo. */
+export async function pushBranch(worktree: string, remote: string, branch: string): Promise<void> {
+  await git(worktree, ["push", "--no-verify", "--force-with-lease", remote, `${branch}:${branch}`]);
+}
+
+/** Trae la rama base y la de una tarea del remoto. */
+export async function fetchBranches(repoPath: string, remote: string, baseBranch: string, branch: string): Promise<void> {
+  await git(repoPath, ["fetch", "--quiet", remote, baseBranch, `${branch}:refs/remotes/${remote}/${branch}`]);
+}
+
+/** Sha de una rama remota (sin red). */
+export async function remoteSha(repoPath: string, remote: string, branch: string): Promise<string> {
+  return git(repoPath, ["rev-parse", `${remote}/${branch}`]).catch(() => "");
+}
+
 export async function createWorktree(opts: {
   repoPath: string;
   worktreesDir: string;
@@ -275,7 +337,7 @@ export async function removeWorktree(repoPath: string, path: string): Promise<vo
 
 export async function stageAll(worktree: string): Promise<string[]> {
   await git(worktree, ["add", "-A"]);
-  const out = await git(worktree, ["diff", "--cached", "--name-only", "-z"]);
+  const out = await git(worktree, ["diff", "--cached", "--name-only", "-z", ...(await stagedAgainst(worktree))]);
   return out.split("\0").filter(Boolean);
 }
 
@@ -294,8 +356,16 @@ export const SECRET_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 /** Busca secretos en las líneas añadidas del diff staged. */
+/**
+ * Contra qué se revisa lo preparado: normalmente HEAD; si se está cerrando un merge con la rama base, contra esa base
+ * (MERGE_HEAD), para revisar solo lo que cambia la tarea y no todo lo que entró en la base (ya revisado allí).
+ */
+async function stagedAgainst(worktree: string): Promise<string[]> {
+  return (await git(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).catch(() => "")) ? ["MERGE_HEAD"] : [];
+}
+
 export async function scanStagedForSecrets(worktree: string): Promise<string[]> {
-  const diff = await git(worktree, ["diff", "--cached", "-U0", "--no-color"]);
+  const diff = await git(worktree, ["diff", "--cached", "-U0", "--no-color", ...(await stagedAgainst(worktree))]);
   const findings: string[] = [];
   let file = "";
   for (const line of diff.split("\n")) {

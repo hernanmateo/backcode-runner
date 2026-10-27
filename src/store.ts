@@ -269,6 +269,19 @@ export class Store {
     return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
   }
 
+  /** Mis tareas con PR abierto (terminadas y sin mergear), para vigilar si chocan con la rama base. */
+  async myOpenPrs(): Promise<{ id: string; branch: string; conflicts: string[] }[]> {
+    const snap = await getDocs(query(collection(this.project(), "features"), where("assignee", "==", this.uid), where("status", "==", "done")));
+    return snap.docs
+      .filter((d) => d.get("branch") && !d.get("merged"))
+      .map((d) => ({ id: d.id, branch: String(d.get("branch")), conflicts: (d.get("conflicts") as string[] | undefined) ?? [] }));
+  }
+
+  /** Marca (o desmarca, con []) los ficheros en conflicto de la rama de una tarea con la base. */
+  async setConflicts(featureId: string, files: string[]): Promise<void> {
+    await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
+  }
+
   async markMerged(featureId: string, sha?: string): Promise<void> {
     await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "" } });
   }
