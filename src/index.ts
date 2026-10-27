@@ -305,12 +305,13 @@ ${green("✓")} ${bold(`Conectado a Backcode · proyecto «${projectName}»`)}
 }
 
 /**
- * Modelo de una tarea: el elegido en la app; en "auto", el que sugirió el refinador según la complejidad; si no hay
- * ninguno, BACKCODE_MODEL o el de la configuración de Claude Code.
+ * Modelo de una tarea: el elegido en la app, o "auto" (Por defecto) = BACKCODE_MODEL o, si está vacío, el modelo por
+ * defecto de la Claude Code de quien la ejecuta (con Max, Opus). La sugerencia de la IA solo es una recomendación.
  */
+const MODEL_IDS: Record<string, string> = { fable: "claude-fable-5-1" };
 function modelFor(feature: Feature, fallback?: string): string | undefined {
-  if (feature.model && feature.model !== "auto") return feature.model;
-  return feature.suggestedModel ?? fallback;
+  if (feature.model && feature.model !== "auto") return MODEL_IDS[feature.model] ?? feature.model;
+  return fallback;
 }
 
 async function main(): Promise<void> {

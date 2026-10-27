@@ -74,11 +74,10 @@ y mergear PRs; Claude nunca tiene acceso a él.
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
 
 ## Modelo de cada tarea
-Al refinar una idea, la IA sugiere un modelo según la complejidad: **Haiku** (cambios triviales), **Sonnet** (la mayoría) u
-**Opus** (cambios grandes o delicados), con el motivo. En la tarea se elige **Auto** (usa el sugerido) o uno fijo; cualquiera
-puede cambiarlo antes de aceptarla y, después, quien la aceptó mientras no se está ejecutando. Si la tarea no trae modelo, se
-usa `BACKCODE_MODEL` o, si está vacío, el de tu Claude Code. La ficha de la tarea muestra el coste y los tokens **por modelo**
-realmente usado (Claude Code puede usar otros para subtareas).
+Por defecto, cada tarea usa el **modelo por defecto de tu Claude Code** (con un plan Max, Opus), o `BACKCODE_MODEL` si lo has
+puesto. En la tarea se puede fijar uno: **Haiku, Sonnet, Opus o Fable** (Fable se pasa con su id completo, `claude-fable-5-1`). Al
+refinar, la IA **recomienda** el más barato que lo hará bien según la complejidad, con el motivo; se aplica con un toque, nunca sola.
+Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el coste y los tokens por modelo realmente usado.
 
 ## Conversación con Claude (hilo por tarea)
 - Si Claude necesita una aclaración, la tarea pasa a **Necesita respuesta** y la pregunta aparece en el hilo de la app.

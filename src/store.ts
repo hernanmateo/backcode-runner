@@ -44,8 +44,8 @@ export interface Feature {
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
   sessionId?: string;
   /** Modelo elegido en la app ("auto" = el que sugirió el refinador) y la sugerencia. */
-  model?: "auto" | "haiku" | "sonnet" | "opus";
-  suggestedModel?: "haiku" | "sonnet" | "opus";
+  model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
+  suggestedModel?: "haiku" | "sonnet" | "opus" | "fable";
   result?: FeatureResult;
 }
 
