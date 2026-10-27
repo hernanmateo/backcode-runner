@@ -118,6 +118,9 @@ El runner lo detecta al arrancar, leyendo la rama base:
 Tras publicar, las tareas mergeadas desde la app cuyo commit de merge va incluido en lo publicado quedan marcadas como
 **Desplegadas** en ese canal (preview o production).
 
+**Rollback rápido:** desde la pantalla de OTA, un admin puede volver a publicar la versión anterior de un canal. El runner solo
+acepta commits que ya están en la rama base y no espera checks (esa versión ya se publicó); pasa por el mismo script o `eas update`.
+
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
 ## Mapa e icono del proyecto

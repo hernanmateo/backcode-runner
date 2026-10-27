@@ -14,6 +14,8 @@ export interface Action {
   featureId?: string;
   channel?: "preview" | "production";
   message?: string;
+  /** Rollback: volver a publicar este commit (una versión anterior ya publicada) en lugar del último de la rama base. */
+  commit?: string;
 }
 export interface ActionResult {
   url?: string;
@@ -35,7 +37,7 @@ function requireGreen(checks: Checks, what: string): ActionResult | null {
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
-  return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode");
+  return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
 }
 
 /** Abre el PR de una tarea cuya rama ya está subida (p. ej. hecha en modo "solo rama"), sin ejecutar a Claude. */
@@ -70,13 +72,19 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
 /** En xprem la rama de producción es `prod` (el canal `production` del binario apunta a ella). */
 const SCRIPT_BRANCH: Record<string, string> = { production: "prod", preview: "preview" };
 
-async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string) {
-  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string) {
+  const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
+  if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
+    return { ok: false, result: { error: `El commit ${rollbackTo.slice(0, 7)} no está en ${cfg.remote}/${cfg.baseBranch}: no se puede volver a él` } };
+  }
+  const commit = rollbackTo ?? head;
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: "El repositorio no es una app Expo con eas.json" } };
   if (!app.ota) return { ok: false, result: { error: OTA_MISSING } };
   if (!app.channels.includes(channel)) return { ok: false, result: { error: `El canal ${channel} no está en eas.json` } };
-  if (host) {
+  // En un rollback no se esperan los checks: esa versión ya se publicó antes y hay prisa por deshacer.
+  if (host && !rollbackTo) {
     const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
     if (blocked) return { ok: false, result: blocked };
   }
@@ -108,8 +116,8 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       out = await exec(["npx", "--yes", "eas-cli@latest", "update", "--channel", channel, "--environment", channel, "--message", message.slice(0, 200), "--platform", "all", "--non-interactive"], dir);
     }
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
-    // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal.
-    for (const f of await store.mergedNotDeployed(channel).catch(() => [])) {
+    // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback).
+    for (const f of rollbackTo ? [] : await store.mergedNotDeployed(channel).catch(() => [])) {
       if (await isAncestor(cfg.repoPath, f.sha, commit)) await store.markDeployed(f.id, channel, commit).catch(() => undefined);
     }
     return { ok: true, result: { url, sha: commit, log: out.slice(-1500) } };
