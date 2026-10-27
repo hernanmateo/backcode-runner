@@ -328,13 +328,24 @@ async function main(): Promise<void> {
   void learn();
   const knowledgeTimer = setInterval(learn, 6 * 60 * 60_000);
 
-  // Cuota del plan para el panel "Uso del equipo": al arrancar, tras cada tarea y cada 30 min.
+  // Cuota del plan para el panel "Uso del equipo": al arrancar, tras cada tarea, cada 5 min y cuando alguien pulsa ↻
+  // en la app. Leerla no llama al modelo ni consume. Nunca dos lecturas a la vez ni más de una cada 15 s.
+  let quotaBusy = false;
+  let quotaAt = 0;
   refreshQuota = async () => {
-    const quota = await readQuota(agentEnv());
-    if (quota) await store.saveQuota(quota).catch((err) => console.warn(`[quota] ${(err as Error).message}`));
+    if (quotaBusy || Date.now() - quotaAt < 15_000) return;
+    quotaBusy = true;
+    try {
+      const quota = await readQuota(agentEnv());
+      quotaAt = Date.now();
+      if (quota) await store.saveQuota(quota).catch((err) => console.warn(`[quota] ${(err as Error).message}`));
+    } finally {
+      quotaBusy = false;
+    }
   };
   void refreshQuota();
-  const quotaTimer = setInterval(() => void refreshQuota(), 30 * 60_000);
+  const quotaTimer = setInterval(() => void refreshQuota(), 5 * 60_000);
+  const stopQuotaRequests = await store.watchQuotaRequests(() => void refreshQuota()).catch(() => () => undefined);
 
   // Solo las tareas que este usuario aceptó en este proyecto, por prioridad y orden de aceptación.
   const unsubscribe = onSnapshot(
@@ -386,6 +397,7 @@ async function main(): Promise<void> {
     unsubscribeActions();
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
+    stopQuotaRequests();
     knowledgeAbort.abort();
     current?.abort.abort();
     while (busy) await new Promise((r) => setTimeout(r, 200));

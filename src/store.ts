@@ -11,6 +11,7 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  onSnapshot,
   increment,
   query,
   runTransaction,
@@ -316,6 +317,26 @@ export class Store {
   }
 
   /** Publica la cuota del plan de este usuario en todos sus grupos (es de la cuenta, no del proyecto). */
+  /** Avisa cuando alguien pide refrescar la cuota de este usuario (botón ↻ de la app) en cualquiera de sus grupos. */
+  async watchQuotaRequests(onRequest: () => void): Promise<() => void> {
+    const groups = await getDocs(query(collection(this.db, "groups"), where("memberIds", "array-contains", this.uid)));
+    let last = Date.now();
+    const unsubs = groups.docs.map((g) =>
+      onSnapshot(
+        doc(this.db, "groups", g.id, "quotaRequests", this.uid),
+        (d) => {
+          const at = (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0;
+          if (at > last) {
+            last = at;
+            onRequest();
+          }
+        },
+        () => undefined,
+      ),
+    );
+    return () => unsubs.forEach((u) => u());
+  }
+
   async saveQuota(quota: Quota): Promise<void> {
     const groups = await getDocs(query(collection(this.db, "groups"), where("memberIds", "array-contains", this.uid)));
     await Promise.all(groups.docs.map((g) => setDoc(doc(this.db, "groups", g.id, "quota", this.uid), { ...quota, updatedAt: serverTimestamp() })));

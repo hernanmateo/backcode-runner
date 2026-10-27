@@ -139,7 +139,9 @@ de git y lo sube para mostrarlo en la app, salvo que un admin elija otro.
 
 ## Uso y cuota
 El runner publica en tu grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
-cuota de 5 h y semanal (dato orientativo de una API experimental de Claude Code). Lo ves en **Grupo → Uso del equipo**.
+cuota de 5 h y semanal (dato orientativo de una API experimental de Claude Code). Lo ves en **Grupo → Uso del equipo** y en el
+perfil de cada miembro. La cuota se lee al arrancar, tras cada tarea, cada 5 minutos y cuando alguien pulsa ↻ en la app (leerla no
+llama al modelo ni consume); si tu runner está apagado, se ve la última lectura.
 
 ## Seguridad
 El texto de las tareas lo escriben otros miembros del grupo: se trata como **dato no confiable**.
