@@ -219,6 +219,42 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
   return null;
 }
 
+/**
+ * Destinos de despliegue que el repo ofrece a Backcode: scripts `backcode:deploy:<nombre>` de cualquier package.json
+ * (en un monorepo, uno por app, web, api…). Solo estos: un `deploy` sin su línea `backcode:` nunca se ofrece.
+ */
+export interface DeployTarget {
+  /** `<carpeta>#<nombre>` (carpeta "" = raíz): lo que pide la app y se vuelve a comprobar al ejecutar. */
+  id: string;
+  name: string;
+  dir: string;
+  pm: "npm" | "pnpm" | "yarn" | "bun";
+}
+
+export const DEPLOY_PREFIX = "backcode:deploy:";
+const DEPLOY_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+export async function findDeployTargets(repoPath: string, commit: string): Promise<DeployTarget[]> {
+  const files = (await git(repoPath, ["ls-tree", "-r", "--name-only", commit])).split("\n").filter((f) => !/(^|\/)node_modules\//.test(f));
+  const out: DeployTarget[] = [];
+  for (const pkg of files.filter((f) => /(^|\/)package\.json$/.test(f))) {
+    const dir = pkg.includes("/") ? pkg.slice(0, pkg.lastIndexOf("/")) : "";
+    let scripts: Record<string, unknown> = {};
+    try {
+      scripts = (JSON.parse(await git(repoPath, ["show", `${commit}:${pkg}`])) as { scripts?: Record<string, unknown> }).scripts ?? {};
+    } catch {
+      continue;
+    }
+    const has = (f: string) => files.includes(dir ? `${dir}/${f}` : f) || files.includes(f);
+    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
+    for (const key of Object.keys(scripts)) {
+      const name = key.startsWith(DEPLOY_PREFIX) ? key.slice(DEPLOY_PREFIX.length) : "";
+      if (DEPLOY_NAME_RE.test(name) && typeof scripts[key] === "string") out.push({ id: `${dir}#${name}`, name, dir, pm });
+    }
+  }
+  return out.slice(0, 20);
+}
+
 /** Excluye una ruta de git en el repo (info/exclude, compartido por los worktrees) sin tocar su .gitignore. */
 export async function excludeFromGit(worktree: string, pattern: string): Promise<void> {
   const common = await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);

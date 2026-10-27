@@ -128,7 +128,7 @@ export class Store {
   warnings: RepoWarning[] = [];
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   // expo: el repo es una app Expo (la app ofrece la guía de OTA aunque aún no tenga).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null } = { pr: null, expo: false, ota: null, build: null };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null } = { pr: null, expo: false, deploys: [], ota: null, build: null };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así

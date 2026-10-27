@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, type ExpoApp, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
+import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import type { Store } from "./store.js";
@@ -13,7 +13,9 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy";
+  /** Despliegue: `<carpeta>#<nombre>` de un script `backcode:deploy:<nombre>` detectado en el repo. */
+  target?: string;
   featureId?: string;
   channel?: "preview" | "production";
   message?: string;
@@ -36,6 +38,7 @@ export interface ActionResult {
 const OTA_TIMEOUT_MS = 25 * 60_000;
 /** Una build local (sobre todo la de iOS) puede tardar bastante más que un OTA. */
 const BUILD_TIMEOUT_MS = 90 * 60_000;
+const DEPLOY_TIMEOUT_MS = 30 * 60_000;
 /** Perfil de eas.json de las builds para testers: el de tienda (TestFlight e Internal Testing solo aceptan builds de tienda). */
 const BUILD_PROFILE = "production";
 // Las mismas comprobaciones que firestore.rules: llegan a la build como variables de entorno.
@@ -52,6 +55,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
   if (action.type === "build") return publishBuild(cfg, host, action);
+  if (action.type === "deploy") return runDeploy(cfg, host, action.target ?? "");
   return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
 }
 
@@ -213,6 +217,37 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
   }
 }
 
+/**
+ * Despliegue de un destino del repo (web, api, scripts…): ejecuta su script `backcode:deploy:<nombre>` en una copia
+ * limpia de la rama base, con los checks en verde, sin interacción y con los .env locales (ignorados por git) de quien
+ * lo pide. El destino se vuelve a buscar en el repo: la app solo elige entre los que el propio repo declara.
+ */
+async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: string) {
+  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  const target = (await findDeployTargets(cfg.repoPath, commit)).find((d) => d.id === targetId);
+  if (!target) return { ok: false, result: { error: t("deploy.unknown", { target: targetId }) } };
+  if (host) {
+    const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
+    if (blocked) return { ok: false, result: blocked };
+  }
+  const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_deploy", commit);
+  const dir = join(wt, target.dir);
+  try {
+    await installFrozen(target, wt, dir);
+    const envFiles = [".env", ".env.local", ".env.production", ".env.production.local"];
+    await copyLocalFiles(cfg.repoPath, wt, [...envFiles, ...(target.dir ? envFiles.map((f) => join(target.dir, f)) : [])]);
+    const out = await exec([target.pm, "run", `${DEPLOY_PREFIX}${target.name}`], dir, { timeoutMs: DEPLOY_TIMEOUT_MS });
+    // El enlace que suelen imprimir (URL de la web, del servicio…): el último que aparezca.
+    const url = out.match(/https:\/\/[^\s"'<>)\]]+/g)?.pop();
+    return { ok: true, result: { url, sha: commit, log: out.slice(-1400) } };
+  } catch (err) {
+    return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    await removeWorktree(cfg.repoPath, wt);
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
 /** Primer objeto JSON de una salida que puede llevar avisos antes o después. */
 function parseJson(out: string): unknown {
   const start = out.indexOf("{");
@@ -226,10 +261,12 @@ function parseJson(out: string): unknown {
 }
 
 /** Dependencias con el gestor del repo (lockfile en la app o en la raíz del monorepo). */
-async function installFrozen(app: ExpoApp, wt: string, dir: string): Promise<void> {
+async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: string): Promise<void> {
   const has = (f: string) => existsSync(join(dir, f)) || existsSync(join(wt, f));
   const frozen = { pnpm: ["pnpm", "install", "--frozen-lockfile"], yarn: ["yarn", "install", "--frozen-lockfile"], bun: ["bun", "install", "--frozen-lockfile"], npm: ["npm", "ci"] }[app.pm];
-  const installDir = existsSync(join(dir, "package.json")) && !has("pnpm-workspace.yaml") ? dir : wt;
+  // Donde está el lockfile: la carpeta del paquete o, en un monorepo (workspaces), la raíz.
+  const lockfile = { pnpm: "pnpm-lock.yaml", yarn: "yarn.lock", bun: existsSync(join(dir, "bun.lockb")) || existsSync(join(wt, "bun.lockb")) ? "bun.lockb" : "bun.lock", npm: "package-lock.json" }[app.pm];
+  const installDir = existsSync(join(dir, "package.json")) && existsSync(join(dir, lockfile)) && !has("pnpm-workspace.yaml") ? dir : wt;
   await exec(frozen, installDir);
 }
 

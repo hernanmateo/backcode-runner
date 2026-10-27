@@ -158,6 +158,23 @@ En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y
 Usa tu sesión de EAS y las credenciales de las tiendas que tengas en EAS (`eas credentials`); no se copia ningún `.env` local ni
 se toca `ios/`/`android/`. El número de build lo gestiona EAS (`appVersionSource: remote` + `autoIncrement`).
 
+### Despliegues del repo (monorepos: web, api, scripts…)
+Pestaña **Despliegues** de la pantalla de publicar (solo admins y owner). El runner busca en todos los `package.json` del repo
+(sin `node_modules`) los scripts que se llaman `backcode:deploy:<nombre>` y ofrece un botón por cada uno; el sufijo es el nombre
+(`web`, `api`, `docs`…; minúsculas, números y guiones). Solo esos: un `deploy` sin su línea `backcode:` nunca aparece. Lo normal
+es duplicar el que ya tenéis, sin renombrarlo:
+
+```json
+"deploy": "firebase deploy --only hosting",
+"backcode:deploy:web": "npm run deploy"
+```
+
+Al pulsarlo, en una copia limpia de la rama base y con los checks en verde: instala con el gestor del repo (donde esté el
+lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `.env.production` y `.env.production.local`
+(solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
+interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
+detectan al arrancar: tras añadir uno, reinicia el runner.
+
 ## Mapa e icono del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato
 (`BACKCODE_KNOWLEDGE_MODEL`, por defecto `haiku`; unos céntimos) y sube un resumen: stack, estructura, módulos, comandos y
