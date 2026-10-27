@@ -124,7 +124,8 @@ convenciones. La IA que prepara los encargos lo usa para escribir prompts con ru
 (nunca tus `.env` locales), no tiene Bash ni red, y si el resumen parece contener un secreto se descarta. Desactívalo con
 `BACKCODE_KNOWLEDGE=off`.
 
-También busca el **icono del proyecto** en el repo (el `expo.icon` de `app.json`, `apple-touch-icon`, `logo`, `favicon`…) leyéndolo
+También busca el **icono del proyecto** en el repo (el `icon` de `app.json` o de `app.config.js/ts`, `apple-touch-icon`, `logo`,
+`favicon`…) leyéndolo
 de git y lo sube para mostrarlo en la app, salvo que un admin elija otro.
 
 ## Uso y cuota

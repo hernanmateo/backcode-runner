@@ -80,9 +80,19 @@ export async function findRepoIcon(repoPath: string, commit: string): Promise<{ 
       // app.json no válido: se ignora
     }
   }
+  // Config dinámica (app.config.js/ts): se busca el `icon: "./…"` de primer nivel en el texto, sin ejecutarla.
+  for (const cfgFile of candidates.length ? [] : files.filter((f) => /(^|\/)app\.config\.(js|ts|mjs|cjs)$/.test(f.path))) {
+    const icon = /^\s*icon:\s*['"]([^'"]+\.(?:png|jpe?g))['"]/m.exec((await show(cfgFile.path)).toString("utf8"))?.[1];
+    if (!icon) continue;
+    const dir = cfgFile.path.includes("/") ? cfgFile.path.slice(0, cfgFile.path.lastIndexOf("/") + 1) : "";
+    const target = files.find((f) => f.path === dir + icon.replace(/^\.\//, ""));
+    if (ok(target)) candidates.push(target!);
+  }
   if (!candidates.length) {
     const rank = (p: string) => ["apple-touch-icon", "app-icon", "icon", "logo", "favicon"].findIndex((n) => new RegExp(`(^|/)${n}[^/]*$`, "i").test(p));
-    candidates.push(...files.filter((f) => ok(f) && rank(f.path) >= 0).sort((a, b) => rank(a.path) - rank(b.path) || b.size - a.size));
+    // A igual nombre, mejor el exacto (icon.png) que una variante (icon-dark.png); luego el más grande.
+    const exact = (p: string) => (/(^|\/)(apple-touch-icon|app-icon|icon|logo|favicon)\.(png|jpe?g)$/i.test(p) ? 0 : 1);
+    candidates.push(...files.filter((f) => ok(f) && rank(f.path) >= 0).sort((a, b) => rank(a.path) - rank(b.path) || exact(a.path) - exact(b.path) || b.size - a.size));
   }
   const best = candidates[0];
   if (!best) return null;
