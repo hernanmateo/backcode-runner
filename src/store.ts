@@ -270,11 +270,11 @@ export class Store {
   }
 
   /** Mis tareas con PR abierto (terminadas y sin mergear), para vigilar si chocan con la rama base. */
-  async myOpenPrs(): Promise<{ id: string; branch: string; conflicts: string[] }[]> {
+  async myOpenPrs(): Promise<{ id: string; branch: string; prUrl?: string; conflicts: string[] }[]> {
     const snap = await getDocs(query(collection(this.project(), "features"), where("assignee", "==", this.uid), where("status", "==", "done")));
     return snap.docs
       .filter((d) => d.get("branch") && !d.get("merged"))
-      .map((d) => ({ id: d.id, branch: String(d.get("branch")), conflicts: (d.get("conflicts") as string[] | undefined) ?? [] }));
+      .map((d) => ({ id: d.id, branch: String(d.get("branch")), prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl, conflicts: (d.get("conflicts") as string[] | undefined) ?? [] }));
   }
 
   /** Marca (o desmarca, con []) los ficheros en conflicto de la rama de una tarea con la base. */

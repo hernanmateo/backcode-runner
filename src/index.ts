@@ -345,12 +345,23 @@ async function main(): Promise<void> {
   void learn();
   const knowledgeTimer = setInterval(learn, 6 * 60 * 60_000);
 
-  // Conflictos: cada 5 min se mira si las ramas de mis PR abiertos chocan con la rama base (solo cuando cambia alguna
-  // de las dos) y se marca en la tarea, para verlo antes de mergear.
+  // PR abiertos, cada 5 min: si ya se mergearon fuera de la app se marcan como mergeados; si no, se mira si chocan con
+  // la rama base (solo cuando cambia alguna de las dos) y se marca en la tarea, para verlo antes de mergear.
   const checked = new Map<string, string>();
   const checkConflicts = async () => {
     for (const f of await store.myOpenPrs().catch(() => [])) {
       if (current?.id === f.id) continue; // se está ejecutando
+      // ¿Se mergeó a mano en GitHub/Bitbucket? Se marca como mergeada (y la próxima OTA la marcará desplegada).
+      if (prHost && f.prUrl?.startsWith("https://")) {
+        const pr = await prHost.prState(f.prUrl).catch(() => null);
+        if (pr?.state === "merged") {
+          await store.markMerged(f.id, pr.sha).catch((err) => console.warn(`[merge] ${(err as Error).message}`));
+          await store.setConflicts(f.id, []).catch(() => undefined);
+          console.log(`[backcode] la tarea ${f.id} se mergeó fuera de la app: marcada como mergeada`);
+          continue;
+        }
+        if (pr?.state === "closed") continue; // cerrado sin mergear: nada que vigilar
+      }
       if (!(await fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, f.branch).then(() => true, () => false))) continue;
       const key = `${await remoteSha(cfg.repoPath, cfg.remote, cfg.baseBranch)}:${await remoteSha(cfg.repoPath, cfg.remote, f.branch)}`;
       if (checked.get(f.id) === key) continue;
