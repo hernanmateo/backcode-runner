@@ -200,6 +200,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
         }
       } else if (msg.type === "system" && msg.subtype === "init") {
+        if (msg.session_id && msg.session_id !== sessionId) await store.setSession(id, msg.session_id);
         sessionId = msg.session_id;
       } else if (msg.type === "result") {
         sessionId = msg.session_id;
@@ -358,6 +359,7 @@ async function main(): Promise<void> {
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
   await store.recoverOrphans();
+  await store.recoverActions().catch(() => undefined);
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
   // Al arrancar, tu copia local de la rama base se pone al día si es seguro (p. ej. tras merges hechos por otros).
   const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message, changed: [] as string[] }));
@@ -454,7 +456,10 @@ async function main(): Promise<void> {
         const action = await store.claimAction(id);
         if (!action) continue;
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
-        const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action).catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
+        const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
+        const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action)
+          .catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }))
+          .finally(() => clearInterval(actionLease));
         await store.finishAction(id, ok, result as Record<string, unknown>);
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
       }
