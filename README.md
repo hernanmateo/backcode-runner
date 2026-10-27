@@ -16,13 +16,15 @@ Un runner atiende **un proyecto**; puedes tener tantos activos como proyectos.
 
 ## Conectar un proyecto
 1. En la app: **Proyecto → Conectar paso a paso**. Indica la carpeta del repo en tu ordenador, la rama base y dónde abrir los PR
-   (GitHub, Bitbucket o solo subir la rama), y copia la configuración.
-2. En la carpeta del runner:
+   (GitHub, Bitbucket o solo subir la rama).
+2. En la carpeta del runner lanza `npm run connect`: se queda esperando la configuración.
    ```bash
-   git clone https://github.com/hernanmateo/backcode-runner.git && cd backcode-runner   # solo la primera vez
-   npm install
-   npm run connect     # pega la configuración (⌘V) y pulsa Enter
+   git clone https://github.com/hernanmateo/backcode-runner.git && cd backcode-runner   # solo la primera vez en este ordenador
+   npm install                                                                          # solo la primera vez
+   npm run connect
    ```
+3. Ahora, en la app, **Copiar configuración** y pégala en esa terminal (⌘V) + Enter. (En este orden para que copiar el comando no
+   pise la configuración en el portapapeles.)
    `npm run connect` la guarda en `.env.<proyecto>` (permisos 600, solo tú puedes leerlo) y arranca el runner.
    En la app verás **"¡Tu Claude Code está conectado!"** y en la terminal los siguientes pasos.
 
