@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
@@ -219,6 +219,9 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
     // acabar dentro del binario de la tienda.
     const services = [resolved?.ios?.googleServicesFile, resolved?.android?.googleServicesFile].filter((f): f is string => typeof f === "string");
     await copyLocalFiles(cfg.repoPath, wt, services.map((f) => join(app.appDir, f)));
+    // Las claves de las tiendas del perfil de submit (fastlane/AuthKey_*.p8, play-service-account.json) también están
+    // ignoradas por git: sin ellas `eas submit` pide la ruta y falla. Se enlazan (no se copian) a las del repo.
+    await linkLocalFiles(cfg.repoPath, wt, submitKeyPaths(dir).map((f) => join(app.appDir, f)));
     let log = "";
     for (const platform of platforms) {
       const artifact = join(wt, `backcode-build.${platform === "ios" ? "ipa" : "aab"}`);
@@ -287,6 +290,21 @@ function profileEnv(dir: string, channel: string): Record<string, string> {
   }
 }
 
+/** Rutas (relativas a la app) de las claves de tienda del perfil de submit `production` de eas.json. */
+function submitKeyPaths(dir: string): string[] {
+  try {
+    const eas = JSON.parse(readFileSync(join(dir, "eas.json"), "utf8")) as {
+      submit?: Record<string, { ios?: { ascApiKeyPath?: unknown }; android?: { serviceAccountKeyPath?: unknown } }>;
+    };
+    const profile = eas.submit?.[BUILD_PROFILE];
+    return [profile?.ios?.ascApiKeyPath, profile?.android?.serviceAccountKeyPath].filter(
+      (f): f is string => typeof f === "string" && !isAbsolute(f) && !normalize(f).startsWith(".."),
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** Primer objeto JSON de una salida que puede llevar avisos antes o después. */
 function parseJson(out: string): unknown {
   const start = out.indexOf("{");
@@ -321,6 +339,21 @@ async function copyLocalFiles(repo: string, wt: string, paths: string[]): Promis
     mkdirSync(dirname(join(wt, p)), { recursive: true });
     copyFileSync(from, join(wt, p));
     chmodSync(join(wt, p), 0o600);
+  }
+}
+
+/**
+ * Como copyLocalFiles, pero deja un enlace simbólico al fichero real (las claves compartidas en ~/apps/.store-credentials):
+ * las claves no se duplican y al borrar la copia limpia solo se va el enlace.
+ */
+async function linkLocalFiles(repo: string, wt: string, paths: string[]): Promise<void> {
+  for (const p of paths) {
+    const from = join(repo, p);
+    if (!existsSync(from) || existsSync(join(wt, p))) continue;
+    const ignored = await new Promise<boolean>((resolve) => spawn("git", ["check-ignore", "-q", p], { cwd: repo }).on("close", (code) => resolve(code === 0)));
+    if (!ignored) continue;
+    mkdirSync(dirname(join(wt, p)), { recursive: true });
+    symlinkSync(realpathSync(from), join(wt, p));
   }
 }
 
