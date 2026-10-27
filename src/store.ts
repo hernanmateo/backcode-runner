@@ -11,6 +11,7 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  increment,
   query,
   runTransaction,
   serverTimestamp,
@@ -300,7 +301,8 @@ export class Store {
 
   async saveKnowledge(summary: string, commit: string, costUsd: number): Promise<void> {
     // merge: conserva el icono del repo (iconPath) al regenerar el mapa.
-    await setDoc(this.knowledge(), { summary, commit, costUsd, updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
+    // totalCostUsd/runs: coste acumulado de todos los mapas generados (las reglas comprueban que suma exactamente costUsd).
+    await setDoc(this.knowledge(), { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
   }
 
   /** Publica la cuota del plan de este usuario en todos sus grupos (es de la cuenta, no del proyecto). */
