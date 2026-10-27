@@ -90,6 +90,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
   const previousPr = feature.result?.prUrl;
   let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
+  let afterMerge: FeatureResult["afterMerge"]; // pasos tras mergear que declara Claude al abrir el PR
+  // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
+  const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
   let question: string | undefined; // pregunta de Claude (ask_user)
   const prServer = createSdkMcpServer({
     name: "backcode",
@@ -97,9 +100,22 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     tools: [
       tool(
         "open_pull_request",
-        "Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete.",
-        { title: z.string().min(5).max(120), body: z.string().min(20).max(20_000) },
-        async ({ title, body }) => {
+        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${deployNames.length ? ` This repo can run these deploy targets from the app (set deployTarget to the matching one instead of, or as well as, the command): ${deployNames.join(", ")}.` : ""}`,
+        {
+          title: z.string().min(5).max(120),
+          body: z.string().min(20).max(20_000),
+          afterMerge: z
+            .array(
+              z.object({
+                why: z.string().min(3).max(300),
+                command: z.string().min(1).max(500).optional(),
+                deployTarget: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).optional(),
+              }),
+            )
+            .max(10)
+            .optional(),
+        },
+        async ({ title, body, afterMerge: steps }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
           if (prUrl) return fail(t("pr.already", { url: prUrl }));
 
@@ -123,6 +139,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             return fail(t("pr.failed", { error: String(err).slice(0, 500) }));
           }
           await store.event(id, "pr", prUrl);
+          // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
+          afterMerge = steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
@@ -235,7 +253,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // El resumen de cada vuelta queda en el hilo; si preguntó, la pregunta ya está publicada.
   if (!question && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
   if (question && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
-  if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined }, sessionId };
+  if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
   return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr") }, sessionId };
