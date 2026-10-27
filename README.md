@@ -98,6 +98,9 @@ El runner lo detecta al arrancar, leyendo la rama base:
 2. **EAS Update**: si la config de Expo tiene `updates.url` en `u.expo.dev`, ejecuta `eas update --channel <canal>`.
 3. Si no hay ninguno, no se ofrece OTA y la terminal lo avisa (EAS Update se activa con `npx eas-cli update:configure`).
 
+Tras publicar, las tareas mergeadas desde la app cuyo commit de merge va incluido en lo publicado quedan marcadas como
+**Desplegadas** en ese canal (preview o production).
+
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
 ## Mapa e icono del proyecto

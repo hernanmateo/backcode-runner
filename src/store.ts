@@ -264,6 +264,18 @@ export class Store {
     await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "" } });
   }
 
+  /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
+  async mergedNotDeployed(channel: string): Promise<{ id: string; sha: string }[]> {
+    const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
+    return snap.docs
+      .filter((d) => d.get("merged.sha") && !d.get(`deployed.${channel}`))
+      .map((d) => ({ id: d.id, sha: String(d.get("merged.sha")) }));
+  }
+
+  async markDeployed(featureId: string, channel: string, sha: string): Promise<void> {
+    await updateDoc(this.feature(featureId), { [`deployed.${channel}`]: { at: serverTimestamp(), by: this.uid, sha } });
+  }
+
   knowledge() {
     return doc(this.project(), "knowledge", "repo");
   }

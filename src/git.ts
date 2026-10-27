@@ -207,6 +207,14 @@ export async function checkRepo(repoPath: string, remote: string, baseBranch: st
 }
 
 /** Último commit de la rama base en el remoto (hace fetch antes). */
+/** ¿`ancestor` está contenido en `commit`? (p. ej. el merge de una tarea en el commit publicado por OTA) */
+export async function isAncestor(repoPath: string, ancestor: string, commit: string): Promise<boolean> {
+  return git(repoPath, ["merge-base", "--is-ancestor", ancestor, commit]).then(
+    () => true,
+    () => false,
+  );
+}
+
 export async function remoteHead(repoPath: string, remote: string, baseBranch: string): Promise<string> {
   await git(repoPath, ["fetch", remote, baseBranch]);
   return git(repoPath, ["rev-parse", `${remote}/${baseBranch}`]);

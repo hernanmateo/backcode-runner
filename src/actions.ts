@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, findExpoApp, remoteHead, removeWorktree } from "./git.js";
+import { createDetachedWorktree, findExpoApp, isAncestor, remoteHead, removeWorktree } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import type { Store } from "./store.js";
 
@@ -35,7 +35,7 @@ function requireGreen(checks: Checks, what: string): ActionResult | null {
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
-  return publishOta(cfg, host, action.channel ?? "preview", action.message ?? "Backcode");
+  return publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode");
 }
 
 /** Abre el PR de una tarea cuya rama ya está subida (p. ej. hecha en modo "solo rama"), sin ejecutar a Claude. */
@@ -66,7 +66,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
 /** En xprem la rama de producción es `prod` (el canal `production` del binario apunta a ella). */
 const SCRIPT_BRANCH: Record<string, string> = { production: "prod", preview: "preview" };
 
-async function publishOta(cfg: RunnerConfig, host: PrHost | undefined, channel: "preview" | "production", message: string) {
+async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string) {
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: "El repositorio no es una app Expo con eas.json" } };
@@ -104,6 +104,10 @@ async function publishOta(cfg: RunnerConfig, host: PrHost | undefined, channel: 
       out = await exec(["npx", "--yes", "eas-cli@latest", "update", "--channel", channel, "--environment", channel, "--message", message.slice(0, 200), "--platform", "all", "--non-interactive"], dir);
     }
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
+    // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal.
+    for (const f of await store.mergedNotDeployed(channel).catch(() => [])) {
+      if (await isAncestor(cfg.repoPath, f.sha, commit)) await store.markDeployed(f.id, channel, commit).catch(() => undefined);
+    }
     return { ok: true, result: { url, sha: commit, log: out.slice(-1500) } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
