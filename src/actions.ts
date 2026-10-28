@@ -30,6 +30,8 @@ export interface Action {
   runtimeVersion?: string;
   /** OTA: si la copia que se publica queda con archivos sin commitear, commitearlos en la rama base y publicar igualmente. */
   commitDirty?: boolean;
+  /** OTA «Publicar rápido (peligroso)»: sin la prueba de arranque en el simulador (ni la del runner ni la del script). */
+  skipSmoke?: boolean;
 }
 export interface ActionResult {
   url?: string;
@@ -68,7 +70,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
       ? await publishBuild(cfg, host, action)
       : action.type === "deploy"
         ? await runDeploy(cfg, host, action.target ?? "")
-        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit);
+        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true);
   await syncLocal(cfg);
   return done;
 }
@@ -116,7 +118,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   return { ok: true, result: { url: prUrl, sha } };
 }
 
-async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string, commitDirty = false) {
+async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string, commitDirty = false, skipSmoke = false) {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
   if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
@@ -159,8 +161,9 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback). Si el script del repo sabe lanzarla
     // (BACKCODE_SMOKE_CLI), la hace él DESPUÉS de sus comprobaciones rápidas (árbol limpio, cambios nativos…): así un
     // fallo de esos se ve al momento y no tras la build. Si no, se hace aquí antes de llamarlo.
-    const scriptSmokes = !!scriptArgs && scriptRunsSmoke(dir, app.otaScript ?? "");
-    const smoke = scriptSmokes ? null : await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
+    // Con «Publicar rápido» (lo pide un admin a sabiendas) no hay prueba: ni aquí ni en el script (BACKCODE_SMOKE_DONE=1).
+    const scriptSmokes = !skipSmoke && !!scriptArgs && scriptRunsSmoke(dir, app.otaScript ?? "");
+    const smoke = scriptSmokes || skipSmoke ? null : await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
     if (smoke && !smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
 
     let out: string;
@@ -186,7 +189,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     for (const f of rollbackTo ? [] : await store.mergedNotDeployed(channel).catch(() => [])) {
       if (await isAncestor(cfg.repoPath, f.sha, commit)) await store.markDeployed(f.id, channel, commit).catch(() => undefined);
     }
-    return { ok: true, result: { url, sha: commit, log: `${smoke ? `${smoke.detail}\n` : ""}${out.slice(-1400)}` } };
+    return { ok: true, result: { url, sha: commit, log: `${smoke ? `${smoke.detail}\n` : skipSmoke ? `${t("smoke.skipped")}\n` : ""}${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
