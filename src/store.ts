@@ -28,6 +28,7 @@ import type { RunnerConfig } from "./config.js";
 import type { RepoWarning } from "./git.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
+import { readState, updateState } from "./paths.js";
 
 export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed" | "waiting";
 
@@ -69,6 +70,14 @@ export interface ThreadMessage {
   kind: "message" | "question" | "summary" | "plan";
   text: string;
   at?: Timestamp;
+}
+
+/** Encargo de refinado que prepara refineFeature: instrucciones, petición (con contexto) y adjuntos. */
+export interface RefineJob {
+  uid: string;
+  instructions: string;
+  input: string;
+  attachments?: Attachment[];
 }
 
 /** Vueltas máximas de conversación sobre una misma tarea (evita bucles). */
@@ -139,7 +148,8 @@ export class Store {
   warnings: RepoWarning[] = [];
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   // expo: el repo es una app Expo (la app ofrece la guía de OTA aunque aún no tenga).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null } = { pr: null, expo: false, deploys: [], ota: null, build: null };
+  // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null; refine: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -158,6 +168,8 @@ export class Store {
         doc(this.db, "users", this.uid),
         (d) => {
           setLang(d.get("lang"));
+          // El panel usa el mismo idioma que la app (antes de que lo elijas en él).
+          if (["es", "en", "ca"].includes(d.get("lang")) && readState().profileLang !== d.get("lang")) updateState({ profileLang: d.get("lang") });
           done();
         },
         done,
@@ -303,6 +315,36 @@ export class Store {
     }
   }
 
+  // --- Refinado de ideas con Claude Code: lo encarga refineFeature (servidor) a mi runner si lo activé en la app ---
+
+  /** Encargos de refinado pendientes que pedí yo en este proyecto. */
+  myRefineJobs() {
+    return query(collection(this.project(), "refineJobs"), where("uid", "==", this.uid), where("status", "==", "pending"));
+  }
+
+  /** pending -> running de forma atómica. Devuelve el encargo si lo reclamamos nosotros. */
+  async claimRefine(id: string): Promise<RefineJob | null> {
+    const ref = doc(this.project(), "refineJobs", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "pending" || d.get("uid") !== this.uid) return null;
+      tx.update(ref, { status: "running", updatedAt: serverTimestamp() });
+      return d.data() as RefineJob;
+    });
+  }
+
+  /** Lo que está haciendo Claude (p. ej. «Leyendo src/app.ts»): el servidor lo muestra en vivo en la app. */
+  async refineActivity(id: string, activity: string): Promise<void> {
+    await updateDoc(doc(this.project(), "refineJobs", id), { activity: activity.slice(0, 300), updatedAt: serverTimestamp() }).catch(() => undefined);
+  }
+
+  async finishRefine(id: string, outcome: { result: Record<string, unknown>; model: string; costUsd: number } | { error: string }): Promise<void> {
+    await updateDoc(doc(this.project(), "refineJobs", id), {
+      ...("error" in outcome ? { status: "failed", error: outcome.error.slice(0, 1000) } : { status: "done", ...outcome }),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
   /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */
   async setSession(id: string, sessionId: string): Promise<void> {
     await updateDoc(this.feature(id), { sessionId }).catch(() => undefined);
@@ -391,6 +433,70 @@ export class Store {
     const data = { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp() };
     // Si el servidor aún no admite iconHint (reglas sin desplegar), el mapa se guarda igual sin la pista.
     await setDoc(this.knowledge(), { ...data, iconHint: iconHint ?? deleteField() }, { merge: true }).catch(() => setDoc(this.knowledge(), data, { merge: true }));
+  }
+
+  // --- Proyectos nuevos desde una idea (users/{uid}/scaffolds): los crea el servidor y los atiende cualquier runner mío ---
+
+  /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
+  watchWorkspace(onChange: (w: { projectsDir?: string }) => void): () => void {
+    return onSnapshot(
+      doc(this.db, "users", this.uid, "private", "workspace"),
+      (d) => onChange({ projectsDir: typeof d.get("projectsDir") === "string" ? (d.get("projectsDir") as string) : undefined }),
+      () => undefined,
+    );
+  }
+
+  async workspace(): Promise<{ projectsDir?: string }> {
+    const d = await getDoc(doc(this.db, "users", this.uid, "private", "workspace")).catch(() => null);
+    return { projectsDir: typeof d?.get("projectsDir") === "string" ? (d.get("projectsDir") as string) : undefined };
+  }
+
+  /** Lo que este ordenador puede hacer al crear un proyecto (lo muestra la app; nunca lleva tokens). */
+  async saveMachine(report: Record<string, unknown>): Promise<void> {
+    await setDoc(doc(this.db, "users", this.uid, "private", "machine"), { ...report, updatedAt: serverTimestamp() });
+  }
+
+  myScaffolds() {
+    return query(collection(this.db, "users", this.uid, "scaffolds"), where("status", "==", "pending"));
+  }
+
+  /** pending -> running de forma atómica: con varios runners del mismo usuario, solo uno lo crea. */
+  async claimScaffold(id: string): Promise<Record<string, unknown> | null> {
+    const ref = doc(this.db, "users", this.uid, "scaffolds", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "pending") return null;
+      tx.update(ref, { status: "running", updatedAt: serverTimestamp(), leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
+      return d.data();
+    });
+  }
+
+  async extendScaffoldLease(id: string): Promise<void> {
+    await updateDoc(doc(this.db, "users", this.uid, "scaffolds", id), { leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
+  }
+
+  async scaffoldActivity(id: string, activity: string): Promise<void> {
+    await updateDoc(doc(this.db, "users", this.uid, "scaffolds", id), { activity: activity.slice(0, 300), updatedAt: serverTimestamp() }).catch(() => undefined);
+  }
+
+  async finishScaffold(id: string, ok: boolean, result: { repoUrl?: string; repoPath?: string; error?: string }): Promise<void> {
+    const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
+    await updateDoc(doc(this.db, "users", this.uid, "scaffolds", id), { status: ok ? "done" : "failed", result: clean, updatedAt: serverTimestamp() });
+  }
+
+  /** Al arrancar: los que se quedaron «en marcha» con el lease caducado (se cayó el runner que los creaba) fallan. */
+  async recoverScaffolds(): Promise<void> {
+    const snap = await getDocs(query(collection(this.db, "users", this.uid, "scaffolds"), where("status", "==", "running")));
+    for (const d of snap.docs) {
+      if (((d.get("leaseUntil") as Timestamp | undefined)?.toMillis() ?? 0) > Date.now()) continue;
+      await updateDoc(d.ref, { status: "failed", result: { error: t("scaffold.interrupted") }, updatedAt: serverTimestamp() }).catch(() => undefined);
+      console.log(`[recover] scaffold ${d.id} -> failed`);
+    }
+  }
+
+  /** La URL del repo recién creado, en su proyecto (las Rules solo dejan al runner escribir repoUrl). */
+  async saveRepoUrlOf(projectId: string, url: string): Promise<void> {
+    await updateDoc(doc(this.db, "projects", projectId), { repoUrl: url });
   }
 
   /** Publica la cuota del plan de este usuario en todos sus grupos (es de la cuenta, no del proyecto). */

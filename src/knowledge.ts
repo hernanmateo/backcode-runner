@@ -4,6 +4,7 @@ import { createDetachedWorktree, findRepoIcon, remoteHead, removeWorktree, SECRE
 import { createGuardHook } from "./guard.js";
 import { t } from "./i18n.js";
 import type { Store } from "./store.js";
+import { claudeExecutable } from "./preflight.js";
 
 // Mapa del repositorio: Claude (modelo barato, solo lectura) resume el proyecto y se guarda en
 // projects/{pid}/knowledge/repo. La IA que prepara los encargos lo usa para conocer el código.
@@ -56,6 +57,7 @@ async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, s
     for await (const msg of query({
       prompt: PROMPT,
       options: {
+        pathToClaudeCodeExecutable: claudeExecutable(),
         cwd: path,
         model: cfg.knowledgeModel,
         abortController: abort,

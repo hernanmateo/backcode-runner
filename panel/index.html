@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Backcode Runner</title>
+  <link rel="icon" href="/icon.png" type="image/png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <meta name="theme-color" content="#F5F2EA" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1F1E1D" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="/panel.css">
+  <script src="/panel.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <img src="/icon.png" alt="" width="36" height="36">
+    <div class="title">
+      <h1>Backcode Runner</h1>
+      <span id="version" class="muted"></span>
+    </div>
+    <span id="mode" class="pill"></span>
+    <select id="lang" aria-label="Idioma · Language · Idioma">
+      <option value="es">Español</option>
+      <option value="en">English</option>
+      <option value="ca">Català</option>
+    </select>
+  </header>
+
+  <main>
+    <div id="banner" class="banner" hidden></div>
+    <div id="legacy"></div>
+
+    <section id="checks-section">
+      <div class="section-head">
+        <h2 data-s="machine"></h2>
+        <button id="recheck" class="link" type="button" data-s="recheck"></button>
+      </div>
+      <ul id="checks" class="checks"></ul>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2 data-s="projects"></h2>
+      </div>
+      <div id="projects" class="projects"></div>
+    </section>
+
+    <section id="accounts-section">
+      <div class="section-head">
+        <h2 data-s="accounts"></h2>
+      </div>
+      <div class="card">
+        <p class="muted" data-s="accountsBody"></p>
+        <div id="accounts"></div>
+      </div>
+    </section>
+
+    <section id="logs-section" hidden>
+      <div class="section-head">
+        <h2 id="logs-title"></h2>
+        <button id="logs-close" class="link" type="button" data-s="close"></button>
+      </div>
+      <pre id="logs" class="logs"></pre>
+    </section>
+
+    <section id="connect-section">
+      <div class="section-head">
+        <h2 data-s="connectTitle"></h2>
+      </div>
+      <div class="card">
+        <ol class="steps">
+          <li data-s="connectStep1"></li>
+          <li data-s="connectStep2"></li>
+        </ol>
+        <div class="row">
+          <button id="paste" type="button" class="primary" data-s="pasteClipboard"></button>
+          <button id="show-text" type="button" class="link" data-s="pasteByHand"></button>
+        </div>
+        <textarea id="config" rows="6" spellcheck="false" autocomplete="off" hidden></textarea>
+        <div class="row" id="connect-row" hidden>
+          <button id="connect" type="button" class="primary" data-s="connect"></button>
+        </div>
+        <div id="ask" hidden></div>
+        <div id="connect-result" class="result" hidden></div>
+      </div>
+    </section>
+
+    <section id="service-section">
+      <div class="card service">
+        <label class="switch">
+          <input id="service" type="checkbox">
+          <span class="slider" aria-hidden="true"></span>
+          <span class="label">
+            <strong data-s="serviceTitle"></strong>
+            <span id="service-body" class="muted"></span>
+          </span>
+        </label>
+        <div id="service-error" class="error" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted">
+    <div id="links" class="links" hidden></div>
+    <span id="config-dir"></span>
+  </footer>
+
+  <div id="offline" class="offline" hidden><div class="card" id="offline-text"></div></div>
+</body>
+</html>

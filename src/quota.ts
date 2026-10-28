@@ -1,4 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claudeExecutable } from "./preflight.js";
 
 // Cuota del plan (Pro/Max) de quien ejecuta el runner, para el panel "Uso del equipo".
 // Usa una API experimental del SDK: si cambia o no hay datos (API key), devuelve null y no rompe nada.
@@ -21,7 +22,7 @@ export async function readQuota(env: Record<string, string>): Promise<Quota | nu
   const idle = async function* () {
     await new Promise((r) => abort.signal.addEventListener("abort", r));
   };
-  const q = query({ prompt: idle(), options: { abortController: abort, env, settingSources: [], allowedTools: [], permissionMode: "dontAsk" } });
+  const q = query({ prompt: idle(), options: { abortController: abort, env, settingSources: [], allowedTools: [], permissionMode: "dontAsk", pathToClaudeCodeExecutable: claudeExecutable() } });
   const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
   try {
     const read = (q as unknown as { usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<unknown> }).usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;

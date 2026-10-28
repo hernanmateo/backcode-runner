@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Package contents
+        run: npm pack --dry-run
+
+  binary:
+    name: Binary · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+          - os: ubuntu-latest
+            target: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build:bin -- ${{ matrix.target }}
+      - name: Starts and serves the panel
+        run: |
+          ./dist-bin/backcode-${{ matrix.target }} --version
+          BACKCODE_HOME="$RUNNER_TEMP/bc" BACKCODE_PANEL_PORT=47999 ./dist-bin/backcode-${{ matrix.target }} serve &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:47999/ >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:47999/panel.js >/dev/null
+      - run: sh -n install.sh

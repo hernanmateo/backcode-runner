@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { smokeTest } from "./smoke.js";
 
 const args = process.argv.slice(2);
+if (args[0] === "smoke") args.shift(); // `backcode smoke …` (ejecutable sin Node)
 const from = args.indexOf("--from") >= 0 ? args.splice(args.indexOf("--from"), 2)[1] : undefined;
 const [dir, ...vars] = args;
 if (!dir) {

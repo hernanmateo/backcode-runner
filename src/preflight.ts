@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { t } from "./i18n.js";
+import { IS_BINARY } from "./paths.js";
+
+/** Instalador oficial de Claude Code (nativo, sin Node). */
+export const CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash";
 
 // Comprobaciones de este ordenador antes de conectar o arrancar: Node y Claude Code.
 // El Agent SDK no usa el `claude` del PATH: trae su propio binario en un paquete opcional por plataforma
@@ -32,8 +39,9 @@ function sdkBinaryPackages(): string[] {
   return names.map((n) => `${n}/claude${platform === "win32" ? ".exe" : ""}`);
 }
 
-/** Ruta del Claude Code que trae el SDK, o null si no se instaló (p. ej. npm install --omit=optional). */
+/** Ruta del Claude Code que trae el SDK, o null si no se instaló (p. ej. npm install --omit=optional) o es el ejecutable. */
 export function bundledClaude(): string | null {
+  if (IS_BINARY) return null;
   const req = createRequire(createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk"));
   for (const p of sdkBinaryPackages()) {
     try {
@@ -43,6 +51,28 @@ export function bundledClaude(): string | null {
     }
   }
   return null;
+}
+
+/** El `claude` instalado (PATH o las rutas del instalador nativo), o null. */
+export function installedClaude(): string | null {
+  const dirs = [...(process.env.PATH ?? "").split(delimiter), join(homedir(), ".local", "bin"), join(homedir(), ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin"];
+  for (const dir of dirs.filter(Boolean)) {
+    try {
+      accessSync(join(dir, "claude"), constants.X_OK);
+      return join(dir, "claude");
+    } catch {
+      // siguiente
+    }
+  }
+  return null;
+}
+
+/**
+ * Qué Claude Code lanza el Agent SDK: con npm, el suyo (undefined = el que trae el paquete); en el ejecutable sin Node,
+ * el que tienes instalado.
+ */
+export function claudeExecutable(): string | undefined {
+  return IS_BINARY ? (installedClaude() ?? undefined) : undefined;
 }
 
 /** Versión de un ejecutable de Claude Code (`claude -v`), o null si no está o no responde. */
@@ -71,17 +101,54 @@ export async function checkMachine(opts: { verbose: boolean }): Promise<boolean>
     console.error(`\n✗ ${node}`);
     return false;
   }
-  const bundled = bundledClaude();
+  // En el ejecutable sin Node, Claude Code es el que tienes instalado: sin él no hay nada que hacer.
+  const bundled = IS_BINARY ? installedClaude() : bundledClaude();
   if (!bundled) {
-    console.error(`\n✗ ${t("pre.sdkMissing", { pkg: sdkBinaryPackages()[0].replace(/\/claude(\.exe)?$/, "") })}`);
+    console.error(`\n✗ ${IS_BINARY ? t("pre.claudeMissing", { cmd: CLAUDE_INSTALL }) : t("pre.sdkMissing", { pkg: sdkBinaryPackages()[0].replace(/\/claude(\.exe)?$/, "") })}`);
     return false;
   }
-  if (opts.verbose) console.log(`✓ Node ${process.versions.node}`);
-  const cli = await claudeVersion("claude");
+  if (opts.verbose && !IS_BINARY) console.log(`✓ Node ${process.versions.node}`);
+  const cli = await claudeVersion(IS_BINARY ? bundled : "claude");
   if (cli && opts.verbose) console.log(`✓ Claude Code ${cli}`);
   const loggedIn = await claudeLoggedIn(cli ? "claude" : bundled);
   if (loggedIn === false) console.warn(YELLOW(`⚠ ${cli ? t("pre.notLoggedIn") : t("pre.noCli")}`));
   else if (!cli && loggedIn === null) console.warn(YELLOW(`⚠ ${t("pre.noCli")}`));
   else if (!cli && opts.verbose) console.log(t("pre.bundledOk", { version: (await claudeVersion(bundled)) ?? "" }));
   return true;
+}
+
+export interface Check {
+  id: "node" | "claude" | "login" | "git" | "gh";
+  /** ok · warn (funciona, pero algo fallará) · fail (no puede arrancar) */
+  status: "ok" | "warn" | "fail";
+  detail: string;
+  /** Comando que lo arregla, para copiarlo. */
+  fix?: string;
+  /** Qué falta: el programa o la sesión (decide la guía y el botón del panel). */
+  missing?: "program" | "session";
+}
+
+/** Lo mismo que checkMachine, más git y GitHub CLI, en datos para el panel. */
+export async function machineReport(): Promise<Check[]> {
+  const checks: Check[] = [];
+  // El ejecutable sin Node no necesita Node: solo se comprueba con npm o una copia de git.
+  if (!IS_BINARY) {
+    const node = nodeProblem();
+    checks.push(node ? { id: "node", status: "fail", detail: node, fix: "https://nodejs.org" } : { id: "node", status: "ok", detail: `Node ${process.versions.node}` });
+  }
+  const installed = installedClaude();
+  const bundled = IS_BINARY ? installed : bundledClaude();
+  const cli = installed ? await claudeVersion(installed) : null;
+  if (!bundled) checks.push({ id: "claude", status: "fail", detail: IS_BINARY ? t("pre.claudeMissing", { cmd: CLAUDE_INSTALL }) : t("pre.sdkMissing", { pkg: sdkBinaryPackages()[0].replace(/\/claude(\.exe)?$/, "") }), fix: IS_BINARY ? CLAUDE_INSTALL : undefined });
+  else checks.push(cli ? { id: "claude", status: "ok", detail: `Claude Code ${cli}` } : { id: "claude", status: "warn", detail: t("pre.noCli"), fix: CLAUDE_INSTALL });
+  // Con una API key (guardada en el panel o en el entorno) no hace falta iniciar sesión.
+  const apiKey = !!process.env.ANTHROPIC_API_KEY;
+  const loggedIn = apiKey ? true : bundled ? await claudeLoggedIn(installed ?? bundled) : null;
+  checks.push(loggedIn === false ? { id: "login", status: "warn", missing: "session", detail: t("pre.notLoggedIn"), fix: "claude" } : { id: "login", status: loggedIn ? "ok" : "warn", missing: loggedIn ? undefined : "session", detail: apiKey ? t("panel.check.apiKey") : loggedIn ? t("panel.check.loggedIn") : t("panel.check.loginUnknown"), fix: loggedIn ? undefined : "claude" });
+  const git = /\d+\.\d+(\.\d+)?/.exec(await run("git", ["--version"], 10_000))?.[0];
+  checks.push(git ? { id: "git", status: "ok", detail: `git ${git}` } : { id: "git", status: "fail", detail: t("panel.check.noGit"), fix: process.platform === "darwin" ? "xcode-select --install" : "sudo apt install git" });
+  const gh = /\d+\.\d+\.\d+/.exec(await run("gh", ["--version"], 10_000))?.[0];
+  const ghAuth = gh ? await exec("gh", ["auth", "status"], { timeout: 15_000 }).then(() => true, () => false) : false;
+  checks.push(!gh ? { id: "gh", status: "warn", missing: "program", detail: t("panel.check.noGh"), fix: process.platform === "darwin" ? "brew install gh" : "https://cli.github.com" } : ghAuth ? { id: "gh", status: "ok", detail: `GitHub CLI ${gh}` } : { id: "gh", status: "warn", missing: "session", detail: t("panel.check.ghLogin"), fix: "gh auth login --hostname github.com --git-protocol https --web" });
+  return checks;
 }
