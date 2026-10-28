@@ -147,6 +147,7 @@ function renderCompactControls() {
 function render() {
   renderCompactControls();
   $("mode").textContent = state.service.self ? s("mode.service") : s("mode.foreground");
+  renderPower();
   renderBanner();
   renderLegacy();
   renderChecks();
@@ -348,11 +349,33 @@ function renderCompactProjects(box) {
   box.append(list);
 }
 
+function renderPower() {
+  const button = $("power");
+  button.setAttribute("aria-pressed", String(!state.off));
+  button.textContent = s(state.off ? "powerOff" : "powerOn");
+  button.title = s(state.off ? "powerOffHint" : "powerOnHint");
+  if (!powerBusy) button.disabled = !!leaving;
+}
+
+let powerBusy = false;
+async function togglePower() {
+  const button = $("power");
+  powerBusy = true;
+  button.disabled = true;
+  try {
+    await api("POST", "/api/power", { on: !!state.off });
+  } finally {
+    powerBusy = false;
+    button.disabled = false;
+    await refresh();
+  }
+}
+
 function renderService() {
   const input = $("service");
   input.checked = state.service.installed;
   input.disabled = !state.service.supported || !!leaving;
-  $("service-body").textContent = !state.service.supported ? s("serviceUnsupported") : state.service.installed ? s("serviceBodyOn") : s("serviceBodyOff");
+  $("service-body").textContent = !state.service.supported ? s("serviceUnsupported") : state.service.installed ? s("serviceBodyOn") : state.service.self ? s("serviceBodyRunning") : s("serviceBodyOff");
 }
 
 // ── Logs ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -644,6 +667,7 @@ if (!token) {
   $("connect").addEventListener("click", () => connect(true));
   $("logs-close").addEventListener("click", () => { logsFor = null; $("logs-section").hidden = true; });
   $("service").addEventListener("change", toggleService);
+  $("power").addEventListener("click", () => void togglePower());
   $("compact").addEventListener("click", () => setCompact(!compact));
   $("compact-alert").addEventListener("click", () => setCompact(false));
   $("lang").addEventListener("change", (e) => api("POST", "/api/lang", { lang: e.target.value }).then(apply, () => undefined));

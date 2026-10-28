@@ -15,7 +15,7 @@ import { APP_LINKS } from "./links.js";
 import { hasSavedApiKey, removeApiKey, saveApiKey } from "./anthropic.js";
 import { FIX_ACTIONS, fixesFor, runFix, type FixAction } from "./fixes.js";
 import { machineReport, type Check } from "./preflight.js";
-import { installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
+import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
 
@@ -96,6 +96,7 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       restartNeeded: updateReady || onDisk !== VERSION,
       service: { supported: serviceSupported(), installed: serviceInstalled(), self: service },
       leaving,
+      off: supervisor.off,
       // Reiniciando: los runners que aún terminan algo (el panel se reinicia cuando acaban).
       waitingFor: leaving === "restart" ? [...supervisor.projects.values()].filter((p) => p.child).map((p) => p.name ?? p.id) : [],
       lang: lang(),
@@ -223,19 +224,29 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       setTimeout(() => void leave("restart"), 100);
       return { ok: true };
     },
+    "POST /api/power": async (body) => {
+      // Sin esperar a que paren (una tarea puede tardar en soltar): el panel muestra cada runner «parando».
+      void supervisor.setPower(!!body.on);
+      return state();
+    },
     "POST /api/service": async (body) => {
       if (!serviceSupported()) return { error: t("panel.serviceUnsupported") };
+      updateState({ autostartOff: !body.enabled });
       if (body.enabled) {
-        if (service) return { ok: true };
+        // Siendo ya el servicio: solo se vuelve a dejar para el próximo inicio de sesión, sin cortar nada.
+        if (service) {
+          await installService({ keepRunning: true });
+          return { ok: true };
+        }
         // El servicio arranca ya y espera a que este panel le deje el puerto (ver waitForPort): sin cortar a nadie.
         await installService();
         setTimeout(() => void leave("service-on"), 300);
         return { ok: true, handoff: true };
       }
+      // Solo deja de arrancar al iniciar sesión: lo que está en marcha sigue (para pararlo, el botón general).
       if (service) {
-        // Quitarlo para este mismo proceso: se responde antes de que el sistema lo pare.
-        setTimeout(() => void supervisor.stopAll().then(() => uninstallService()), 300);
-        return { ok: true, stopping: true };
+        await disableAutostart();
+        return { ok: true };
       }
       await uninstallService();
       return { ok: true };
