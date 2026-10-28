@@ -33,3 +33,10 @@ test("el mensaje se recorta a 200 caracteres", () => {
   const r = otaScriptArgs("./scripts/ota-publish.sh", "pnpm", "production", "a".repeat(300));
   assert.ok("args" in r && r.args.at(-1)?.length === 200);
 });
+
+test("--allow-native solo cuando se pide (Publicar sin comprobaciones)", () => {
+  assert.deepEqual(otaScriptArgs("bash scripts/publish-update.sh prod", "bun", "production", "x", true), {
+    args: ["run", "ota:publish", "--allow-native", "--yes", "-m", "x"],
+  });
+  assert.ok(!JSON.stringify(otaScriptArgs("bash scripts/publish-update.sh prod", "bun", "production", "x")).includes("allow-native"));
+});

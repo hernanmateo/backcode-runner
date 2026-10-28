@@ -30,7 +30,7 @@ export interface Action {
   runtimeVersion?: string;
   /** OTA: si la copia que se publica queda con archivos sin commitear, commitearlos en la rama base y publicar igualmente. */
   commitDirty?: boolean;
-  /** OTA «Publicar rápido (peligroso)»: sin la prueba de arranque en el simulador (ni la del runner ni la del script). */
+  /** OTA «Publicar sin comprobaciones»: sin prueba de arranque (ni la del runner ni la del script) y con --allow-native si el script lo admite. */
   skipSmoke?: boolean;
 }
 export interface ActionResult {
@@ -135,8 +135,9 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     if (blocked) return { ok: false, result: blocked };
   }
 
-  const scriptArgs = app.ota === "script" ? otaScriptArgs(app.otaScript ?? "", app.pm, channel, message) : null;
-  if (scriptArgs && "error" in scriptArgs) return { ok: false, result: { error: t("act.otaFixedBranch", { fixed: scriptArgs.fixed, channel }) } };
+  const parsed = app.ota === "script" ? otaScriptArgs(app.otaScript ?? "", app.pm, channel, message) : null;
+  if (parsed && "error" in parsed) return { ok: false, result: { error: t("act.otaFixedBranch", { fixed: parsed.fixed, channel }) } };
+  let scriptArgs = parsed;
 
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_ota", commit);
   const dir = join(wt, app.appDir);
@@ -161,8 +162,13 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback). Si el script del repo sabe lanzarla
     // (BACKCODE_SMOKE_CLI), la hace él DESPUÉS de sus comprobaciones rápidas (árbol limpio, cambios nativos…): así un
     // fallo de esos se ve al momento y no tras la build. Si no, se hace aquí antes de llamarlo.
-    // Con «Publicar rápido» (lo pide un admin a sabiendas) no hay prueba: ni aquí ni en el script (BACKCODE_SMOKE_DONE=1).
-    const scriptSmokes = !skipSmoke && !!scriptArgs && scriptRunsSmoke(dir, app.otaScript ?? "");
+    // Con «Publicar sin comprobaciones» (lo pide un admin a sabiendas) no hay prueba de arranque, ni aquí ni en el script
+    // (BACKCODE_SMOKE_DONE=1), y si el script tiene guarda de cambios nativos se le pasa --allow-native.
+    if (skipSmoke && scriptArgs && scriptMentions(dir, app.otaScript ?? "", "--allow-native")) {
+      const native = otaScriptArgs(app.otaScript ?? "", app.pm, channel, message, true);
+      if (!("error" in native)) scriptArgs = native;
+    }
+    const scriptSmokes = !skipSmoke && !!scriptArgs && scriptMentions(dir, app.otaScript ?? "", "BACKCODE_SMOKE_CLI");
     const smoke = scriptSmokes || skipSmoke ? null : await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
     if (smoke && !smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
 
@@ -402,14 +408,17 @@ async function publishedOffBase(cfg: RunnerConfig, appDir: string, commit: strin
   return notes.length ? `\n\n${notes.join("\n")}` : "";
 }
 
-/** ¿El script de publicación (el .sh al que llama `ota:publish`) lanza él mismo la prueba de arranque con BACKCODE_SMOKE_CLI? */
-function scriptRunsSmoke(appDir: string, script: string): boolean {
+/**
+ * ¿El script de publicación (el .sh al que llama `ota:publish`) contiene este texto? P. ej. BACKCODE_SMOKE_CLI (lanza él
+ * mismo la prueba de arranque) o --allow-native (tiene guarda de cambios nativos que se puede saltar).
+ */
+function scriptMentions(appDir: string, script: string, text: string): boolean {
   const file = script.split(/\s+/).find((t) => /\.(sh|bash|mjs|js|ts)$/.test(t));
   if (!file) return false;
   const path = normalize(join(appDir, file));
   if (!path.startsWith(normalize(appDir))) return false;
   try {
-    return readFileSync(path, "utf8").includes("BACKCODE_SMOKE_CLI");
+    return readFileSync(path, "utf8").includes(text);
   } catch {
     return false;
   }
