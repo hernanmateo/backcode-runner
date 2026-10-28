@@ -6,7 +6,8 @@ import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
-import { smokeTest } from "./smoke.js";
+import { adbPath, androidSdk, listDevices, type DevicePlatform } from "./devices.js";
+import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
 
@@ -16,7 +17,10 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build" | "deploy";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install";
+  /** «Instalar en mi móvil»: plataforma y dispositivo (UDID de iOS o serie de adb) de los que publica el runner. */
+  platform?: DevicePlatform;
+  deviceId?: string;
   /** Despliegue: `<carpeta>#<nombre>` de un script `backcode:deploy:<nombre>` detectado en el repo. */
   target?: string;
   featureId?: string;
@@ -65,6 +69,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
   // OTA, build y despliegue publican la rama base del remoto (no tu copia local): después, tu copia se pone al día
   // para que lo que ves en local sea lo que se acaba de publicar (p. ej. un merge que hizo otro y aún no tenías).
+  if (action.type === "install") return installOnDevice(cfg, action);
   const done =
     action.type === "build"
       ? await publishBuild(cfg, host, action)
@@ -273,6 +278,75 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
       }
     }
     return { ok: true, result: { url, sha: commit, log: `${done.join(" + ")} · ${version} (runtime ${runtimeVersion})\n${log.slice(-1400)}` } };
+  } catch (err) {
+    return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    await removeWorktree(cfg.repoPath, wt);
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+const INSTALL_TIMEOUT_MS = 60 * 60_000;
+const DEVICE_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
+
+/**
+ * «Instalar en mi móvil»: compila la app en Release con lo último de la rama base y la instala directamente en uno de tus
+ * móviles (el que eliges en la app entre los que este ordenador ve listos), por cable o por wifi. Sin tiendas ni
+ * TestFlight y sin checks: solo llega a tu móvil. iOS: `expo run:ios` firma con tu equipo de Xcode e instala con
+ * devicectl. Android: APK release con Gradle (firma de la plantilla) e `adb install`.
+ */
+async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
+  const platform = action.platform;
+  const deviceId = action.deviceId ?? "";
+  if ((platform !== "ios" && platform !== "android") || !DEVICE_ID_RE.test(deviceId)) return { ok: false, result: { error: t("install.badDevice") } };
+  if (platform === "ios" && process.platform !== "darwin") return { ok: false, result: { error: t("build.needMac") } };
+  const device = (await listDevices()).find((d) => d.platform === platform && d.id === deviceId);
+  if (!device) return { ok: false, result: { error: t("install.deviceGone") } };
+  if (device.state !== "ready") return { ok: false, result: { error: t(`install.state.${device.state}`, { name: device.name }) } };
+
+  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  const app = await findExpoApp(cfg.repoPath, commit);
+  if (!app) return { ok: false, result: { error: t("build.notExpo") } };
+  const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  const dir = join(wt, app.appDir);
+  // Las variables del perfil de tienda de eas.json (EXPO_PUBLIC_…): la app se comporta como la publicada.
+  const env = { ...profileEnv(dir, "production"), CI: "1" };
+  const label = `${device.name}${device.model && device.model !== device.name ? ` (${device.model})` : ""}`;
+  try {
+    await installFrozen(app, wt, dir);
+    await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
+    const config = await appConfig(dir, env);
+    const services = [config?.ios?.googleServicesFile, config?.android?.googleServicesFile].filter((f): f is string => typeof f === "string");
+    await copyLocalFiles(cfg.repoPath, wt, services.map((f) => join(app.appDir, f)));
+
+    if (platform === "ios") {
+      const failed = await prepareNativeProject(dir, env);
+      if (failed) return { ok: false, result: { sha: commit, error: failed.detail } };
+      const out = await exec(["npx", "expo", "run:ios", "--configuration", "Release", "--device", device.id, "--no-bundler"], dir, { env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+        throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
+      });
+      return { ok: true, result: { sha: commit, log: `${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
+    }
+
+    const adb = adbPath();
+    const sdk = androidSdk();
+    if (!adb || !sdk) return { ok: false, result: { sha: commit, error: t("install.noAndroidSdk") } };
+    const pkg = config?.android?.package;
+    if (!pkg) return { ok: false, result: { sha: commit, error: t("install.noPackage") } };
+    const androidEnv = { ...env, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk };
+    let log = await exec(["npx", "expo", "prebuild", "--platform", "android", "--no-install"], dir, { env: androidEnv, timeoutMs: INSTALL_TIMEOUT_MS });
+    log += await exec(["./gradlew", "assembleRelease", "--console=plain"], join(dir, "android"), { env: androidEnv, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+      throw new Error(t("install.androidFailed", { log: buildErrors(err.message) }));
+    });
+    const apkDir = join(dir, "android", "app", "build", "outputs", "apk", "release");
+    const apk = existsSync(apkDir) ? readdirSync(apkDir).find((f) => f.endsWith(".apk")) : undefined;
+    if (!apk) return { ok: false, result: { sha: commit, error: t("install.noApk") } };
+    // -r: reinstala conservando los datos. Si la instalada es de la tienda (otra firma), Android no deja: se explica.
+    await exec([adb, "-s", device.id, "install", "-r", join(apkDir, apk)], dir, { timeoutMs: 10 * 60_000 }).catch((err: Error) => {
+      throw new Error(/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(err.message) ? t("install.otherSignature", { pkg }) : err.message);
+    });
+    await exec([adb, "-s", device.id, "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"], dir).catch(() => undefined);
+    return { ok: true, result: { sha: commit, log: `${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {

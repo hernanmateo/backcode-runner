@@ -311,6 +311,7 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 | **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. Después pone al día tu copia local (ver abajo). |
 | **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
 | **Build para testers** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
+| **Instalar en mi móvil** | cualquier miembro | Compila la app en Release con lo último de la rama base y la instala en uno de **tus** móviles emparejados con el ordenador de tu runner, por wifi o por cable (ver abajo). |
 
 ### Tu copia local se pone al día sola
 Tras mergear, publicar un OTA, una build o un despliegue desde la app, y cada vez que arranca el runner, tu copia local de la
@@ -339,6 +340,21 @@ Tras publicar, las tareas mergeadas desde la app cuyo commit de merge va incluid
 acepta commits que ya están en la rama base y no espera checks (esa versión ya se publicó); pasa por el mismo script o `eas update`.
 
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
+
+### Instalar en mi móvil
+Pestaña **Mi móvil** de la pantalla de publicar (en apps Expo, si el ordenador de tu runner tiene Xcode o adb). Es la vía más rápida
+de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega a tu móvil:
+- **Tus móviles**: cada runner mira cada 45 s qué móviles ve su ordenador (`xcrun devicectl` para iPhone; `adb`, con
+  reconexión automática de los Android ya emparejados por wifi) y los guarda en `projects/{pid}/runners/{uid}/private/devices`,
+  que **solo lees tú**. La app enseña cuáles están listos y, de los que no, qué les falta (no está en la misma wifi, falta el Modo
+  desarrollador, falta aceptar la depuración). El botón **Instalar en …** solo aparece con un móvil listo.
+- **Emparejar** (una vez, lo hace la persona): iPhone por cable, «Confiar», Modo desarrollador y «Connect via network» en Xcode;
+  Android con Depuración inalámbrica › Vincular con código y `adb pair IP:PUERTO`. La pantalla y el panel (sección **Móviles**)
+  lo explican.
+- **Qué hace el runner** (el tuyo, en tu ordenador): copia limpia de la rama base, dependencias, `.env` y ficheros de Firebase
+  locales, variables del perfil `production` de `eas.json`. iOS: CocoaPods y `expo run:ios --configuration Release --device <udid>`
+  (firma con tu equipo de Xcode, instala y abre). Android: `expo prebuild`, `./gradlew assembleRelease` y `adb install -r` (si la
+  instalada es de Google Play, con otra firma, hay que desinstalarla antes). Sin checks: solo llega a tu móvil.
 
 ### Builds para testers (TestFlight / Internal Testing)
 En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
