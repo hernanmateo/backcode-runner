@@ -180,6 +180,15 @@ export class Supervisor {
     p.exitCode = undefined;
     for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream }).on("line", (line) => this.log(p, line));
     child.on("exit", (code, signal) => {
+      // Que haya terminado de verdad: con el ejecutable sin Node se han visto procesos que avisan de su salida y siguen
+      // vivos (al 100 % de CPU y con el proyecto cogido). Si sigue ahí, se mata: nunca dos runners del mismo proyecto.
+      if (child.pid && alive(child.pid)) {
+        try {
+          process.kill(child.pid, "SIGKILL");
+        } catch {
+          // ya no está
+        }
+      }
       p.child = undefined;
       p.exitCode = code ?? undefined;
       if (code === RESTART_CODE && p.state !== "stopping" && !this.draining) return this.launch(p);
@@ -218,3 +227,12 @@ export class Supervisor {
   }
 }
 
+/** ¿Sigue vivo el proceso? (señal 0: solo comprueba). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

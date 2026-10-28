@@ -55,6 +55,15 @@ export interface Feature {
   /** Plan aprobado (desde ahí, la sesión implementa). */
   planApproved?: { by: string };
   result?: FeatureResult;
+  /** Remote Control: quien la ejecuta pidió abrir la sesión en la app de Claude (o volver de ella). */
+  remote?: RemoteState;
+}
+
+/** Remote Control de la sesión de la tarea: lo pide la app (requested/return) y lo lleva el runner (open). */
+export interface RemoteState {
+  state: "requested" | "open" | "return";
+  url?: string;
+  at?: Timestamp;
 }
 
 export interface Attachment {
@@ -66,10 +75,13 @@ export interface Attachment {
 
 /** Mensaje del hilo de la tarea. */
 export interface ThreadMessage {
+  id?: string;
   author: "user" | "claude";
   kind: "message" | "question" | "summary" | "plan";
   text: string;
   at?: Timestamp;
+  /** Cuándo lo recibió Claude (mensajes de la persona). */
+  read?: Timestamp;
 }
 
 /** Encargo de refinado que prepara refineFeature: instrucciones, petición (con contexto) y adjuntos. */
@@ -149,7 +161,9 @@ export class Store {
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   // expo: el repo es una app Expo (la app ofrece la guía de OTA aunque aún no tenga).
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null; refine: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true };
+  // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
+  // de una tarea en la app de Claude.
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -281,7 +295,30 @@ export class Store {
   /** Hilo completo de la tarea, en orden. */
   async thread(id: string): Promise<ThreadMessage[]> {
     const snap = await getDocs(collection(this.feature(id), "messages"));
-    return snap.docs.map((d) => d.data() as ThreadMessage).sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
+    return snap.docs.map((d) => ({ ...(d.data() as ThreadMessage), id: d.id })).sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
+  }
+
+  /** Mensajes de la persona en el hilo, en vivo (para pasárselos a Claude mientras trabaja). */
+  watchUserMessages(id: string, onChange: (messages: ThreadMessage[]) => void): () => void {
+    return onSnapshot(
+      query(collection(this.feature(id), "messages"), where("author", "==", "user")),
+      (snap) => onChange(snap.docs.map((d) => ({ ...(d.data() as ThreadMessage), id: d.id })).sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0))),
+      (err) => console.warn(`[messages] ${err.message}`),
+    );
+  }
+
+  /** Marca mensajes de la persona como recibidos por Claude (la app lo muestra como «leído»). */
+  async markRead(id: string, mids: string[]): Promise<void> {
+    await Promise.all(mids.map((mid) => updateDoc(doc(this.feature(id), "messages", mid), { read: serverTimestamp() }).catch((err) => console.warn(`[messages] ${err.message}`))));
+  }
+
+  /** La tarea en curso, en vivo: la app pide parar o abrir Remote Control escribiendo en ella. */
+  watchFeature(id: string, onChange: (feature: Feature & { stopRequest?: Timestamp }) => void): () => void {
+    return onSnapshot(this.feature(id), (d) => d.exists() && onChange(d.data() as Feature & { stopRequest?: Timestamp }), (err) => console.warn(`[feature] ${err.message}`));
+  }
+
+  async setRemote(id: string, remote: RemoteState | null): Promise<void> {
+    await updateDoc(this.feature(id), { remote: remote ?? deleteField() });
   }
 
   // --- Acciones (mergear PR, publicar OTA): las pide un admin y las ejecuta su runner ---
@@ -540,7 +577,7 @@ export class Store {
       .catch((err) => console.error("[event]", err.message));
   }
 
-  async finish(id: string, status: "done" | "failed" | "waiting", result: FeatureResult, sessionId?: string): Promise<void> {
+  async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string): Promise<void> {
     const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
     await updateDoc(this.feature(id), {
       status,

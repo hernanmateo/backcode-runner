@@ -1,14 +1,16 @@
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
 import { join } from "node:path";
-import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
-import { checkMachine, claudeExecutable } from "./preflight.js";
+import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
+import { followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
@@ -20,8 +22,8 @@ import { refineIdea } from "./refine.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
-import { buildApprovedPlanPrompt, buildFollowUpPrompt, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
-import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
+import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
 
@@ -59,6 +61,8 @@ const DENY_READ = [
 ];
 
 let current: { id: string; abort: AbortController } | null = null;
+/** Remote Control necesita `script` para darle un terminal a Claude Code. */
+const REMOTE_PLATFORMS: NodeJS.Platform[] = ["darwin", "linux"];
 let refreshQuota: () => Promise<void> = async () => undefined;
 /** GitHub o Bitbucket según el repo; sin él solo se sube la rama. Se decide al arrancar (checkRepo). */
 let prHost: PrHost | undefined;
@@ -68,7 +72,7 @@ let busy = false;
 let restarting = false;
 let stopping = false;
 
-type RunOutcome = { status: "done" | "failed" | "waiting"; result: FeatureResult; sessionId?: string };
+type RunOutcome = { status: "done" | "failed" | "waiting" | "execute"; result: FeatureResult; sessionId?: string };
 
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const acceptanceError = await store.verifyAcceptance(id, feature);
@@ -193,35 +197,91 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
   const abort = new AbortController();
   current = { id, abort };
-  const timeout = setTimeout(() => abort.abort(), cfg.timeoutMinutes * 60_000);
+  // El tiempo máximo cuenta solo mientras trabaja el runner (no mientras la persona está en Remote Control).
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const armTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => abort.abort(), cfg.timeoutMinutes * 60_000);
+  };
+  armTimeout();
   const lease = setInterval(() => store.extendLease(id).catch(() => undefined), FEATURE_LEASE_MS / 3);
 
   let result: FeatureResult = { branch: wt.branch, prUrl: previousPr };
   let sessionId = feature.sessionId;
-  try {
-    const thread = resuming ? await store.thread(id) : [];
-    // Lo que escribió quien la ejecuta desde el último mensaje de Claude.
-    const replies = thread.slice(thread.map((m) => m.author).lastIndexOf("claude") + 1).filter((m) => m.author === "user");
-    // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
-    const justApproved = !!feature.planApproved && !previousPr && thread.filter((m) => m.author === "claude").pop()?.kind === "plan";
-    const prompt = planning
-      ? resuming
-        ? buildPlanFollowUpPrompt(replies)
-        : buildPlanPrompt(id, feature, attachments)
-      : justApproved
-        ? buildApprovedPlanPrompt(replies)
-        : resuming
-          ? buildFollowUpPrompt(replies, !!previousPr, { base: cfg.baseBranch, files: conflicts })
-          : buildUserPrompt(id, feature, attachments);
-    if (planning) await store.event(id, "start", t(resuming ? "run.replanning" : "run.planning"));
-    else if (justApproved) await store.event(id, "start", t("run.planApproved"));
-    const model = modelFor(feature, cfg.model);
-    if (model) await store.event(id, "say", t("run.model", { model }));
+  const model = modelFor(feature, cfg.model);
+
+  // --- Conversación en directo: lo que la persona escribe en el hilo mientras Claude trabaja le llega en su siguiente
+  // paso. Cada mensaje va con un uuid; cuando Claude lo incorpora (user_message_uuids) se marca como leído.
+  let userMessages: ThreadMessage[] = [];
+  const handled = new Set<string>(); // ids de mensajes ya entregados (o incluidos en el prompt)
+  const outstanding = new Map<string, string>(); // uuid enviado -> id del mensaje, pendiente de que Claude lo lea
+  let liveQuery: Query | null = null;
+  // Coste y tokens de las fases anteriores (con Remote Control de por medio hay varias): se suman.
+  let spent = { costUsd: 0, turns: 0, input: 0, output: 0, cache: 0 };
+  let inputQueue: SDKUserMessage[] = [];
+  let inputOpen = false;
+  let wake: (() => void) | null = null;
+  const flushLive = () => {
+    if (!inputOpen) return;
+    for (const m of userMessages) {
+      if (!m.id || m.read || handled.has(m.id) || m.kind !== "message") continue;
+      handled.add(m.id);
+      const uuid = randomUUID();
+      outstanding.set(uuid, m.id);
+      inputQueue.push({ type: "user", message: { role: "user", content: buildLiveMessage(m.text) }, parent_tool_use_id: null, uuid, priority: "next" });
+    }
+    wake?.();
+  };
+  const closeInput = () => {
+    inputOpen = false;
+    wake?.();
+  };
+  async function* input(first: string): AsyncGenerator<SDKUserMessage> {
+    yield { type: "user", message: { role: "user", content: first }, parent_tool_use_id: null };
+    for (;;) {
+      while (inputQueue.length) yield inputQueue.shift()!;
+      if (!inputOpen) return;
+      await new Promise<void>((r) => (wake = r));
+      wake = null;
+    }
+  }
+
+  // --- Lo que pide la app sobre la tarea en curso: parar o abrir/cerrar Remote Control.
+  const stopAt = (feature as { stopRequest?: { toMillis(): number } }).stopRequest?.toMillis() ?? 0;
+  let stopRequested = false;
+  let remoteWanted = feature.remote?.state === "requested";
+  // Marca de una vuelta anterior que no terminó bien (el runner se cerró con Remote Control abierto).
+  if (feature.remote && !remoteWanted) await store.setRemote(id, null).catch(() => undefined);
+  let remoteSession: RemoteSession | null = null;
+  const unwatchFeature = store.watchFeature(id, (f) => {
+    if (!stopRequested && (f.stopRequest?.toMillis() ?? 0) > stopAt) {
+      stopRequested = true;
+      void store.event(id, "say", t("run.stopRequested"));
+      remoteSession?.stop();
+      void liveQuery?.interrupt().catch(() => undefined);
+    }
+    if (f.remote?.state === "requested" && !remoteWanted && !remoteSession) {
+      remoteWanted = true;
+      void liveQuery?.interrupt().catch(() => undefined);
+    }
+    if (f.remote?.state === "return") remoteSession?.stop();
+  });
+  const unwatchMessages = store.watchUserMessages(id, (list) => {
+    userMessages = list;
+    flushLive();
+  });
+
+  /** Una fase con el SDK: el prompt y, después, lo que la persona vaya escribiendo, hasta que Claude termina. */
+  async function runPhase(prompt: string): Promise<void> {
+    inputQueue = [];
+    inputOpen = true;
+    flushLive();
+    let quiet: ReturnType<typeof setTimeout> | undefined;
     const messages = query({
-      prompt,
+      prompt: input(prompt),
       options: {
         pathToClaudeCodeExecutable: claudeExecutable(),
-        resume: feature.sessionId,
+        resume: sessionId,
         cwd: wt.path,
         model,
         abortController: abort,
@@ -254,52 +314,181 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         maxBudgetUsd: cfg.maxBudgetUsd,
       },
     });
-
-    for await (const msg of messages) {
-      if (msg.type === "assistant") {
-        for (const block of msg.message.content) {
-          if (block.type === "text" && block.text.trim()) {
-            // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
-            await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
-          } else if (block.type === "tool_use") {
-            await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
+    liveQuery = messages;
+    try {
+      for await (const msg of messages) {
+        clearTimeout(quiet);
+        if (msg.type === "assistant") {
+          // Mensajes de la persona que Claude acaba de incorporar.
+          const read = (msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : [])).filter((u) => outstanding.has(u));
+          if (read.length) {
+            void store.markRead(id, read.map((u) => outstanding.get(u)!));
+            read.forEach((u) => outstanding.delete(u));
+            // Ha respondido (o pedido cambios) en esta misma vuelta: la pregunta o el plan anteriores ya no esperan.
+            question = undefined;
+            planned = false;
           }
+          for (const block of msg.message.content) {
+            if (block.type === "text" && block.text.trim()) {
+              // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
+              await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
+            } else if (block.type === "tool_use") {
+              await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
+            }
+          }
+        } else if (msg.type === "system" && msg.subtype === "init") {
+          if (msg.session_id && msg.session_id !== sessionId) await store.setSession(id, msg.session_id);
+          sessionId = msg.session_id;
+        } else if (msg.type === "result") {
+          sessionId = msg.session_id;
+          const models = Object.values(msg.modelUsage ?? {});
+          result = {
+            ...result,
+            model,
+            models: Object.fromEntries(
+              Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
+            ),
+            costUsd: msg.total_cost_usd + spent.costUsd,
+            turns: msg.num_turns + spent.turns,
+            tokens: {
+              input: models.reduce((n, m) => n + m.inputTokens, 0) + spent.input,
+              output: models.reduce((n, m) => n + m.outputTokens, 0) + spent.output,
+              cache: models.reduce((n, m) => n + m.cacheReadInputTokens + m.cacheCreationInputTokens, 0) + spent.cache,
+            },
+            summary: msg.subtype === "success" ? msg.result.slice(0, 4000) : undefined,
+            error: msg.subtype === "success" ? undefined : `${msg.subtype}: ${msg.errors.join("; ").slice(0, 2000)}`,
+          };
+          // Termina si no queda nada que Claude no haya leído; si lo hay, sigue con ello. Si en unos segundos no
+          // empieza (un Claude Code que no confirma los mensajes), se cierra igual y la tarea vuelve a la cola con ellos.
+          if (outstanding.size === 0 || stopRequested || remoteWanted) closeInput();
+          else quiet = setTimeout(closeInput, 15_000);
         }
-      } else if (msg.type === "system" && msg.subtype === "init") {
-        if (msg.session_id && msg.session_id !== sessionId) await store.setSession(id, msg.session_id);
-        sessionId = msg.session_id;
-      } else if (msg.type === "result") {
-        sessionId = msg.session_id;
-        const models = Object.values(msg.modelUsage ?? {});
-        result = {
-          ...result,
-          model,
-          models: Object.fromEntries(
-            Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
-          ),
-          costUsd: msg.total_cost_usd,
-          turns: msg.num_turns,
-          tokens: {
-            input: models.reduce((n, m) => n + m.inputTokens, 0),
-            output: models.reduce((n, m) => n + m.outputTokens, 0),
-            cache: models.reduce((n, m) => n + m.cacheReadInputTokens + m.cacheCreationInputTokens, 0),
-          },
-          summary: msg.subtype === "success" ? msg.result.slice(0, 4000) : undefined,
-          error: msg.subtype === "success" ? undefined : `${msg.subtype}: ${msg.errors.join("; ").slice(0, 2000)}`,
-        };
       }
+    } finally {
+      clearTimeout(quiet);
+      closeInput();
+      liveQuery = null;
+      // Lo enviado y no leído vuelve a estar pendiente (se entrega en la siguiente fase o vuelta).
+      for (const mid of outstanding.values()) handled.delete(mid);
+      outstanding.clear();
+      spent = {
+        costUsd: result.costUsd ?? 0,
+        turns: result.turns ?? 0,
+        input: result.tokens?.input ?? 0,
+        output: result.tokens?.output ?? 0,
+        cache: result.tokens?.cache ?? 0,
+      };
+    }
+  }
+  /** Remote Control: Claude Code interactivo sobre la misma sesión, hasta que la persona sale o vuelve a Backcode. */
+  async function runRemote(): Promise<boolean> {
+    remoteWanted = false;
+    const bin = installedClaude();
+    if (!bin || !sessionId || !REMOTE_PLATFORMS.includes(process.platform)) {
+      await store.setRemote(id, null).catch(() => undefined);
+      await store.event(id, "error", t("remote.unavailable"));
+      return false;
+    }
+    clearTimeout(timeout);
+    await store.event(id, "start", t("remote.opening"));
+    try {
+      remoteSession = await startRemoteControl({ bin, cwd: wt.path, sessionId, name: `${project.name} · ${feature.title}`.slice(0, 80) });
+    } catch (err) {
+      remoteSession = null;
+      await store.setRemote(id, null).catch(() => undefined);
+      await store.event(id, "error", t("remote.failed", { error: (err as Error).message.slice(0, 600) }));
+      armTimeout();
+      return false;
+    }
+    const session = remoteSession;
+    const onAbort = () => session.stop();
+    abort.signal.addEventListener("abort", onAbort);
+    await store.setRemote(id, { state: "open", url: session.url });
+    await store.event(id, "start", t("remote.open"));
+    // Lo que hace Claude allí también se ve en la actividad de la tarea.
+    const unfollow = followTranscript(wt.path, sessionId, (entry) => {
+      const message = entry.message as { role?: string; content?: unknown } | undefined;
+      if (entry.type !== "assistant" || !Array.isArray(message?.content)) return;
+      for (const block of message.content as { type: string; text?: string; name?: string; input?: Record<string, unknown> }[]) {
+        if (block.type === "text" && block.text?.trim()) void store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
+        else if (block.type === "tool_use" && block.name) void store.event(id, "tool", describeTool(block.name, block.input ?? {}, wt.path));
+      }
+    });
+    await session.exited;
+    unfollow();
+    abort.signal.removeEventListener("abort", onAbort);
+    remoteSession = null;
+    await store.setRemote(id, null).catch(() => undefined);
+    await store.event(id, "start", t("remote.back"));
+    armTimeout();
+    return true;
+  }
+
+  try {
+    const thread = resuming ? await store.thread(id) : [];
+    // Lo que escribió quien la ejecuta y Claude aún no ha recibido. Las tareas de antes de los mensajes en directo no
+    // tienen marcas de leído: ahí cuenta lo escrito desde el último mensaje de Claude, y lo anterior se da por leído.
+    const fromUser = thread.filter((m) => m.author === "user");
+    const lastClaude = thread.map((m) => m.author).lastIndexOf("claude");
+    const legacy = !fromUser.some((m) => m.read);
+    const replies = legacy ? thread.slice(lastClaude + 1).filter((m) => m.author === "user") : fromUser.filter((m) => !m.read);
+    const seen = legacy ? fromUser.filter((m) => !replies.includes(m)) : [];
+    for (const m of replies) if (m.id) handled.add(m.id);
+    const delivered = [...replies, ...seen].map((m) => m.id).filter((m): m is string => !!m);
+    if (delivered.length) void store.markRead(id, delivered);
+    // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
+    const justApproved = !!feature.planApproved && !previousPr && thread.filter((m) => m.author === "claude").pop()?.kind === "plan";
+    const prompt = planning
+      ? resuming
+        ? buildPlanFollowUpPrompt(replies)
+        : buildPlanPrompt(id, feature, attachments)
+      : justApproved
+        ? buildApprovedPlanPrompt(replies)
+        : resuming
+          ? buildFollowUpPrompt(replies, !!previousPr, { base: cfg.baseBranch, files: conflicts })
+          : buildUserPrompt(id, feature, attachments);
+    if (model) await store.event(id, "say", t("run.model", { model }));
+    // Pedida desde la app con la tarea parada: primero Remote Control, y al volver sigue el runner.
+    if (remoteWanted && resuming && (await runRemote())) {
+      if (!stopRequested) await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!previousPr }));
+    } else {
+      if (planning) await store.event(id, "start", t(resuming ? "run.replanning" : "run.planning"));
+      else if (justApproved) await store.event(id, "start", t("run.planApproved"));
+      await runPhase(prompt);
+    }
+    // Pedida mientras trabajaba: se interrumpe su turno, se abre Remote Control y al volver sigue la misma sesión.
+    while (remoteWanted && !stopRequested && !abort.signal.aborted) {
+      if (!(await runRemote())) break;
+      if (stopRequested) break;
+      await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!(prUrl ?? previousPr) }));
     }
   } catch (err) {
     result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
   } finally {
     clearTimeout(timeout);
     clearInterval(lease);
+    unwatchFeature();
+    unwatchMessages();
+    // Se asigna dentro de runRemote: TypeScript no lo ve desde aquí.
+    const leftOpen = remoteSession as RemoteSession | null;
+    leftOpen?.stop();
+    if (leftOpen) await store.setRemote(id, null).catch(() => undefined);
     current = null;
     // El worktree se conserva: la conversación puede continuar (se limpia tras días sin uso).
   }
 
+  // Parada desde la app: queda esperando a que la persona escriba (con el PR que hubiera).
+  if (stopRequested && !stopping) {
+    const pr = prUrl ?? previousPr;
+    return { status: pr ? "done" : "waiting", result: { ...result, prUrl: pr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
+  }
   // El resumen de cada vuelta queda en el hilo; si preguntó o propuso un plan, eso ya está publicado.
   if (!question && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
+  // Mensajes que llegaron al final y Claude no llegó a leer: vuelve a la cola y la siguiente vuelta empieza por ellos.
+  const unread = userMessages.some((m) => m.kind === "message" && !m.read && !handled.has(m.id ?? ""));
+  if (unread && !result.error && !stopping) {
+    return { status: "execute", result: { ...result, prUrl: prUrl ?? previousPr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
+  }
   if (question && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
   // Plan propuesto: espera a que lo aprueben o pidan cambios (como una pregunta).
   if (planned && !result.error) return { status: "waiting", result: { ...result, planReady: true, error: undefined }, sessionId };
@@ -351,7 +540,7 @@ async function drain(): Promise<void> {
       const release = awake.hold();
       try {
         const { status, result, sessionId } = await runFeature(id, feature);
-        if (stopping && !result.prUrl && status !== "waiting") {
+        if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
           await store.requeue(id);
         } else {
           await store.finish(id, status, result, sessionId);
@@ -428,6 +617,8 @@ async function main(): Promise<void> {
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
 
     refine: true,
+    live: true,
+    remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
   };
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
