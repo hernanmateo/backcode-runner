@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { t } from "./i18n.js";
 
@@ -23,6 +23,8 @@ export interface SmokeResult {
 
 const SIMULATOR = "Backcode OTA test";
 const BUILD_MS = 45 * 60_000;
+const PREBUILD_MS = 10 * 60_000;
+const PODS_MS = 20 * 60_000;
 /** Tras abrirla, cuánto tiene que seguir viva la app (los cierres al arrancar pasan en los primeros segundos). */
 const ALIVE_MS = 15_000;
 
@@ -48,16 +50,24 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
     return { ok: false, detail: t("smoke.noSimulator", { error: (err as Error).message.slice(0, 300) }) };
   }
 
-  // Compila en Release, instala en el simulador de pruebas y abre la app (sin Metro: JS incrustado). `run:ios` toca
-  // ficheros del repo al generar el proyecto nativo (p. ej. los scripts ios/android de package.json): se deshacen al
-  // acabar, para que lo que se publica sea exactamente el commit (y el script del repo no lo vea «sucio»).
+  // Genera el proyecto nativo, instala los pods y compila en Release; instala en el simulador de pruebas y abre la app
+  // (sin Metro: JS incrustado). Generar el proyecto toca ficheros del repo (p. ej. los scripts ios/android de
+  // package.json): se deshacen al acabar, para que lo que se publica sea exactamente el commit (y el script del repo no
+  // lo vea «sucio»).
   const touchedBefore = await changedTracked(appDir);
   const untrackedBefore = await untracked(appDir);
-  const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler"], appDir, { ...env, CI: "1" }, BUILD_MS).finally(async () => {
+  let failed: SmokeResult | undefined;
+  try {
+    failed = await prepareNativeProject(appDir, env);
+    if (!failed) {
+      const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler", "--no-install"], appDir, { ...env, CI: "1" }, BUILD_MS);
+      if (!build.ok) failed = { ok: false, detail: t("smoke.build", { log: buildErrors(build.out, keepXcodeLog(appDir, screenshotDir)) }) };
+    }
+  } finally {
     await restoreTracked(appDir, touchedBefore);
     await removeNewUntracked(appDir, untrackedBefore);
-  });
-  if (!build.ok) return { ok: false, detail: t("smoke.build", { log: tail(build.out) }) };
+  }
+  if (failed) return failed;
 
   // Por si run:ios no llegó a abrirla.
   if (!(await isRunning(udid, bundleId))) await run("xcrun", ["simctl", "launch", udid, bundleId]).catch(() => undefined);
@@ -68,6 +78,76 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
   await run("xcrun", ["simctl", "terminate", udid, bundleId]).catch(() => undefined);
   if (!alive) return { ok: false, detail: t("smoke.crashed"), screenshot };
   return { ok: true, detail: t("smoke.ok", { seconds: ALIVE_MS / 1000 }), screenshot };
+}
+
+/**
+ * Proyecto iOS listo para compilar: `ios/` generado (si no existe) y CocoaPods instalado y en sync. Se hace a mano, paso
+ * a paso, en vez de dejar que `expo run:ios` lo haga por dentro: ahí `pod install` corre en silencio y, si falla (red,
+ * `pod` que no está en el PATH del runner, locale sin UTF-8, una versión que no resuelve…), el CLI solo avisa y sigue
+ * con xcodebuild, que muere con «The sandbox is not in sync with the Podfile.lock» y el código 65, sin el motivo real.
+ * Devuelve el fallo (con su causa) o undefined si todo está listo.
+ */
+async function prepareNativeProject(appDir: string, env: Record<string, string>): Promise<SmokeResult | undefined> {
+  const iosDir = join(appDir, "ios");
+  // Copia limpia (el runner) o repo que ignora ios/: se genera desde la config de Expo. Si ya existe (p. ej. el script
+  // lanzado a mano en un repo con ios/ versionado), se respeta tal cual, como hace run:ios.
+  if (!existsSync(join(iosDir, "Podfile"))) {
+    const prebuild = await runLong(["npx", "expo", "prebuild", "--platform", "ios", "--no-install"], appDir, { ...env, CI: "1" }, PREBUILD_MS);
+    if (!prebuild.ok) return { ok: false, detail: t("smoke.prebuild", { log: buildErrors(prebuild.out) }) };
+    if (!existsSync(join(iosDir, "Podfile"))) return { ok: false, detail: t("smoke.prebuild", { log: buildErrors(prebuild.out) }) };
+  }
+  if (podsInSync(iosDir)) return undefined;
+  // CocoaPods exige un locale UTF-8 (como servicio, el runner puede no traer LANG). Sin terminal: nada de colores ni spinners.
+  const podEnv = { ...env, CI: "1", LANG: /utf-?8/i.test(process.env.LANG ?? "") ? (process.env.LANG as string) : "en_US.UTF-8", COCOAPODS_DISABLE_STATS: "1" };
+  const pods = await runLong(["pod", "install"], iosDir, podEnv, PODS_MS);
+  if (!pods.ok) {
+    if (/ENOENT|spawn pod/.test(pods.out) && !pods.out.includes("Analyzing dependencies")) return { ok: false, detail: t("smoke.noPod") };
+    return { ok: false, detail: t("smoke.pods", { log: buildErrors(pods.out) }) };
+  }
+  if (!podsInSync(iosDir)) return { ok: false, detail: t("smoke.podsOutOfSync") };
+  return undefined;
+}
+
+/** Lo que comprueba la fase «[CP] Check Pods Manifest.lock» de Xcode: Podfile.lock y Pods/Manifest.lock iguales. */
+export function podsInSync(iosDir: string): boolean {
+  const lock = join(iosDir, "Podfile.lock");
+  const manifest = join(iosDir, "Pods", "Manifest.lock");
+  if (!existsSync(lock) || !existsSync(manifest)) return false;
+  try {
+    return readFileSync(lock, "utf8") === readFileSync(manifest, "utf8");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Las líneas que explican un fallo (errores de xcodebuild, de CocoaPods y del CLI de Expo) y el final de la salida. Solo
+ * el final no vale: el motivo real suele estar cientos de líneas antes del «exited with error code 65».
+ */
+export function buildErrors(out: string, logPath?: string): string {
+  const lines = out.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map((l) => l.trimEnd());
+  const relevant = lines.filter((l) => /(^|\s)(error|fatal error):|❌|\[!\]|Something went wrong|CommandError|Could not find|could not find|No such file|Unable to/.test(l));
+  const unique = [...new Set(relevant.map((l) => l.trim()))].slice(0, 12);
+  const end = lines.filter(Boolean).slice(-8);
+  const text = [...(unique.length ? [...unique, "…"] : []), ...end].join("\n").slice(-2500);
+  return logPath ? `${text}\n${t("smoke.buildLog", { path: logPath })}` : text;
+}
+
+/**
+ * El log completo de xcodebuild (`.expo/xcodebuild.log`) se va con la copia limpia al acabar: se guarda una copia donde
+ * quedan las capturas, para poder mirar el motivo con calma. Devuelve la ruta o undefined si no hay log.
+ */
+function keepXcodeLog(appDir: string, dir: string): string | undefined {
+  const log = join(appDir, ".expo", "xcodebuild.log");
+  if (!existsSync(log)) return undefined;
+  const copy = join(dir, `smoke-xcodebuild-${Date.now()}.log`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(log, copy);
+    return copy;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Ficheros versionados con cambios en la copia (los que ya lo estaban antes no se tocan). */
@@ -163,4 +243,3 @@ function run(cmd: string, args: string[], cwd?: string, env?: Record<string, str
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const tail = (s: string) => s.trim().split("\n").slice(-15).join("\n").slice(-2000);

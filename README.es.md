@@ -194,6 +194,13 @@ if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "$
 Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
 build y borra lo que genera, p. ej. `ios/`).
 
+**Si falla por CocoaPods.** La prueba genera `ios/` (`expo prebuild`) e instala los pods ella misma, paso a paso: si
+`pod install` falla, el error lo dice con su causa (red, `pod` que no está en el PATH del runner, locale sin UTF-8, una
+dependencia que no resuelve…) en vez del «The sandbox is not in sync with the Podfile.lock» y el código 65 con que moriría
+xcodebuild. Ese fallo no es del código JS: arréglalo en el Mac del runner (p. ej. `brew install cocoapods`) y vuelve a
+publicar. Si lo que no compila es el código, el error trae las líneas `error:` de xcodebuild y guarda una copia del log
+completo (`smoke-xcodebuild-*.log`, junto a las capturas en la carpeta de copias del runner).
+
 **Publicar sin comprobaciones (peligroso).** Junto a Publicar, la app tiene **Publicar sin comprobaciones** (siempre pide
 confirmación): se salta la prueba de arranque (la del runner y la del script, que recibe `BACKCODE_SMOKE_DONE=1`) y, si el
 script `ota:publish` admite `--allow-native` (su guarda de cambios nativos), se lo pasa. Mantiene todo lo demás (checks en
