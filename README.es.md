@@ -358,6 +358,18 @@ lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 detectan al arrancar: tras añadir uno, reinicia el runner.
 
+Si el script llama a `firebase` (directamente, vía `npm run <otro>` o en un `.sh` del repo), el runner deduce sin ejecutarlo a
+qué va: proyecto (`-P`/`--project`, alias de `.firebaserc` o su `default`) y canal de Hosting (`hosting:channel:deploy <canal>`
+o el sitio principal con `firebase deploy`). La app lo enseña junto al botón, en la confirmación y en el historial, p. ej.
+«Firebase Hosting · proyecto derbi-admin-staging · canal staging (preview)». Para un staging de Firebase basta con:
+
+```json
+"backcode:deploy:staging": "firebase hosting:channel:deploy staging -P staging --expires 7d --non-interactive"
+```
+
+(o `firebase deploy --only hosting -P <proyecto-staging>` si el staging es otro proyecto de Firebase). La sesión de Firebase es
+la de tu ordenador (`firebase login`): si falla por sesión, proyecto o CLI, la app lo explica encima del error.
+
 ## Mapa e icono del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato
 (`BACKCODE_KNOWLEDGE_MODEL`, por defecto `haiku`; unos céntimos) y sube un resumen: stack, estructura, módulos, comandos y
