@@ -20,6 +20,7 @@ import {
   Timestamp,
   updateDoc,
   where,
+  writeBatch,
   type Firestore,
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
@@ -55,14 +56,19 @@ export interface Feature {
   /** Plan aprobado (desde ahí, la sesión implementa). */
   planApproved?: { by: string };
   result?: FeatureResult;
-  /** Remote Control: quien la ejecuta pidió abrir la sesión en la app de Claude (o volver de ella). */
+}
+
+/** Control en directo de una tarea: lo escribe la app (parar, pedir Remote Control o volver) y el runner (abierto). */
+export interface LiveControl {
+  stopRequest?: Timestamp;
   remote?: RemoteState;
 }
 
-/** Remote Control de la sesión de la tarea: lo pide la app (requested/return) y lo lleva el runner (open). */
+/** Remote Control de la sesión de la tarea: lo pide la app (requested/return) y lo lleva el runner (open/failed). */
 export interface RemoteState {
-  state: "requested" | "open" | "return";
+  state: "requested" | "open" | "return" | "failed";
   url?: string;
+  error?: string;
   at?: Timestamp;
 }
 
@@ -309,16 +315,25 @@ export class Store {
 
   /** Marca mensajes de la persona como recibidos por Claude (la app lo muestra como «leído»). */
   async markRead(id: string, mids: string[]): Promise<void> {
-    await Promise.all(mids.map((mid) => updateDoc(doc(this.feature(id), "messages", mid), { read: serverTimestamp() }).catch((err) => console.warn(`[messages] ${err.message}`))));
+    if (!mids.length) return;
+    const batch = writeBatch(this.db);
+    for (const mid of mids) batch.update(doc(this.feature(id), "messages", mid), { read: serverTimestamp() });
+    await batch.commit().catch((err) => console.warn(`[messages] ${err.message}`));
   }
 
-  /** La tarea en curso, en vivo: la app pide parar o abrir Remote Control escribiendo en ella. */
-  watchFeature(id: string, onChange: (feature: Feature & { stopRequest?: Timestamp }) => void): () => void {
-    return onSnapshot(this.feature(id), (d) => d.exists() && onChange(d.data() as Feature & { stopRequest?: Timestamp }), (err) => console.warn(`[feature] ${err.message}`));
+  /** Control en directo de la tarea (features/{id}/control/live): la app pide parar o abrir/cerrar Remote Control. */
+  watchControl(id: string, onChange: (control: LiveControl) => void): () => void {
+    return onSnapshot(doc(this.feature(id), "control", "live"), (d) => onChange((d.data() ?? {}) as LiveControl), (err) => console.warn(`[control] ${err.message}`));
   }
 
+  async control(id: string): Promise<LiveControl> {
+    return ((await getDoc(doc(this.feature(id), "control", "live"))).data() ?? {}) as LiveControl;
+  }
+
+  /** Estado del Remote Control de la tarea (null = cerrado). */
   async setRemote(id: string, remote: RemoteState | null): Promise<void> {
-    await updateDoc(this.feature(id), { remote: remote ?? deleteField() });
+    // mergeFields: `remote` se sustituye entero (no se mezcla con lo que pidió la app).
+    await setDoc(doc(this.feature(id), "control", "live"), { remote: remote ?? deleteField() }, { mergeFields: ["remote"] });
   }
 
   // --- Acciones (mergear PR, publicar OTA): las pide un admin y las ejecuta su runner ---

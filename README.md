@@ -160,7 +160,7 @@ publish an **Expo OTA update** (after a boot test in a simulator), build for Tes
     </td>
     <td valign="top">
       <h4>Conversations, not one-shots</h4>
-      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates.
+      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back.
     </td>
   </tr>
   <tr>
@@ -247,6 +247,7 @@ Task briefs are written by other members of your group, so the runner treats the
 | **Tools** | `dontAsk` mode denies anything not explicitly allowed; a hook also blocks `git push`, `gh`, `curl`, `ssh`, `sudo`… |
 | **Repository** | The repo's `.claude/` settings and hooks are not loaded. CI, `.claude/`, `.mcp.json`, `CLAUDE.md`, `.env*` and keys are protected paths. |
 | **Publishing** | The runner, not Claude, pushes (without git hooks) and the PR is always a **draft**. Merges and OTAs only happen when an admin asks and checks are green. |
+| **Remote Control** | Only when you ask for it from the app: the runner pauses its turn and opens the same session with `claude --resume <session> --remote-control` in the worktree. That session runs with **your normal Claude Code permissions, outside the sandbox**. When you hand it back, the runner resumes the session in the sandbox and the usual checks (protected paths, secrets) apply before anything is published. |
 | **Panel** | Listens on `127.0.0.1` only, requires a per-user token and rejects foreign `Host`/`Origin` headers, so other users and websites can't use it. It never returns keys or tokens. |
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.

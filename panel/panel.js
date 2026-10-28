@@ -37,7 +37,23 @@ function setCompact(on) {
   }
   document.documentElement.classList.toggle("compact", on);
   render();
+  reportSize();
 }
+
+// En la app de Mac (ventana nativa): en compacto, la ventana se ajusta a lo que ocupa el panel; al salir, vuelve a su tamaño.
+const native = window.webkit?.messageHandlers?.backcode;
+let lastReported = "";
+function reportSize() {
+  if (!native) return;
+  const height = compact ? Math.ceil(document.body.getBoundingClientRect().height) : 0;
+  const key = `${compact}:${height}`;
+  if (key === lastReported) return;
+  // En completo solo se avisa al salir de la compacta: el tamaño que elijas para la vista completa no se toca.
+  const leavingCompact = lastReported.startsWith("true");
+  lastReported = key;
+  if (compact || leavingCompact) native.postMessage({ compact, height });
+}
+if (native && "ResizeObserver" in window) new ResizeObserver(() => compact && reportSize()).observe(document.body);
 document.documentElement.classList.toggle("compact", compact);
 let state = null;
 let logsFor = null;
@@ -488,34 +504,34 @@ function renderAccounts() {
   const gh = accounts.github;
   const ghCheck = state.checks.find((c) => c.id === "gh");
 
-  const githubRow = h("li", null,
+  const githubButton = gh ? null : h("button", { type: "button", class: "primary", disabled: ghCheck?.missing === "program", onclick: async (e) => {
+    e.target.disabled = true;
+    const r = await api("POST", "/api/fix", { action: "login-gh" }).catch((err) => ({ output: err.message }));
+    if (r.device) {
+      ghDevice = r.device;
+      window.open(r.device.url, "_blank", "noopener");
+      waitForGithub(() => { ghDevice = null; loadAccounts(); });
+    }
+    renderAccounts();
+  } }, s("action.login-gh"));
+  // Tres columnas: punto · texto (baja de línea si no cabe) · botón. El botón nunca encima del texto.
+  const githubRow = h("li", { class: "account" },
     h("span", { class: `dot ${gh ? "ok" : "warn"}` }),
     h("div", { class: "detail" },
-      h("div", { class: "account-head" },
-        h("div", null, h("strong", null, "GitHub"), " · ", h("span", { class: gh ? "muted" : "" }, gh ? s("accountAs", { who: gh.login }) : s("accountNone"))),
-        gh ? null : h("button", { type: "button", class: "primary", disabled: ghCheck?.missing === "program", onclick: async (e) => {
-          e.target.disabled = true;
-          const r = await api("POST", "/api/fix", { action: "login-gh" }).catch((err) => ({ output: err.message }));
-          if (r.device) {
-            ghDevice = r.device;
-            window.open(r.device.url, "_blank", "noopener");
-            waitForGithub(() => { ghDevice = null; loadAccounts(); });
-          }
-          renderAccounts();
-        } }, s("action.login-gh"))),
+      h("div", null, h("strong", null, "GitHub"), " · ", h("span", { class: gh ? "muted" : "" }, gh ? s("accountAs", { who: gh.login }) : s("accountNone"))),
       h("div", { class: "muted small" }, s("accountGithubUse")),
       ghCheck?.missing === "program" && !gh ? h("div", { class: "muted small" }, s("accountGhMissing")) : null,
-      ghDevice && !gh ? deviceBox(ghDevice) : null));
+      ghDevice && !gh ? deviceBox(ghDevice) : null),
+    githubButton ?? h("span"));
 
-  const bitbucketRow = h("li", null,
+  const bitbucketRow = h("li", { class: "account" },
     h("span", { class: `dot ${bb && !bb.problem ? "ok" : bb?.problem ? "fail" : ""}` }),
     h("div", { class: "detail" },
-      h("div", { class: "account-head" },
-        h("div", null, h("strong", null, "Bitbucket"), " · ", h("span", { class: bb && !bb.problem ? "muted" : "" }, bb ? (bb.problem ? s("bbAccountBad", { problem: bb.problem }) : s("accountAs", { who: bb.email })) : s("accountNoToken"))),
-        bbForm ? null : h("button", { type: "button", class: bb ? undefined : "primary", onclick: () => { bbForm = true; bbMessage = null; renderAccounts(); } }, s(bb ? "accountChange" : "accountAdd"))),
+      h("div", null, h("strong", null, "Bitbucket"), " · ", h("span", { class: bb && !bb.problem ? "muted" : "" }, bb ? (bb.problem ? s("bbAccountBad", { problem: bb.problem }) : s("accountAs", { who: bb.email })) : s("accountNoToken"))),
       h("div", { class: "muted small" }, s("accountBitbucketUse")),
       bbMessage ? h("div", { class: bbMessage.error ? "error" : "success" }, bbMessage.text) : null,
-      bbForm ? bitbucketForm(bb) : null));
+      bbForm ? bitbucketForm(bb) : null),
+    bbForm ? h("span") : h("button", { type: "button", class: bb ? undefined : "primary", onclick: () => { bbForm = true; bbMessage = null; renderAccounts(); } }, s(bb ? "accountChange" : "accountAdd")));
 
   box.replaceChildren(githubRow, bitbucketRow);
 }
@@ -589,6 +605,8 @@ function apply(next) {
     renderAccounts();
   }
   render();
+  // Abierta ya en compacto: la ventana se ajusta en cuanto hay filas que medir.
+  if (compact) requestAnimationFrame(reportSize);
 }
 
 async function refresh() {

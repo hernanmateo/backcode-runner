@@ -253,8 +253,18 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
 - Quien la aceptó responde (o pide más cambios cuando ya hay PR) desde la app: el runner **retoma la misma sesión** en la misma
   rama, y los commits nuevos actualizan el mismo PR.
 - Los worktrees se conservan para poder continuar y se borran tras 14 días sin uso.
-- **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Dentro,
-  `/remote-control` la abre en la app móvil de Claude. Ahí trabajas con tus permisos normales, fuera del sandbox del runner.
+- **En directo:** en la app, la pantalla «En directo» de la tarea muestra lo que hace Claude y deja escribirle mientras
+  trabaja. El mensaje le llega en su siguiente paso, sin pararlo, y se marca como **leído** cuando lo incorpora. Si llega
+  justo cuando termina, la tarea vuelve a la cola y la siguiente vuelta empieza por él. **Parar** termina el paso en curso y
+  deja la tarea esperando tu mensaje.
+- **Abrir en la app de Claude (Remote Control):** el runner pausa su turno y abre la misma sesión con
+  `claude --resume <sesión> --remote-control` en el worktree (macOS o Linux, con Claude Code instalado y sesión iniciada
+  con una cuenta Pro o Max). La app abre el enlace en la app de Claude. Allí Claude trabaja con **tus permisos normales de
+  Claude Code, fuera del sandbox del runner**. La tarea sigue «Ejecutando» y su actividad se sigue viendo en Backcode. Al
+  salir de la sesión o pulsar **Volver a Backcode**, el runner retoma la misma sesión en el sandbox: revisa lo hecho,
+  publica los cambios (el mismo PR) o te pregunta.
+- **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Ahí
+  trabajas con tus permisos normales, fuera del sandbox del runner.
 
 ## PRs mergeados fuera de la app
 Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket, tu runner lo detecta (cada 5 minutos) y la marca como

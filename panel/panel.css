@@ -203,3 +203,17 @@ button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); 
 .cstep .cicon b { position: absolute; right: -6px; top: -6px; width: 20px; height: 20px; border-radius: 10px; background: var(--primary); color: var(--primary-text); font-size: 12px; display: grid; place-items: center; }
 .cstep .cwhere { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--primary); }
 .cstep + .cstep { padding-top: 16px; border-top: 1px dashed var(--border); }
+
+/* Cuentas: cuadrícula punto · texto · botón (alineados a la primera línea; el texto baja de línea antes que tocar el botón) */
+.checks > li.account { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; }
+.checks > li.account .dot { margin-top: 7px; }
+.checks > li.account > button { align-self: center; padding: 7px 12px; font-size: 14px; white-space: nowrap; }
+.checks > li.account .detail { display: grid; gap: 2px; }
+/* Conectar: «dónde» es el título del paso; el qué, debajo */
+.cstep .cwhere { font-size: 15px; font-weight: 700; letter-spacing: 0; text-transform: none; color: var(--text); }
+.cstep .cwhat { font-weight: 600; color: var(--primary); font-size: 14px; }
+.cstep .cicon { margin-top: 2px; }
+
+/* Compacta: sin aire de más abajo (la ventana nativa se ajusta a esta altura) */
+.compact main { padding-bottom: 14px; }
+.compact body, html.compact body { min-height: 0; }
