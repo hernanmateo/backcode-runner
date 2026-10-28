@@ -45,7 +45,10 @@ export async function installService(opts: { executable?: string } = {}): Promis
   const kit = await stableKitDir();
   // El ejecutable sin Node ya está en un sitio fijo (~/.backcode/bin) y se lanza tal cual.
   const program = opts.executable ? [opts.executable, "serve"] : IS_BINARY ? [process.execPath, "serve"] : [process.execPath, join(kit, "dist", "cli.js"), "serve"];
-  const env: Record<string, string> = { BACKCODE_SERVICE: "1", PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir() };
+  // El PATH de ahora más las rutas habituales: abierta desde el Finder, la app no trae el PATH de tu terminal.
+  const extra = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local", "bin"), join(homedir(), ".backcode", "bin")];
+  const path = [...new Set([...extra, ...(process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(":")])].filter(Boolean).join(":");
+  const env: Record<string, string> = { BACKCODE_SERVICE: "1", PATH: path, HOME: homedir() };
   for (const key of ["LANG", "LC_ALL", "BACKCODE_HOME", "BACKCODE_PANEL_PORT", "BACKCODE_LANG"]) if (process.env[key]) env[key] = process.env[key]!;
   mkdirSync(LOGS_DIR, { recursive: true });
 
