@@ -9,20 +9,29 @@ import AppKit
 import WebKit
 
 /**
- * La WKWebView guarda el último clic: el aviso de arrastre del panel llega después, por mensaje, cuando NSApp.currentEvent
- * ya no es ese mouseDown (y performDrag con otro evento no hace nada: la ventana no se movía).
+ * Barra de título de la ventana: una capa nativa transparente sobre la franja de la cabecera del panel. Recibe el clic
+ * de verdad (no por mensaje desde la página, que llegaba tarde y no movía la ventana) y arrastra la ventana como una barra
+ * de título normal (doble clic: zoom). Donde hay controles de la cabecera (los «huecos» que manda el panel) no se queda el
+ * clic y llega a la página.
  */
-final class PanelWebView: WKWebView {
-  var lastMouseDown: NSEvent?
+final class DragRegionView: NSView {
+  var holes: [NSRect] = []
+  override var isFlipped: Bool { true }
+  override var mouseDownCanMoveWindow: Bool { true }
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let local = convert(point, from: superview)
+    guard bounds.contains(local), !holes.contains(where: { $0.contains(local) }) else { return nil }
+    return self
+  }
   override func mouseDown(with event: NSEvent) {
-    lastMouseDown = event
-    super.mouseDown(with: event)
+    if event.clickCount == 2 { window?.performZoom(nil) } else { window?.performDrag(with: event) }
   }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
   var window: NSWindow!
-  var webView: PanelWebView!
+  var webView: WKWebView!
+  let dragRegion = DragRegionView(frame: .zero)
   let spinner = NSProgressIndicator()
   /** Tamaño de la ventana en la vista completa, para volver a él al salir de la compacta. */
   var fullFrame: NSRect?
@@ -37,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // El panel avisa de la vista compacta y de cuánto ocupa, y de cuándo se arrastra la ventana desde su cabecera
     // (window.webkit.messageHandlers.backcode).
     config.userContentController.add(self, name: "backcode")
-    webView = PanelWebView(frame: .zero, configuration: config)
+    webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = self
     webView.uiDelegate = self
     webView.setValue(false, forKey: "drawsBackground") // sin destello blanco antes de pintar (el panel pone su fondo)
@@ -48,7 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     window.titlebarAppearsTransparent = true
     window.minSize = Self.fullMin // en compacto baja a compactMin (lo pide el panel)
     window.backgroundColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(red: 0.12, green: 0.118, blue: 0.114, alpha: 1) : NSColor(red: 0.961, green: 0.949, blue: 0.918, alpha: 1) }
-    window.contentView = webView
+    // La página ocupa toda la ventana y, encima, la capa que hace de barra de título (ver DragRegionView).
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 860, height: 920))
+    webView.frame = root.bounds
+    webView.autoresizingMask = [.width, .height]
+    root.addSubview(webView)
+    dragRegion.frame = NSRect(x: 0, y: root.bounds.height - 28, width: root.bounds.width, height: 28)
+    dragRegion.autoresizingMask = [.width, .minYMargin]
+    root.addSubview(dragRegion, positioned: .above, relativeTo: webView)
+    window.contentView = root
     window.setFrameAutosaveName("BackcodeRunnerMain")
     if !window.setFrameUsingName("BackcodeRunnerMain") { window.center() }
 
@@ -182,16 +199,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   @objc func reload() { webView.reload() }
 
   /**
-   * Mensajes del panel. `drag`: se ha pulsado en su cabecera, que hace de barra de título (la ventana no tiene la suya:
-   * .fullSizeContentView y el título oculto), y la ventana sigue al ratón como cualquier otra. `compact`: vista compacta,
+   * Mensajes del panel. `dragRegion`: dónde está su cabecera, que hace de barra de título (la ventana no tiene la suya:
+   * .fullSizeContentView y el título oculto), y qué controles tiene. `compact`: vista compacta,
    * la ventana se ajusta al contenido (las filas de los proyectos); al salir, vuelve a su tamaño.
    */
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
     guard let body = message.body as? [String: Any] else { return }
-    if body["drag"] as? Bool == true {
-      // Con el botón aún pulsado, la ventana sigue al ratón desde el clic que guardó la WKWebView.
-      guard NSEvent.pressedMouseButtons & 1 == 1, let event = webView.lastMouseDown else { return }
-      window.performDrag(with: event)
+    if let region = body["dragRegion"] as? [String: Any], let height = region["height"] as? Double, let root = window.contentView {
+      // Franja de la cabecera (en puntos desde arriba) y los controles que tiene, que siguen siendo de la página.
+      let h = CGFloat(min(max(height, 0), 400))
+      dragRegion.frame = NSRect(x: 0, y: root.bounds.height - h, width: root.bounds.width, height: h)
+      dragRegion.holes = ((region["holes"] as? [[Double]]) ?? []).filter { $0.count == 4 }.map { NSRect(x: $0[0], y: $0[1], width: $0[2], height: $0[3]).insetBy(dx: -2, dy: -2) }
       return
     }
     guard let compact = body["compact"] as? Bool else { return }
