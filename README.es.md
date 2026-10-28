@@ -1,0 +1,367 @@
+# @backcode/runner
+
+[English](README.md) · **Español**
+
+Runner local de **Backcode**. Escucha las tareas que **tú** aceptas en la app y las implementa con **Claude Code en tu
+ordenador**, cada una en su rama (`backcode/<tu-handle>/<tarea>`), y te deja un **PR en borrador** en GitHub o Bitbucket.
+Atiende todos los proyectos que conectes en este ordenador (un proceso por proyecto) y trae un **panel** en el navegador para
+conectarlos y gestionarlos sin usar la terminal.
+
+Código abierto bajo [Apache-2.0](LICENSE): corre en tu ordenador y con acceso a tus repos, así que puedes leer exactamente qué hace.
+
+## Empezar
+**En un Mac:** descarga [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg)
+(universal, firmada y notarizada), arrastra **Backcode Runner** a Aplicaciones y ábrela. Sin Terminal ni Node: copia el runner a
+`~/.backcode/bin`, lo deja arrancando al iniciar sesión y abre el panel. Volver a abrir la app solo abre el panel.
+
+**En Linux (o desde la Terminal de un Mac):** pega esto:
+```bash
+curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | sh
+```
+Instala un único ejecutable en `~/.backcode/bin` (**sin Node**), comprueba su SHA-256, deja `backcode` en el PATH (una línea
+en el perfil de tu shell) y abre el **panel** en el navegador (http://127.0.0.1:47474). Las próximas veces: `backcode`.
+¿Ya usas Node? Es el mismo runner desde npm: `npx @backcode/runner`.
+
+Desde el panel:
+- **Este ordenador**: comprueba Claude Code y su sesión, git y GitHub CLI (y Node, solo con npm). Lo que falte se abre en una
+  **guía paso a paso** con un botón que lo hace por ti (instalador oficial de Claude Code, iniciar sesión en Claude o GitHub en la
+  Terminal, herramientas de Xcode, GitHub CLI con Homebrew) y el comando por si prefieres hacerlo a mano.
+- **Conectar un proyecto**: en la app, **Proyecto → Conectar paso a paso → Copiar configuración**, y en el panel **Pegar
+  configuración**. Si la carpeta del repo no existe, te ofrece clonarlo; si los PR van a Bitbucket, te pide el token.
+- **Proyectos**: un interruptor por proyecto para activarlo o pararlo (se recuerda: uno parado no arranca solo al volver),
+  reiniciarlo, ver su actividad en vivo o quitarlo. Si encuentra proyectos conectados con la versión anterior (`git clone`, p. ej.
+  en `~/Projects/backcode-runner`), ofrece **importarlos** (los copia; no borra nada de allí).
+- **Idioma**: el que elijas arriba a la derecha (español, inglés o catalán); si no, el de tu perfil en la app y, mientras no lo
+  sepa, el del navegador. Mismos colores e icono que la app, en claro u oscuro según el sistema.
+- **Arrancar al iniciar sesión**: lo instala como servicio de tu usuario (launchd en macOS, systemd `--user` en Linux). Corre en
+  segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx @backcode/runner`.
+
+Sin el servicio, los runners funcionan mientras esté abierta la terminal donde lanzaste el panel (Ctrl+C los para).
+
+## Requisitos
+- macOS o Linux (el sandbox del sistema es obligatorio). Node 22 solo si lo usas desde npm.
+- [Claude Code](https://docs.claude.com/claude-code) con tu sesión iniciada: `curl -fsSL https://claude.ai/install.sh | bash` (o
+  el botón del panel), ejecuta `claude` una vez y haz login. El ejecutable usa ese Claude Code; con npm, el que trae el Agent SDK
+  (no instales con `--omit=optional`), que comparte tu sesión. El panel (y `backcode connect`) lo comprueban antes de pedirte nada.
+- `git` con permiso de push al repositorio del proyecto
+- Para abrir PRs:
+  - **GitHub**: `gh auth login` (solo si tus repos están en GitHub)
+  - **Bitbucket**: un API token (ver más abajo; el panel te lo pide al conectar)
+- Para publicar OTA (proyectos Expo): `npx eas-cli login` con una cuenta con acceso al proyecto de Expo y, si el repo publica con su
+  propio script (p. ej. xprem), lo que ese script necesite en tu copia local (p. ej. `EOO_TOKEN` en el `.env`)
+
+## Desde la terminal
+Todo lo del panel se puede hacer también con comandos (`npm i -g @backcode/runner` deja `backcode` en el PATH; si no, delante
+`npx @backcode/runner`):
+
+| Comando | Qué hace |
+|---|---|
+| `backcode` | Abre el panel (si ya está abierto, por ejemplo como servicio, solo lo abre en el navegador). |
+| `backcode connect` | Conecta un proyecto: pega la configuración de la app (⌘V + Enter). Si el panel está en marcha, lo arranca él; si no, en esta terminal. |
+| `backcode start [proyecto…]` | Arranca en esta terminal todos los proyectos (o los indicados), con los logs juntos (`[proyecto]` delante). |
+| `backcode service install` / `uninstall` / `status` | Arrancar al iniciar sesión (lo mismo que el interruptor del panel). Log en `~/.backcode/logs/service.log`. |
+| `backcode --version` | Versión instalada. |
+
+Si lanzas dos runners tuyos para el mismo proyecto (en dos ordenadores o dos terminales), el segundo se niega a arrancar.
+
+## Dónde guarda las cosas
+| Ruta | Qué |
+|---|---|
+| `~/.backcode/config/<proyecto>.env` | Configuración de cada proyecto, con tu runner key y, si usas Bitbucket, el token (carpeta 700, ficheros 600; si otros pueden leerlo, no arranca). |
+| `~/.backcode/config/credentials` | Credenciales de tu cuenta para todos los proyectos: el API token de Bitbucket (600). El `.env` de un proyecto, si trae el suyo, manda. |
+| `~/.backcode/config/panel-token` | Token del panel (va en el enlace que abre `backcode`). |
+| `~/.backcode/worktrees/<proyecto>/<tarea>` | Copias de trabajo de cada tarea. |
+| `~/.backcode/bin/backcode` | El ejecutable sin Node que instala `install.sh` (se actualiza solo desde GitHub Releases). |
+| `~/.backcode/app` | Con npm: instalación propia del runner que usa el servicio (y que se actualiza sin permisos de administrador). |
+| `~/.backcode/state.json` | Proyectos que paraste en el panel (no se arrancan solos). |
+
+Claude no puede leer `~/.backcode/config`, `~/.backcode/logs` ni la carpeta del runner. `BACKCODE_HOME` cambia la raíz.
+
+**¿Venías de la versión con `git clone`?** Las configuraciones `.env.<proyecto>` de la carpeta del runner se mueven solas a
+`~/.backcode/config/` al arrancar, y los comandos de antes (`npm run connect`, `npm run all`, `npm start -- --env .env.<id>`)
+siguen funcionando en esa copia. Para pasarte a npm: `npx @backcode/runner`, **Importar** en el aviso del panel, para los runners antiguos (Ctrl+C en su
+terminal), activa cada proyecto y «Arrancar al iniciar sesión».
+
+## Conectar un proyecto (detalles)
+La guía de la app va primero por el proyecto: la carpeta del repo en tu ordenador, la rama base y dónde abrir los PR (GitHub,
+Bitbucket o solo subir la rama); eso decide qué hace falta preparar en el ordenador. Al final, **Copiar configuración** y pégala
+en el panel (o en `backcode connect`). Se guarda en `~/.backcode/config/<proyecto>.env` y el runner arranca; en la app verás
+**"¡Tu Claude Code está conectado!"**.
+
+**¿Aún no tienes el repo?** El runner de quien ya está conectado guarda en el proyecto la URL del repo (sin credenciales; solo
+GitHub o Bitbucket, https o `git@`). En el paso 1 de la guía, **"¿Aún no tienes el repo en este ordenador? Clónalo"** te deja
+elegir la carpeta (por defecto `~/Projects`) y te da el `git clone` listo para copiar. O no hagas nada: si la ruta de la
+configuración no existe, el panel te pregunta si lo clona ahí (con tus credenciales de git) antes de seguir. Desde el panel, git no
+puede pedirte contraseñas: si tu remoto las necesita, clónalo tú o usa `backcode connect`.
+
+**La llave (runner key) es por usuario, no por proyecto.** Solo hace falta generarla en la app la primera vez en cada ordenador.
+Si ya tienes otro proyecto conectado, en la guía elige **"Ya tengo una llave en este ordenador"**: se reutiliza la que tienes.
+Generar una nueva revoca la anterior; si lo haces, al conectar se comprueba la llave contra el servidor y se copia la válida a
+tus otras configuraciones (reinicia esos runners para que la usen). Si no encuentra ninguna válida, te pide generar una.
+
+## Idioma
+La terminal, la actividad de las tareas y los errores que ves en la app salen en **el idioma de tu perfil en la app** (español,
+inglés o catalán; cambiarlo en la app aplica sin reiniciar). Claude también te escribe en ese idioma (preguntas, resúmenes y
+mensaje final). Antes de iniciar sesión (el panel, `backcode connect`, errores al arrancar) se usa el del sistema (`LANG`/`LC_ALL`).
+`BACKCODE_LANG=es|en|ca` (en el entorno o en el `.env`) lo fija y manda sobre todo.
+
+## Actualizaciones
+**Se actualiza solo.** Con el ejecutable (`install.sh`), cada 30 minutos mira la última versión en GitHub Releases, descarga la de
+tu plataforma, comprueba su SHA-256 contra `SHA256SUMS` y que arranca, y sustituye `~/.backcode/bin/backcode`. Con npm instalado
+como servicio (o en `~/.backcode/app`), lo mismo desde npm. En los dos casos, cada runner se reinicia con la versión nueva **al quedar libre** (sin tarea ni acción en marcha; no
+interrumpe nada ni coge trabajo nuevo mientras). El panel avisa cuando él también puede reiniciarse para ver la versión nueva.
+Con `npx` sin servicio, el panel y la terminal avisan de la versión nueva y basta con volver a lanzar `npx @backcode/runner@latest`.
+
+En una copia de git (desarrollo, o quien venía de `git clone`), cada 2 minutos mira si la rama tiene commits nuevos: si los hay y
+la copia está limpia, `git pull --ff-only`, `npm install` si cambiaron dependencias, comprueba que compila y se reinicia igual,
+al quedar libre. Si tu copia tiene cambios sin guardar o commits locales, o la versión nueva no compila, avisa y sigue con la actual.
+
+**Si el ordenador se apaga o el runner se cae a mitad:** la sesión de Claude se guarda en cuanto empieza y el runner renueva
+un «sigo vivo» en la tarea (y en cada acción: merge, OTA, build…). Si deja de renovarlo, la app marca la tarea **Detenida** y
+el asignado y los admins reciben un aviso push (una vez por caída). El asignado o un admin puede **reintentarla** (vuelve a su cola; al volver, el runner la continúa donde la dejó), **liberarla**
+o **descartarla**. Una acción a medias deja de bloquear publicar a todo el proyecto y sale como *Interrumpida*; al volver,
+el runner la marca así (si era un OTA o un merge, comprueba si llegó a hacerse antes de repetirlo).
+
+**Que el ordenador no se duerma a mitad.** Mientras hay una tarea, una acción (merge, OTA, build…) o un refinado en marcha, el
+runner impide el reposo por inactividad (macOS: `caffeinate`; Linux: `systemd-inhibit`) y lo suelta al terminar. Con
+`BACKCODE_KEEP_AWAKE=always` en el `.env` del proyecto no se duerme mientras el runner esté abierto (útil si quieres que recoja
+tareas al momento aunque no estés delante); con `off`, nunca lo impide. Con varios proyectos, basta con que uno tenga `always`.
+Cerrar la tapa del portátil sin corriente lo duerme igual.
+
+**Publicar OTA exige probarlo antes** (botón Publicar de la app, también los rollbacks): el runner compila la app en Release
+con el JS incrustado, en la copia limpia que va a publicar, la abre en un simulador propio («Backcode OTA test», no toca los
+tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica. Un OTA que cierra la app al arrancar no
+tiene arreglo por OTA (el móvil no llega a descargar el siguiente). Requisitos: Mac con Xcode, y que la app compile en tu
+máquina (sus `.env` y ficheros de Firebase locales, como `GoogleService-Info.plist`, se copian solos). La primera vez por
+proyecto tarda ~10 min (compilación nativa); después, unos minutos.
+
+**Primero lo rápido.** Antes de compilar se mira si la copia a publicar tiene archivos sin commitear: si los hay, falla al
+momento diciendo cuáles, y la app ofrece **Commit y publicar** (los commitea en la rama base, sin forzar, y publica ese commit;
+nunca `.env`, claves ni nada que parezca un secreto). Si el script `ota:publish` del repo usa `BACKCODE_SMOKE_CLI`, la prueba
+de arranque la lanza él después de sus propias comprobaciones (cambios nativos, versión…), así esos fallos tampoco esperan a la
+build:
+```bash
+if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "${BACKCODE_SMOKE_FROM:-.}" || exit 1; fi
+```
+Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
+build y borra lo que genera, p. ej. `ios/`).
+
+## Cambiar la ruta del repo, la rama base o los PR
+App → Proyecto → Conectar → **Configurar de nuevo** → cambia lo que quieras → "Ya tengo una llave en este ordenador" → **Copiar
+configuración** → en el panel, **Pegar configuración**. Sustituye la configuración de ese proyecto sin tocar los demás y lo reinicia.
+
+Al arrancar, el runner comprueba el repo real y se adapta (y te lo avisa en la terminal y en la app):
+- Si la rama base configurada no existe (p. ej. el repo usa `master` y no `main`), usa la rama por defecto del repo.
+- Si el repo no está en GitHub ni Bitbucket, o es Bitbucket sin token, sube la rama sin abrir PR.
+
+## PRs en Bitbucket (API token)
+1. Abre <https://id.atlassian.com/manage-profile/security/api-tokens> con la cuenta con la que entras en Bitbucket.
+2. **Create API token with scopes** → ponle nombre y caducidad → app **Bitbucket**.
+3. Permisos: `read:user:bitbucket` (imprescindible), `read:repository:bitbucket`, `write:repository:bitbucket`,
+   `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket` y, para crear proyectos desde la app,
+   `admin:repository:bitbucket`. Copia el token (solo se muestra una vez).
+4. En la guía de la app elige **"Abrir PR en Bitbucket"** y, al pegar la configuración en el panel (o en `backcode connect`),
+   introduce el **email de esa cuenta de Atlassian** (no el usuario de Bitbucket) y el token.
+
+Al conectar se **comprueba el token** contra la API de Bitbucket antes de guardarlo y, si falla, te dice por qué (email o
+token incorrectos, falta un permiso o no tienes acceso al repo) y te deja reintentarlo (o seguir sin PR). Si el guardado deja de valer (caduca o lo
+cambias), te pide otro y lo actualiza en todos tus proyectos de Bitbucket. El token se guarda solo en este ordenador
+(`~/.backcode/config/credentials`, el de tu cuenta, y en el `.env` del proyecto). También lo puedes añadir o cambiar en
+el panel, sección **Cuentas**. Lo usa el runner para abrir y mergear PRs y crear repos; Claude nunca tiene acceso a él.
+
+## Proyectos nuevos desde una idea
+Un admin de un grupo con plan Equipo puede crear en la app un proyecto que aún no existe, contándolo en un chat. Lo
+crea **tu** runner (cualquiera de los tuyos que esté encendido) con **tus** credenciales:
+1. Valida el nombre del repo y la cuenta, organización o workspace, y crea la carpeta dentro de tu **carpeta de proyectos**:
+   la de tus ajustes en la app (solo vale dentro de tu `$HOME`, fuera de `~/.backcode` y de carpetas ocultas) o, si no
+   hay, la carpeta donde ya tienes más repos conectados, o `~/Projects`. La carpeta del repo no puede existir.
+2. `git init -b main`, un `README.md` y el primer commit.
+3. El repo remoto: `gh repo create` en GitHub, o la API de Bitbucket con tu token (permiso `admin:repository:bitbucket`),
+   y el push de `main`.
+4. La configuración del proyecto (`~/.backcode/config/<proyecto>.env`), como la de `backcode connect`. El panel (o
+   `backcode start`) ve el proyecto nuevo en unos segundos y arranca su runner, que ejecuta la primera tarea (montar el
+   proyecto) y abre su PR en borrador.
+
+Para que la app sepa qué ofrecer, cada runner publica en tu perfil privado (`users/{uid}/private/machine`) la carpeta de
+proyectos, tu usuario de `gh` y sus organizaciones, y tus workspaces de Bitbucket, al arrancar y cada hora. Nunca tokens.
+
+
+## Qué hace con cada tarea
+1. La reclama (`execute → running`) y verifica que es tuya, que sigues en el grupo y que el encargo y los adjuntos no han cambiado
+   desde que la aceptaste (huella).
+2. Crea una copia aislada (worktree) en `~/.backcode/worktrees/<proyecto>/<tarea>` sobre su rama, partiendo de `<remoto>/<base>`.
+   Tu carpeta de trabajo no se toca. Los adjuntos (capturas, PDFs…) se descargan en `.backcode-attachments/`, excluida de git.
+3. Lanza Claude Code con [`instructions/AGENT.md`](instructions/AGENT.md): trabajar solo en esa rama, ejecutar los tests, preguntar
+   (`ask_user`) si algo esencial es ambiguo y llamar a `open_pull_request` al terminar.
+   En **modo plan** (`planFirst`), hasta que se aprueba el plan Claude solo puede leer (Read, Glob, Grep: sin editar ni ejecutar
+   comandos) y entrega el plan con `propose_plan`; la tarea pasa a `waiting` con `result.planReady`. Cada comentario en el hilo
+   le hace rehacerlo; al aprobarlo (`planApproved`), la misma sesión lo implementa con las herramientas de siempre.
+4. Revisa el resultado (rechaza cambios en rutas protegidas y diffs con secretos), hace commit y push y abre el **PR en borrador**.
+5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó o propuso un plan) o `failed` (con el motivo). La app muestra la actividad
+   en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
+
+## Modelo de cada tarea
+Por defecto, cada tarea usa el **modelo por defecto de tu Claude Code** (con un plan Max, Opus), o `BACKCODE_MODEL` si lo has
+puesto. En la tarea se puede fijar uno: **Haiku, Sonnet, Opus o Fable** (Fable se pasa con su id completo, `claude-fable-5-1`). Al
+refinar, la IA **recomienda** el más barato que lo hará bien según la complejidad, con el motivo; se aplica con un toque, nunca sola.
+Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el coste y los tokens por modelo realmente usado.
+
+## Conversación con Claude (hilo por tarea)
+- Si Claude necesita una aclaración, la tarea pasa a **Necesita respuesta** y la pregunta aparece en el hilo de la app.
+- Quien la aceptó responde (o pide más cambios cuando ya hay PR) desde la app: el runner **retoma la misma sesión** en la misma
+  rama, y los commits nuevos actualizan el mismo PR.
+- Los worktrees se conservan para poder continuar y se borran tras 14 días sin uso.
+- **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Dentro,
+  `/remote-control` la abre en la app móvil de Claude. Ahí trabajas con tus permisos normales, fuera del sandbox del runner.
+
+## PRs mergeados fuera de la app
+Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket, tu runner lo detecta (cada 5 minutos) y la marca como
+**Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**.
+
+## Conflictos con la rama principal
+Si otro PR se mergea antes y toca lo mismo que tu tarea, tu runner lo detecta (cada 5 minutos, solo cuando cambia alguna de las dos
+ramas; con git ≥ 2.38 sin tocar nada, con versiones anteriores en una copia temporal) y la tarea muestra **⚠️ Choca con la rama
+principal** con los ficheros. Pulsa **Actualizar con main**: al retomar la tarea, el runner mezcla lo último de la rama principal en
+la rama de la tarea; si no hay conflictos lo sube ya, y si los hay Claude los resuelve conservando los dos cambios, pasa los tests y
+el mismo PR se actualiza. Las rutas protegidas y los secretos se revisan solo sobre lo que cambia la tarea, no sobre lo que entró en
+la rama principal. Esto pasa siempre que se retoma una tarea (también al responder en el hilo).
+
+## Acciones desde la app (las ejecuta tu runner)
+Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
+tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.
+
+| Acción | Quién | Qué hace |
+|---|---|---|
+| **Abrir PR** | cualquier miembro | Para tareas con solo la rama subida: abre el PR (sin volver a ejecutar a Claude). |
+| **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. Después pone al día tu copia local (ver abajo). |
+| **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
+| **Build para testers** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
+
+### Tu copia local se pone al día sola
+Tras mergear, publicar un OTA, una build o un despliegue desde la app, y cada vez que arranca el runner, tu copia local de la
+rama base se actualiza con lo que hay en el remoto (lo que se publica es siempre la rama base del remoto, nunca tu copia local), **solo si es seguro**: estás en la rama base sin cambios pendientes y es un avance limpio (fast-forward). Si estás en otra
+rama, se avanza la rama base sin cambiar de rama. Si cambiaron dependencias (`package.json` o lockfile), instala con el gestor del
+repo (`pnpm`/`yarn`/`bun install --frozen-lockfile` o `npm install`). Si algo no cuadra (cambios sin guardar, commits locales que
+no están en el remoto), no toca nada y lo avisa en la terminal para que hagas `git pull` tú.
+
+### Cómo publica el OTA cada proyecto
+El runner lo detecta al arrancar, leyendo la rama base:
+1. **Script propio**: si el `package.json` de la app tiene `ota:publish` (p. ej. un servidor **xprem** propio), ejecuta
+   `<pnpm|yarn|npm> run ota:publish <rama> --yes -m "<mensaje>"` en una copia limpia de la rama base. El runner le pasa `prod` o
+   `preview` y el script de cada repo los traduce a sus ramas reales de xprem (p. ej. Castellers usa `prod`/`preview` y Backcode
+   `main`/`dev`). Si el script ya lleva la rama escrita (p. ej. `bash scripts/publish-update.sh prod`), no se repite; si
+   lleva otra rama distinta del canal pedido, no se publica. Se copian a esa copia los `.env`/`.env.local`
+   locales ignorados por git (el script saca de ahí su token) y el registro de la última publicación (`.expo/eoas-last-publish-*`)
+   para que su guarda de cambios nativos funcione; la copia se borra al acabar. Nunca se pasa `--allow-native` ni porcentajes:
+   si el script se niega, la app muestra su motivo.
+2. **EAS Update**: si la config de Expo tiene `updates.url` en `u.expo.dev`, ejecuta `eas update --channel <canal>`.
+3. Si no hay ninguno, no se ofrece OTA y la terminal lo avisa (EAS Update se activa con `npx eas-cli update:configure`).
+
+Tras publicar, las tareas mergeadas desde la app cuyo commit de merge va incluido en lo publicado quedan marcadas como
+**Desplegadas** en ese canal (preview o production).
+
+**Rollback rápido:** desde la pantalla de OTA, un admin puede volver a publicar la versión anterior de un canal. El runner solo
+acepta commits que ya están en la rama base y no espera checks (esa versión ya se publicó); pasa por el mismo script o `eas update`.
+
+El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
+
+### Builds para testers (TestFlight / Internal Testing)
+En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
+`production`). Es un binario nuevo, no un OTA: el admin elige iOS y/o Android y escribe la **versión** (`1.0.16`) y la
+**runtimeVersion** (por defecto, la misma que la versión). El runner, en una copia limpia de la rama base y con los checks en verde:
+1. Instala dependencias y comprueba con `expo config` que la app aplica la versión pedida: la recibe en `APP_VERSION` y
+   `RUNTIME_VERSION`, y su `app.config.js` tiene que leerlas (ver `app/app.config.js` de Backcode). Si no, falla sin compilar.
+2. Por plataforma: `eas build --local --profile production` (en tu ordenador; iOS solo en un Mac con Xcode) y
+   `eas submit --path <binario>`: iOS va a TestFlight y Android al track del perfil de submit (`internal` por defecto).
+
+Usa tu sesión de EAS y las credenciales de las tiendas que tengas en EAS (`eas credentials`); no se copia ningún `.env` local ni
+se toca `ios/`/`android/`. El número de build lo gestiona EAS (`appVersionSource: remote` + `autoIncrement`).
+
+### Despliegues del repo (monorepos: web, api, scripts…)
+Pestaña **Despliegues** de la pantalla de publicar (solo admins y owner). El runner busca en todos los `package.json` del repo
+(sin `node_modules`) los scripts que se llaman `backcode:deploy:<nombre>` y ofrece un botón por cada uno; el sufijo es el nombre
+(`web`, `api`, `docs`…; minúsculas, números y guiones). Solo esos: un `deploy` sin su línea `backcode:` nunca aparece. Lo normal
+es duplicar el que ya tenéis, sin renombrarlo:
+
+```json
+"deploy": "firebase deploy --only hosting",
+"backcode:deploy:web": "npm run deploy"
+```
+
+Al pulsarlo, en una copia limpia de la rama base y con los checks en verde: instala con el gestor del repo (donde esté el
+lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `.env.production` y `.env.production.local`
+(solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
+interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
+detectan al arrancar: tras añadir uno, reinicia el runner.
+
+## Mapa e icono del proyecto
+Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato
+(`BACKCODE_KNOWLEDGE_MODEL`, por defecto `haiku`; unos céntimos) y sube un resumen: stack, estructura, módulos, comandos y
+convenciones. La IA que prepara los encargos lo usa para escribir prompts con rutas y comandos reales. Solo ve ficheros versionados
+(nunca tus `.env` locales), no tiene Bash ni red, y si el resumen parece contener un secreto se descarta. Desactívalo con
+`BACKCODE_KNOWLEDGE=off`.
+
+También busca el **icono del proyecto** en el repo (el `icon` de `app.json` o de `app.config.js/ts`, `apple-touch-icon`, `logo`,
+`favicon`…; si la config de Expo no lo dice, usa la ruta que propone la IA al generar el mapa, siempre que exista en el repo y sea
+una imagen válida) leyéndolo
+de git y lo sube para mostrarlo en la app, salvo que un admin elija otro.
+
+## Refinado de ideas con tu Claude Code
+Si activas **Perfil → Refinado de ideas → Usar mi Claude Code**, las ideas que escribes en «Nueva idea» las prepara tu runner
+(el de ese proyecto, si está conectado) en lugar del modelo de OpenAI del servidor. Claude abre una copia de la rama base **en
+solo lectura** (Read, Glob y Grep; sin Bash, sin escritura y sin red), lee el código que haga falta y devuelve el mismo
+encargo (título, prompt, criterios, preguntas, avisos de seguridad y modelo sugerido). Mientras trabaja, la app muestra qué está
+leyendo, y la propuesta indica qué modelo la ha escrito. Usa `BACKCODE_REFINE_MODEL` (por defecto `sonnet`) y consume de tu plan
+o API key. Si el runner está apagado, ocupado con otro refinado, falla o tarda más de 3 minutos, el servidor la refina con
+OpenAI como siempre y la app lo indica. Solo se usa tu propio runner: las ideas de otros nunca gastan tu cuota.
+
+## Uso y cuota
+El runner publica en tu grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
+cuota de 5 h y semanal (dato orientativo de una API experimental de Claude Code). Lo ves en **Grupo → Uso del equipo** y en el
+perfil de cada miembro. La cuota se lee al arrancar, tras cada tarea, cada 5 minutos y cuando alguien pulsa ↻ en la app (leerla no
+llama al modelo ni consume); si tu runner está apagado, se ve la última lectura.
+
+## Seguridad
+El texto de las tareas lo escriben otros miembros del grupo: se trata como **dato no confiable**.
+
+| Capa | Medida |
+|---|---|
+| Identidad | La runner key te autentica como tú y está sujeta a las Security Rules: solo puede mover tus tareas. Una nueva revoca la anterior. |
+| `.env` | Solo para ti (`chmod 600`; si otros pueden leerlo, el runner no arranca). Las variables `BACKCODE_*` (llave, token de Bitbucket) se borran del entorno antes de lanzar Claude. |
+| Disco | Claude solo lee y escribe dentro del worktree. Los comandos corren en el sandbox del sistema y no pueden leer este kit, `~/.ssh`, `~/.aws`, `~/.config/gh`… |
+| Red | Los comandos solo llegan a `BACKCODE_ALLOWED_DOMAINS`. No hay WebFetch ni WebSearch. |
+| Permisos | En modo `dontAsk`, lo que no está permitido se deniega. Además, un hook bloquea `git push`, `gh`, `curl`, `ssh`, `sudo`… |
+| Repo | No se cargan los settings ni los hooks de `.claude/` del repo. CI, `.claude/`, `.mcp.json`, `CLAUDE.md`, `.env*`, claves y adjuntos están protegidos. |
+| Publicación | El push y el PR los hace el runner, sin hooks de git, y el PR siempre en **borrador**. El merge y el OTA solo ocurren si un admin los pide desde la app y los checks están en verde. |
+
+Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa cada PR como si viniera de un desconocido.
+
+## Personalizar las instrucciones
+Edita [`instructions/AGENT.md`](instructions/AGENT.md) (en una copia de git: con npm, la versión nueva lo sobrescribe). Admite estos marcadores: `{{projectName}}`, `{{worktree}}`, `{{branch}}`,
+`{{baseBranch}}`, `{{remote}}`, `{{projectContext}}`, `{{claudeMd}}` y `{{language}}` (idioma de tu perfil, p. ej. `Spanish`). Si quitas reglas de seguridad no se desactivan las barreras
+técnicas, pero el agente pierde contexto sobre por qué existen.
+
+## Variables del `.env`
+Las genera la app; las puedes ajustar a mano en `~/.backcode/config/<proyecto>.env` (después, reinicia ese proyecto en el panel). Ver [`.env.example`](.env.example) para todas
+(límites por tarea, modelo, dominios permitidos, rutas protegidas, mapa del proyecto…).
+
+## Desarrollo
+```bash
+git clone https://github.com/hernanmateo/backcode-runner.git && cd backcode-runner
+npm install
+npm run panel        # el panel desde esta copia (o npm run connect / npm run all / npm start -- --project <id>)
+npm test
+```
+La app de Mac: `npm run build:mac` (en un Mac) compila los dos ejecutables de macOS, los une en uno universal dentro de
+`Backcode Runner.app` y crea `Backcode-Runner.dmg`; los firma y notariza si están `MAC_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID` y
+`APPLE_APP_PASSWORD` (en CI, de los secretos del repo; ver `release.yml`). Sin firma sirve para probarla en tu Mac.
+
+Publicar (claves, pruebas y pasos en el monorepo: `docs/RUNNER-PUBLICAR.md`): `npm version minor && git push --follow-tags`. La etiqueta `vX.Y.Z` lanza el workflow `release.yml`: compila y pasa los
+tests, compila los ejecutables (`npm run build:bin`, con [Bun](https://bun.sh)) para macOS y Linux (Intel y ARM), los publica en
+una Release con `SHA256SUMS` e `install.sh`, y publica `@backcode/runner` en npm si el repo tiene el secreto `NPM_TOKEN`.
+El ejecutable es el mismo código TypeScript con el panel, las instrucciones y el `package.json` incrustados (`src/embedded.ts`
+solo se rellena en la copia de compilación).
+Variables útiles para probar sin tocar tu configuración: `BACKCODE_HOME=/tmp/bc` y `BACKCODE_PANEL_PORT=47999`.
+
+## Licencia
+[Apache-2.0](LICENSE). Ver [NOTICE](NOTICE).

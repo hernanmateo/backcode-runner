@@ -1,0 +1,24 @@
+name: Bug report
+description: Something in the runner or its panel doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: activity
+    attributes:
+      label: Activity
+      description: Relevant lines from the panel's Activity view or the terminal. Remove anything private first.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: OS, `npx @backcode/runner --version`, `node -v`, `claude -v`
+    validations:
+      required: true

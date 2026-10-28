@@ -6,8 +6,9 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { onSnapshot } from "firebase/firestore";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
+import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
-import { checkMachine } from "./preflight.js";
+import { checkMachine, claudeExecutable } from "./preflight.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
@@ -15,6 +16,10 @@ import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
+import { refineIdea } from "./refine.js";
+import { machineInfo } from "./machine.js";
+import { parseScaffold, runScaffold } from "./scaffold.js";
+import { KeepAwake } from "./awake.js";
 import { buildApprovedPlanPrompt, buildFollowUpPrompt, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
 
@@ -27,6 +32,7 @@ const cfg = (() => {
   }
 })();
 let store: Store;
+const awake = new KeepAwake(cfg.keepAwake);
 const isProtected = protectedMatcher(cfg.protectedPaths);
 
 // Entorno mínimo para Claude y sus comandos: sin credenciales de Firebase, GitHub ni cloud.
@@ -40,7 +46,9 @@ function agentEnv(): Record<string, string> {
 // Directorios sensibles que los comandos sandboxeados no pueden leer.
 const home = homedir();
 const DENY_READ = [
-  KIT_DIR, // contiene el .env con tu runner key
+  KIT_DIR, // el propio runner
+  CONFIG_DIR, // la configuración de cada proyecto, con tu runner key y tokens
+  LOGS_DIR,
   ...[".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".netrc", ".npmrc", ".config/gh", ".config/gcloud", ".claude.json", "Library/Keychains"].map((p) => join(home, p)),
 ];
 
@@ -206,6 +214,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const messages = query({
       prompt,
       options: {
+        pathToClaudeCodeExecutable: claudeExecutable(),
         resume: feature.sessionId,
         cwd: wt.path,
         model,
@@ -333,6 +342,7 @@ async function drain(): Promise<void> {
       const feature = await store.claim(id);
       if (!feature) continue;
       console.log(`[run] ${id} · ${feature.title}`);
+      const release = awake.hold();
       try {
         const { status, result, sessionId } = await runFeature(id, feature);
         if (stopping && !result.prUrl && status !== "waiting") {
@@ -346,6 +356,8 @@ async function drain(): Promise<void> {
       } catch (err) {
         console.error(`[error] ${id}`, err);
         await store.finish(id, "failed", { error: String(err).slice(0, 2000) });
+      } finally {
+        release();
       }
     }
   } finally {
@@ -408,6 +420,8 @@ async function main(): Promise<void> {
     ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null,
     // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
+
+    refine: true,
   };
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
@@ -422,6 +436,9 @@ async function main(): Promise<void> {
 
   const project = await store.projectInfo();
   printConnected(project.name);
+  // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
+  if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
+  if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
 
   // Mapa del repo para la IA que prepara los encargos: al arrancar y cada 6 h, sin bloquear la cola.
   const knowledgeAbort = new AbortController();
@@ -511,9 +528,13 @@ async function main(): Promise<void> {
         if (!action) continue;
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
+        const release = awake.hold();
         const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action)
           .catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }))
-          .finally(() => clearInterval(actionLease));
+          .finally(() => {
+            clearInterval(actionLease);
+            release();
+          });
         await store.finishAction(id, ok, result as Record<string, unknown>);
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
       }
@@ -526,6 +547,93 @@ async function main(): Promise<void> {
     void drainActions();
   });
 
+  // Ideas que pido refinar con mi Claude Code (opción del perfil): de una en una y en paralelo a las tareas, así una
+  // tarea larga no deja esperando a quien escribe una idea. Si tarda, el servidor la refina con OpenAI.
+  let refineBusy = false;
+  let pendingRefines: string[] = [];
+  const refineAbort = new AbortController();
+  const drainRefines = async () => {
+    if (refineBusy) return;
+    refineBusy = true;
+    try {
+      while (!stopping && !restarting && pendingRefines.length) {
+        const id = pendingRefines.shift()!;
+        const job = await store.claimRefine(id).catch(() => null);
+        if (!job) continue;
+        const release = awake.hold();
+        await refineIdea(cfg, store, agentEnv(), id, job, refineAbort.signal).finally(release);
+      }
+    } finally {
+      refineBusy = false;
+    }
+  };
+  const unsubscribeRefines = onSnapshot(
+    store.myRefineJobs(),
+    (snap) => {
+      pendingRefines = snap.docs.map((d) => d.id);
+      void drainRefines();
+    },
+    (err) => console.warn(`[refine] ${err.message}`),
+  );
+
+  // Lo que este ordenador ofrece para crear proyectos (carpeta, cuentas de GitHub y Bitbucket): al arrancar, cada hora y
+  // cuando cambian los ajustes en la app. Con varios proyectos conectados lo publican todos (es lo mismo); si falla, da igual.
+  let workspaceDir: string | undefined;
+  const reportMachine = () =>
+    void machineInfo(workspaceDir, cfg.bitbucket)
+      .then((info) => store.saveMachine(info))
+      .catch((err) => console.warn(`[machine] ${(err as Error).message}`));
+  const stopWorkspace = store.watchWorkspace((w) => {
+    workspaceDir = w.projectsDir;
+    reportMachine();
+  });
+  const machineTimer = setInterval(reportMachine, 60 * 60_000);
+
+  // Proyectos nuevos que pido desde la app: los escuchan todos mis runners y lo crea el que lo reclama primero.
+  await store.recoverScaffolds().catch(() => undefined);
+  let scaffoldBusy = false;
+  let pendingScaffolds: string[] = [];
+  const drainScaffolds = async () => {
+    if (scaffoldBusy) return;
+    scaffoldBusy = true;
+    try {
+      while (!stopping && !restarting && pendingScaffolds.length) {
+        const id = pendingScaffolds.shift()!;
+        const raw = await store.claimScaffold(id).catch(() => null);
+        if (!raw) continue;
+        const job = parseScaffold(raw);
+        if ("error" in job) {
+          await store.finishScaffold(id, false, { error: job.error }).catch(() => undefined);
+          continue;
+        }
+        console.log(`[scaffold] ${job.host} ${job.owner}/${job.repoName}`);
+        const lease = setInterval(() => void store.extendScaffoldLease(id).catch(() => undefined), 60_000);
+        const release = awake.hold();
+        const { ok, result } = await runScaffold(cfg, store, job, (text) => {
+          console.log(`[scaffold] ${text}`);
+          void store.scaffoldActivity(id, text);
+        })
+          .catch((err): Awaited<ReturnType<typeof runScaffold>> => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }))
+          .finally(() => {
+            clearInterval(lease);
+            release();
+          });
+        await store.finishScaffold(id, ok, result).catch((err) => console.warn(`[scaffold] ${(err as Error).message}`));
+        console.log(`[scaffold] ${ok ? t("scaffold.done", { path: result.repoPath ?? "" }) : result.error}`);
+      }
+    } finally {
+      scaffoldBusy = false;
+    }
+  };
+  const unsubscribeScaffolds = onSnapshot(
+    store.myScaffolds(),
+    (snap) => {
+      pendingScaffolds = snap.docs.map((d) => d.id);
+      void drainScaffolds();
+    },
+    (err) => console.warn(`[scaffold] ${err.message}`),
+  );
+
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
@@ -533,6 +641,11 @@ async function main(): Promise<void> {
     unsubscribe();
     stopLang();
     unsubscribeActions();
+    unsubscribeRefines();
+    unsubscribeScaffolds();
+    stopWorkspace();
+    clearInterval(machineTimer);
+    refineAbort.abort();
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
@@ -541,6 +654,7 @@ async function main(): Promise<void> {
     current?.abort.abort();
     while (busy) await new Promise((r) => setTimeout(r, 200));
     await releaseLock();
+    awake.stop();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -552,11 +666,15 @@ async function main(): Promise<void> {
     if (restarting || stopping) return;
     restarting = true;
     console.log(`[backcode] ${t("update.waiting")}`);
-    while (busy || actionsBusy) await new Promise((r) => setTimeout(r, 1000));
+    while (busy || actionsBusy || refineBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();
     stopLang();
     unsubscribeActions();
+    unsubscribeRefines();
+    unsubscribeScaffolds();
+    stopWorkspace();
+    clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
@@ -564,6 +682,7 @@ async function main(): Promise<void> {
     stopQuotaRequests();
     knowledgeAbort.abort();
     await releaseLock();
+    awake.stop();
     console.log(`[backcode] ${t("update.restarting")}`);
     if (process.env.BACKCODE_SUPERVISED === "1") process.exit(RESTART_CODE);
     relaunch();
@@ -584,8 +703,8 @@ async function main(): Promise<void> {
 /** Vuelve a arrancar este mismo runner (mismos argumentos, mismo terminal) con el código nuevo. */
 function relaunch(): never {
   const execve = (process as unknown as { execve?: (file: string, args: string[], env: NodeJS.ProcessEnv) => never }).execve;
-  if (execve) execve(process.execPath, [process.execPath, ...process.argv.slice(1)], process.env);
-  const child = spawn(process.execPath, process.argv.slice(1), { stdio: "inherit" });
+  if (execve) execve(process.execPath, [process.execPath, ...ownArgs()], process.env);
+  const child = spawn(process.execPath, ownArgs(), { stdio: "inherit" });
   child.on("exit", (code) => process.exit(code ?? 0));
   // Este proceso solo espera al nuevo (Node antiguo sin process.execve).
   return undefined as never;

@@ -1,16 +1,54 @@
 {
-  "name": "backcode-runner",
+  "name": "@backcode/runner",
   "version": "1.0.0",
+  "description": "Runner local de Backcode: escucha las tareas que aceptas en la app y las implementa con Claude Code en una rama propia. Incluye un panel para conectarlo y gestionarlo sin terminal.",
+  "license": "Apache-2.0",
+  "author": "Hernan Mateo",
+  "homepage": "https://github.com/hernanmateo/backcode-runner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hernanmateo/backcode-runner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hernanmateo/backcode-runner/issues"
+  },
+  "keywords": [
+    "backcode",
+    "claude-code",
+    "claude",
+    "ai",
+    "agent",
+    "runner",
+    "pull-request",
+    "backlog"
+  ],
+  "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "backcode": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "instructions",
+    "panel",
+    ".env.example",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "start": "tsc && node dist/index.js",
+    "panel": "tsc && node dist/cli.js",
     "connect": "tsc && node dist/connect.js",
     "dev": "tsx src/index.ts",
     "all": "tsc && node dist/all.js",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build && npm test",
+    "build:bin": "node scripts/build-binaries.mjs",
+    "build:mac": "node scripts/build-binaries.mjs darwin-arm64 darwin-x64 && node scripts/build-mac-app.mjs"
   },
-  "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.310",
     "firebase": "^13.1.0",
@@ -21,11 +59,13 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
-  "private": true,
-  "description": "Runner local de Backcode: escucha las tareas que aceptas en la app y las implementa con Claude Code en una rama propia.",
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "overrides": {
     "@grpc/grpc-js": "^1.14.6"
   }

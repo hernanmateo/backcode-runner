@@ -1,12 +1,12 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { z } from "zod";
+import { readCredentials } from "./credentials.js";
 import { setLangOverride, t } from "./i18n.js";
+import { HOME_DIR, migrateLegacyConfigs, projectFile, projectFiles, resolveEnvFile } from "./paths.js";
 
-/** Carpeta del kit (donde están .env e instructions/). Claude nunca puede leerla. */
-export const KIT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export { KIT_DIR } from "./paths.js";
 
 const list = (s: string | undefined) => (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const num = z.coerce.number().positive();
@@ -22,6 +22,8 @@ const Env = z.object({
   BACKCODE_USE_EMULATORS: z.enum(["0", "1"]).default("0"),
   BACKCODE_RUNNER_KEY: z.string().regex(/^[A-Za-z0-9]{1,128}\.[A-Za-z0-9_-]{43}$/, t("cfg.badKey")),
   BACKCODE_PROJECT_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, t("cfg.badProject")),
+  /** Nombre del proyecto en la app (solo para mostrarlo en el panel). */
+  BACKCODE_PROJECT_NAME: z.string().optional(),
   BACKCODE_REPO_PATH: z.string().min(1),
   BACKCODE_BASE_BRANCH: z.string().regex(/^[A-Za-z0-9._\/-]+$/).default("main"),
   /** Solo para `npm run connect`: de dónde clonar el repo si aún no está en BACKCODE_REPO_PATH. */
@@ -41,8 +43,12 @@ const Env = z.object({
   // Mapa del repositorio para que la IA que prepara los encargos conozca el proyecto.
   BACKCODE_KNOWLEDGE: z.enum(["auto", "off"]).default("auto"),
   BACKCODE_KNOWLEDGE_MODEL: z.string().default("haiku"),
+  // Refinado de ideas con tu Claude Code (si lo activas en la app): buena calidad a buen precio.
+  BACKCODE_REFINE_MODEL: z.string().default("sonnet"),
   BACKCODE_ALLOWED_DOMAINS: z.string().default("registry.npmjs.org"),
   BACKCODE_PROTECTED_PATHS: z.string().default(""),
+  // Que el ordenador no se duerma: off · working (solo con trabajo en marcha) · always (mientras el runner esté abierto).
+  BACKCODE_KEEP_AWAKE: z.enum(["off", "working", "always"]).default("working"),
   // Idioma del runner (por defecto, el de tu perfil en la app).
   BACKCODE_LANG: z.enum(["es", "en", "ca"]).optional(),
 });
@@ -69,17 +75,26 @@ export interface RunnerConfig {
   maxAttempts: number;
   knowledge: "auto" | "off";
   knowledgeModel: string;
+  refineModel: string;
   allowedDomains: string[];
   protectedPaths: string[];
+  keepAwake: "off" | "working" | "always";
   worktreesDir: string;
   runnerId: string;
   envFile: string;
 }
 
-/** Carga el .env del kit (o el indicado en BACKCODE_ENV_FILE / --env <fichero>). */
+/**
+ * Carga la configuración del proyecto: `--project <id>`, `--env <fichero>` (o BACKCODE_ENV_FILE) o, si en este ordenador
+ * solo hay un proyecto conectado, la suya.
+ */
 export function loadConfig(): RunnerConfig {
-  const argIdx = process.argv.indexOf("--env");
-  const envFile = resolve(KIT_DIR, argIdx > 0 ? process.argv[argIdx + 1] : process.env.BACKCODE_ENV_FILE ?? ".env");
+  migrateLegacyConfigs();
+  const arg = (flag: string) => (process.argv.indexOf(flag) > 0 ? process.argv[process.argv.indexOf(flag) + 1] : undefined);
+  const project = arg("--project");
+  const envArg = arg("--env") ?? process.env.BACKCODE_ENV_FILE;
+  const only = projectFiles();
+  const envFile = project ? projectFile(project) : envArg ? resolveEnvFile(envArg) : only.length === 1 ? only[0].file : join(HOME_DIR, "config", ".env");
   if (!existsSync(envFile)) {
     throw new Error(t("cfg.noEnv", { file: envFile }));
   }
@@ -87,7 +102,14 @@ export function loadConfig(): RunnerConfig {
   if ((statSync(envFile).mode & 0o077) !== 0) {
     throw new Error(t("cfg.perms", { file: envFile }));
   }
-  process.loadEnvFile(envFile);
+  // Lector propio (process.loadEnvFile no existe en el ejecutable sin Node): KEY=valor, comentarios y comillas.
+  for (const [key, value] of parseEnv(readFileSync(envFile, "utf8"))) if (process.env[key] === undefined) process.env[key] = value;
+  // Bitbucket: si el proyecto no trae su token, el de tu cuenta en este ordenador (~/.backcode/config/credentials).
+  const account = readCredentials().bitbucket;
+  if (account && !process.env.BACKCODE_BITBUCKET_TOKEN) {
+    process.env.BACKCODE_BITBUCKET_EMAIL = account.email;
+    process.env.BACKCODE_BITBUCKET_TOKEN = account.token;
+  }
   // Variables vacías en el .env = usar el valor por defecto.
   setLangOverride(process.env.BACKCODE_LANG);
   const parsed = Env.safeParse(Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== "")));
@@ -118,10 +140,27 @@ export function loadConfig(): RunnerConfig {
     maxAttempts: env.BACKCODE_MAX_ATTEMPTS,
     knowledge: env.BACKCODE_KNOWLEDGE,
     knowledgeModel: env.BACKCODE_KNOWLEDGE_MODEL,
+    refineModel: env.BACKCODE_REFINE_MODEL,
     allowedDomains: list(env.BACKCODE_ALLOWED_DOMAINS),
     protectedPaths: list(env.BACKCODE_PROTECTED_PATHS),
+    keepAwake: env.BACKCODE_KEEP_AWAKE,
     worktreesDir: join(homedir(), ".backcode", "worktrees", env.BACKCODE_PROJECT_ID),
     runnerId: `${hostname()}:${process.pid}`,
     envFile,
   };
+}
+
+/** Variables de un fichero .env: `KEY=valor`, líneas `#` ignoradas, comillas opcionales y `#` final en valores sin comillas. */
+export function parseEnv(text: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(raw);
+    if (!m) continue;
+    let value = m[2].trim();
+    const quoted = /^(['"`])(.*)\1$/.exec(value);
+    if (quoted) value = quoted[1] === '"' ? quoted[2].replace(/\\n/g, "\n") : quoted[2];
+    else value = value.replace(/\s+#.*$/, "");
+    out.push([m[1], value]);
+  }
+  return out;
 }

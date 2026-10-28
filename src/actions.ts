@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
-import { KIT_DIR, type RunnerConfig } from "./config.js";
+import { type RunnerConfig } from "./config.js";
+import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
@@ -169,7 +170,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       copyLastPublish(repoAppDir, dir);
       // El script del repo puede tener su propia prueba de arranque: ya está hecha (arriba) con este mismo commit.
       const smokeEnv: Record<string, string> = scriptSmokes
-        ? { BACKCODE_SMOKE_CLI: join(KIT_DIR, "dist", "smoke-cli.js"), BACKCODE_SMOKE_FROM: repoAppDir, BACKCODE_SMOKE_ENV: JSON.stringify(profileEnv(dir, channel)) }
+        ? { BACKCODE_SMOKE_CLI: smokeCliPath(), BACKCODE_SMOKE_FROM: repoAppDir, BACKCODE_SMOKE_ENV: JSON.stringify(profileEnv(dir, channel)) }
         : { BACKCODE_SMOKE_DONE: "1" };
       // Si el script hace la prueba de arranque, cuenta su build (la primera vez, larga) en el tiempo máximo.
       out = await exec([app.pm, ...scriptArgs.args], dir, { env: smokeEnv, ...(scriptSmokes ? { timeoutMs: OTA_TIMEOUT_MS + 45 * 60_000 } : {}) }).catch(async (err: Error) => {

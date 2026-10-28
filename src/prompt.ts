@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { KIT_DIR } from "./config.js";
+import { readAsset } from "./assets.js";
 import type { LocalAttachment } from "./attachments.js";
 import type { Feature, ThreadMessage } from "./store.js";
 
@@ -23,7 +23,7 @@ export function buildSystemAppend(vars: {
   const claudeMdPath = join(vars.worktree, "CLAUDE.md");
   const claudeMd = existsSync(claudeMdPath) ? `\n## Repository CLAUDE.md\n${readFileSync(claudeMdPath, "utf8").slice(0, 20_000)}\n` : "";
   const values: Record<string, string> = { ...vars, projectContext: vars.projectContext || "(none)", claudeMd };
-  const template = readFileSync(join(KIT_DIR, "instructions", "AGENT.md"), "utf8");
+  const template = readAsset("instructions/AGENT.md").toString("utf8");
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match);
 }
 

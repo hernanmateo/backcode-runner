@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#C96442"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#000" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect width="960" height="300" rx="20" fill="#F5F2EA"/>
+
+  <!-- 1. App -->
+  <g filter="url(#shadow)">
+    <rect x="28" y="64" width="196" height="150" rx="16" fill="#FFFFFF"/>
+  </g>
+  <circle cx="58" cy="94" r="14" fill="#C96442"/>
+  <text x="58" y="99" font-size="14" font-weight="700" fill="#FFFFFF" text-anchor="middle">1</text>
+  <text x="82" y="99" font-size="16" font-weight="700" fill="#1F1E1D">Propose</text>
+  <text x="44" y="132" font-size="13" fill="#73706A">Anyone on the team writes,</text>
+  <text x="44" y="151" font-size="13" fill="#73706A">dictates or screenshots an</text>
+  <text x="44" y="170" font-size="13" fill="#73706A">idea in the Backcode app.</text>
+  <text x="44" y="196" font-size="12" font-weight="600" fill="#C96442">iPhone · web</text>
+
+  <!-- 2. Refine -->
+  <g filter="url(#shadow)">
+    <rect x="260" y="64" width="196" height="150" rx="16" fill="#FFFFFF"/>
+  </g>
+  <circle cx="290" cy="94" r="14" fill="#C96442"/>
+  <text x="290" y="99" font-size="14" font-weight="700" fill="#FFFFFF" text-anchor="middle">2</text>
+  <text x="314" y="99" font-size="16" font-weight="700" fill="#1F1E1D">Refine &amp; accept</text>
+  <text x="276" y="132" font-size="13" fill="#73706A">AI turns it into a clear task</text>
+  <text x="276" y="151" font-size="13" fill="#73706A">using a map of your code.</text>
+  <text x="276" y="170" font-size="13" fill="#73706A">A teammate accepts it.</text>
+  <text x="276" y="196" font-size="12" font-weight="600" fill="#C96442">Backcode cloud</text>
+
+  <!-- 3. Runner -->
+  <g filter="url(#shadow)">
+    <rect x="492" y="40" width="216" height="198" rx="16" fill="#1F1E1D"/>
+  </g>
+  <circle cx="522" cy="70" r="14" fill="#D97757"/>
+  <text x="522" y="75" font-size="14" font-weight="700" fill="#1F1E1D" text-anchor="middle">3</text>
+  <text x="546" y="75" font-size="16" font-weight="700" fill="#F5F2EA">Runner</text>
+  <text x="508" y="106" font-size="13" fill="#A39E93">On their own computer,</text>
+  <text x="508" y="125" font-size="13" fill="#A39E93">Claude Code implements it</text>
+  <text x="508" y="144" font-size="13" fill="#A39E93">in a sandboxed worktree on</text>
+  <text x="508" y="163" font-size="13" fill="#A39E93">its own branch, asking in the</text>
+  <text x="508" y="182" font-size="13" fill="#A39E93">task thread when unsure.</text>
+  <rect x="508" y="200" width="184" height="24" rx="12" fill="#3D261D"/>
+  <text x="600" y="216" font-size="12" font-weight="600" fill="#D97757" text-anchor="middle">@backcode/runner · this repo</text>
+
+  <!-- 4. PR -->
+  <g filter="url(#shadow)">
+    <rect x="744" y="64" width="188" height="150" rx="16" fill="#FFFFFF"/>
+  </g>
+  <circle cx="774" cy="94" r="14" fill="#248A3D"/>
+  <text x="774" y="99" font-size="14" font-weight="700" fill="#FFFFFF" text-anchor="middle">4</text>
+  <text x="798" y="99" font-size="16" font-weight="700" fill="#1F1E1D">Draft PR</text>
+  <text x="760" y="132" font-size="13" fill="#73706A">Pushed by the runner,</text>
+  <text x="760" y="151" font-size="13" fill="#73706A">never by Claude. Review,</text>
+  <text x="760" y="170" font-size="13" fill="#73706A">merge and ship an OTA.</text>
+  <text x="760" y="196" font-size="12" font-weight="600" fill="#248A3D">GitHub · Bitbucket</text>
+
+  <!-- flechas -->
+  <line x1="228" y1="139" x2="254" y2="139" stroke="#C96442" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="460" y1="139" x2="486" y2="139" stroke="#C96442" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="712" y1="139" x2="738" y2="139" stroke="#C96442" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <text x="480" y="276" font-size="13" fill="#73706A" text-anchor="middle">Your code never leaves your machine except through that pull request.</text>
+</svg>

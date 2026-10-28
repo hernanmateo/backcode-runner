@@ -1,0 +1,119 @@
+name: Release
+
+# Al subir una etiqueta vX.Y.Z (npm version minor && git push --follow-tags):
+#   · ejecutables sin Node para Linux y macOS (Intel y ARM) y la app de Mac (Backcode-Runner.dmg, universal)
+#   · una Release con todo, SHA256SUMS e install.sh
+#   · el paquete @backcode/runner en npm (si el repo tiene el secreto NPM_TOKEN)
+# Los runners instalados (install.sh, la app de Mac o npm como servicio) se actualizan solos.
+#
+# Secretos opcionales para firmar y notarizar en macOS (sin ellos, la app y los ejecutables de Mac salen sin firmar):
+#   MACOS_CERT_P12        certificado «Developer ID Application» exportado en .p12, en base64
+#   MACOS_CERT_PASSWORD   contraseña de ese .p12
+#   MAC_SIGN_IDENTITY     "Developer ID Application: Nombre (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   para notarytool (contraseña de aplicación de appleid.apple.com)
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Version matches the tag
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm run build
+      - run: npm test
+
+  linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build:bin -- linux-x64 linux-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist-bin/backcode-linux-*
+
+  macos:
+    needs: test
+    runs-on: macos-latest
+    env:
+      MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Signing certificate
+        if: ${{ env.MAC_SIGN_IDENTITY != '' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+      - run: npm run build:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist-bin/backcode-darwin-*
+            dist-bin/Backcode-Runner.dmg
+
+  publish:
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-bin
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist-bin && sha256sum backcode-* Backcode-Runner.dmg > SHA256SUMS && cat SHA256SUMS
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist-bin/* install.sh --title "$GITHUB_REF_NAME" --generate-notes
+      - name: npm
+        if: ${{ env.NPM_TOKEN != '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm ci && npm publish --provenance --access public
