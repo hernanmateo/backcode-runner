@@ -497,7 +497,8 @@ function showOffline(message) {
 // ── Ciclo ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 function apply(next) {
-  const relabel = !state || state.lang !== next.lang;
+  // También si llegan textos que antes no estaban (el panel se ha actualizado con la página abierta).
+  const relabel = !state || state.lang !== next.lang || Object.keys(next.strings).length !== Object.keys(S).length;
   state = next;
   S = next.strings;
   if (relabel) {
