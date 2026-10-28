@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
-import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, syncLocalBase } from "./git.js";
+import { KIT_DIR, type RunnerConfig } from "./config.js";
+import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import { smokeTest } from "./smoke.js";
@@ -27,6 +27,8 @@ export interface Action {
   platforms?: ("ios" | "android")[];
   version?: string;
   runtimeVersion?: string;
+  /** OTA: si la copia que se publica queda con archivos sin commitear, commitearlos en la rama base y publicar igualmente. */
+  commitDirty?: boolean;
 }
 export interface ActionResult {
   url?: string;
@@ -35,6 +37,8 @@ export interface ActionResult {
   /** Checks que no están en verde (si se rechaza por eso). */
   checks?: string[];
   log?: string;
+  /** OTA: archivos sin commitear que impidieron publicar (la app ofrece «Commit y publicar»). */
+  dirty?: string[];
 }
 
 const OTA_TIMEOUT_MS = 25 * 60_000;
@@ -63,7 +67,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
       ? await publishBuild(cfg, host, action)
       : action.type === "deploy"
         ? await runDeploy(cfg, host, action.target ?? "")
-        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "Backcode", action.commit);
+        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit);
   await syncLocal(cfg);
   return done;
 }
@@ -111,13 +115,13 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   return { ok: true, result: { url: prUrl, sha } };
 }
 
-async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string) {
+async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string, commitDirty = false) {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
   if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
     return { ok: false, result: { error: t("act.notInBase", { sha: rollbackTo.slice(0, 7), base: `${cfg.remote}/${cfg.baseBranch}` }) } };
   }
-  const commit = rollbackTo ?? head;
+  let commit = rollbackTo ?? head;
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: t("act.notExpo") } };
   if (!app.ota) return { ok: false, result: { error: otaMissing() } };
@@ -139,10 +143,24 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     // Los .env locales (ignorados por git): los usan la prueba de arranque y el script del repo.
     await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
 
+    // Archivos sin commitear (p. ej. el lockfile que reescribe la instalación): el script del repo se negaría a publicar,
+    // así que se avisa ya, sin esperar a la build y la prueba de arranque. Con «Commit y publicar» se commitean en la rama
+    // base y se publica ese commit.
+    const dirty = await dirtyFiles(wt);
+    if (dirty.length && !commitDirty) return { ok: false, result: { error: t("act.dirty", { files: dirty.slice(0, 20).join(", ") }), dirty: dirty.slice(0, 50), sha: commit } };
+    if (dirty.length) {
+      const pushed = await commitAndPush(cfg, wt, dirty, message);
+      if ("error" in pushed) return { ok: false, result: { error: pushed.error, sha: commit } };
+      commit = pushed.sha;
+    }
+
     // Prueba de arranque obligatoria: un OTA que cierra la app al arrancar no se puede arreglar con otro OTA (el móvil
-    // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback).
-    const smoke = await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
-    if (!smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
+    // no llega a descargarlo). Sin superarla, no se publica (tampoco un rollback). Si el script del repo sabe lanzarla
+    // (BACKCODE_SMOKE_CLI), la hace él DESPUÉS de sus comprobaciones rápidas (árbol limpio, cambios nativos…): así un
+    // fallo de esos se ve al momento y no tras la build. Si no, se hace aquí antes de llamarlo.
+    const scriptSmokes = !!scriptArgs && scriptRunsSmoke(dir, app.otaScript ?? "");
+    const smoke = scriptSmokes ? null : await smokeTest(dir, profileEnv(dir, channel), cfg.worktreesDir, repoAppDir);
+    if (smoke && !smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit } };
 
     let out: string;
     if (scriptArgs) {
@@ -150,7 +168,11 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       // se copia a la copia limpia y se devuelve.
       copyLastPublish(repoAppDir, dir);
       // El script del repo puede tener su propia prueba de arranque: ya está hecha (arriba) con este mismo commit.
-      out = await exec([app.pm, ...scriptArgs.args], dir, { env: { BACKCODE_SMOKE_DONE: "1" } }).catch(async (err: Error) => {
+      const smokeEnv: Record<string, string> = scriptSmokes
+        ? { BACKCODE_SMOKE_CLI: join(KIT_DIR, "dist", "smoke-cli.js"), BACKCODE_SMOKE_FROM: repoAppDir, BACKCODE_SMOKE_ENV: JSON.stringify(profileEnv(dir, channel)) }
+        : { BACKCODE_SMOKE_DONE: "1" };
+      // Si el script hace la prueba de arranque, cuenta su build (la primera vez, larga) en el tiempo máximo.
+      out = await exec([app.pm, ...scriptArgs.args], dir, { env: smokeEnv, ...(scriptSmokes ? { timeoutMs: OTA_TIMEOUT_MS + 45 * 60_000 } : {}) }).catch(async (err: Error) => {
         throw new Error(`${err.message}${await publishedOffBase(cfg, repoAppDir, commit)}`);
       });
       copyLastPublish(dir, repoAppDir);
@@ -163,7 +185,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     for (const f of rollbackTo ? [] : await store.mergedNotDeployed(channel).catch(() => [])) {
       if (await isAncestor(cfg.repoPath, f.sha, commit)) await store.markDeployed(f.id, channel, commit).catch(() => undefined);
     }
-    return { ok: true, result: { url, sha: commit, log: `${smoke.detail}\n${out.slice(-1400)}` } };
+    return { ok: true, result: { url, sha: commit, log: `${smoke ? `${smoke.detail}\n` : ""}${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -374,6 +396,44 @@ async function publishedOffBase(cfg: RunnerConfig, appDir: string, commit: strin
     }
   }
   return notes.length ? `\n\n${notes.join("\n")}` : "";
+}
+
+/** ¿El script de publicación (el .sh al que llama `ota:publish`) lanza él mismo la prueba de arranque con BACKCODE_SMOKE_CLI? */
+function scriptRunsSmoke(appDir: string, script: string): boolean {
+  const file = script.split(/\s+/).find((t) => /\.(sh|bash|mjs|js|ts)$/.test(t));
+  if (!file) return false;
+  const path = normalize(join(appDir, file));
+  if (!path.startsWith(normalize(appDir))) return false;
+  try {
+    return readFileSync(path, "utf8").includes("BACKCODE_SMOKE_CLI");
+  } catch {
+    return false;
+  }
+}
+
+/** Archivos con cambios o nuevos (sin ignorar) en una copia: lo mismo que mira `git status` en los scripts de publicación. */
+async function dirtyFiles(dir: string): Promise<string[]> {
+  const out = await exec(["git", "status", "--porcelain"], dir).catch(() => "");
+  return out.split("\n").filter(Boolean).map((l) => l.slice(3).trim()).filter(Boolean);
+}
+
+/**
+ * «Commit y publicar»: commitea en la rama base los archivos sin commitear de la copia que se va a publicar y lo sube (sin
+ * forzar: si la rama avanzó entretanto, falla). Nunca .env ni nada que parezca un secreto.
+ */
+async function commitAndPush(cfg: RunnerConfig, wt: string, files: string[], message: string): Promise<{ sha: string } | { error: string }> {
+  const risky = files.filter((f) => /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key|keystore|jks)$|google-services|GoogleService-Info/i.test(f));
+  if (risky.length) return { error: t("act.dirtyRisky", { files: risky.join(", ") }) };
+  try {
+    await exec(["git", "add", "--", ...files], wt);
+    const secrets = await scanStagedForSecrets(wt);
+    if (secrets.length) return { error: t("act.dirtyRisky", { files: secrets.join("; ") }) };
+    await exec(["git", "-c", "user.name=Backcode", "-c", "user.email=backcode@users.noreply.github.com", "commit", "-m", t("act.dirtyCommit", { message: message.slice(0, 120), n: files.length })], wt);
+    await exec(["git", "push", cfg.remote, `HEAD:refs/heads/${cfg.baseBranch}`], wt);
+    return { sha: (await exec(["git", "rev-parse", "HEAD"], wt)).trim() };
+  } catch (err) {
+    return { error: t("act.dirtyPushFailed", { error: String((err as Error).message).slice(-800) }) };
+  }
 }
 
 function copyLastPublish(fromAppDir: string, toAppDir: string): void {

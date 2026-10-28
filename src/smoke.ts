@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { t } from "./i18n.js";
 
@@ -52,9 +52,11 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
   // ficheros del repo al generar el proyecto nativo (p. ej. los scripts ios/android de package.json): se deshacen al
   // acabar, para que lo que se publica sea exactamente el commit (y el script del repo no lo vea «sucio»).
   const touchedBefore = await changedTracked(appDir);
-  const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler"], appDir, { ...env, CI: "1" }, BUILD_MS).finally(() =>
-    restoreTracked(appDir, touchedBefore),
-  );
+  const untrackedBefore = await untracked(appDir);
+  const build = await runLong(["npx", "expo", "run:ios", "--configuration", "Release", "--device", udid, "--no-bundler"], appDir, { ...env, CI: "1" }, BUILD_MS).finally(async () => {
+    await restoreTracked(appDir, touchedBefore);
+    await removeNewUntracked(appDir, untrackedBefore);
+  });
   if (!build.ok) return { ok: false, detail: t("smoke.build", { log: tail(build.out) }) };
 
   // Por si run:ios no llegó a abrirla.
@@ -72,6 +74,19 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
 async function changedTracked(dir: string): Promise<Set<string>> {
   const out = await run("git", ["status", "--porcelain", "--untracked-files=no"], dir).catch(() => "");
   return new Set(out.split("\n").filter(Boolean).map((l) => l.slice(3)));
+}
+
+/** Archivos y carpetas nuevos sin ignorar (rutas relativas a la raíz del repo, como las da git status). */
+async function untracked(dir: string): Promise<Set<string>> {
+  const out = await run("git", ["status", "--porcelain", "--untracked-files=normal"], dir).catch(() => "");
+  return new Set(out.split("\n").filter((l) => l.startsWith("?? ")).map((l) => l.slice(3)));
+}
+
+/** Borra lo que la build haya creado sin estar ignorado (p. ej. ios/ en un repo que no lo ignora). */
+async function removeNewUntracked(dir: string, before: Set<string>): Promise<void> {
+  const root = (await run("git", ["rev-parse", "--show-toplevel"], dir).catch(() => "")).trim();
+  if (!root) return;
+  for (const p of await untracked(dir)) if (!before.has(p)) rmSync(join(root, p), { recursive: true, force: true });
 }
 
 /** Deshace lo que la build haya cambiado en ficheros versionados del repo. */

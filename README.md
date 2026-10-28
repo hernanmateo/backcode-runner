@@ -74,6 +74,17 @@ tiene arreglo por OTA (el móvil no llega a descargar el siguiente). Requisitos:
 máquina (sus `.env` y ficheros de Firebase locales, como `GoogleService-Info.plist`, se copian solos). La primera vez por
 proyecto tarda ~10 min (compilación nativa); después, unos minutos.
 
+**Primero lo rápido.** Antes de compilar se mira si la copia a publicar tiene archivos sin commitear: si los hay, falla al
+momento diciendo cuáles, y la app ofrece **Commit y publicar** (los commitea en la rama base, sin forzar, y publica ese commit;
+nunca `.env`, claves ni nada que parezca un secreto). Si el script `ota:publish` del repo usa `BACKCODE_SMOKE_CLI`, la prueba
+de arranque la lanza él después de sus propias comprobaciones (cambios nativos, versión…), así esos fallos tampoco esperan a la
+build:
+```bash
+if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "${BACKCODE_SMOKE_FROM:-.}" || exit 1; fi
+```
+Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
+build y borra lo que genera, p. ej. `ios/`).
+
 ## Cambiar la ruta del repo, la rama base o los PR
 App → Proyecto → Conectar → **Configurar de nuevo** → cambia lo que quieras → "Ya tengo una llave en este ordenador" → **Copiar
 configuración** → `npm run connect` y pegar. Sustituye la configuración de ese proyecto sin tocar los demás.
