@@ -55,15 +55,30 @@ function reportSize() {
 }
 if (native && "ResizeObserver" in window) new ResizeObserver(() => compact && reportSize()).observe(document.body);
 // En la app de Mac la franja de arriba (la cabecera y lo que queda a sus lados, donde iría la barra de título) hace de
-// barra de título: arrastrarla mueve la ventana. La WKWebView se queda los clics, así que lo nativo no lo hace solo y
-// hay que avisarle. Los controles de la cabecera (vista compacta, idioma) siguen respondiendo como siempre.
+// barra de título: la ventana pone encima una capa nativa que la arrastra (la WKWebView no lo hace sola). Aquí se le dice
+// hasta dónde llega la cabecera (sigue al scroll; nunca menos que la barra de título) y dónde están sus controles
+// (vista compacta, idioma, encendido…), que siguen siendo de la página.
+let lastDragRegion = "";
+function reportDragRegion() {
+  if (!native) return;
+  const header = document.querySelector("header.top");
+  const height = Math.max(28, Math.round(header ? header.getBoundingClientRect().bottom : 0));
+  const holes = header
+    ? [...header.querySelectorAll("button, select, input, a, textarea, label")]
+        .filter((el) => el.offsetParent !== null)
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.bottom > 0 && r.width > 0)
+        .map((r) => [r.left, r.top, r.width, r.height].map(Math.round))
+    : [];
+  const key = JSON.stringify([height, holes]);
+  if (key === lastDragRegion) return;
+  lastDragRegion = key;
+  native.postMessage({ dragRegion: { height, holes } });
+}
 if (native) {
-  document.addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || e.target.closest("button, select, input, a, textarea, label")) return;
-    if (e.clientY > document.querySelector("header.top").getBoundingClientRect().bottom) return;
-    e.preventDefault(); // sin seleccionar texto mientras se arrastra
-    native.postMessage({ drag: true });
-  });
+  addEventListener("scroll", reportDragRegion, { passive: true });
+  addEventListener("resize", reportDragRegion);
+  if ("ResizeObserver" in window) new ResizeObserver(reportDragRegion).observe(document.body);
 }
 document.documentElement.classList.toggle("compact", compact);
 let state = null;
@@ -149,6 +164,7 @@ function render() {
   $("mode").textContent = state.service.self ? s("mode.service") : s("mode.foreground");
   renderPower();
   renderBanner();
+  reportDragRegion();
   renderLegacy();
   renderChecks();
   renderProjects();
