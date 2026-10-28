@@ -354,8 +354,9 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   Android con Depuración inalámbrica › Vincular con código y `adb pair IP:PUERTO`. La pantalla y el panel (sección **Móviles**)
   lo explican.
 - **Qué hace el runner** (el tuyo, en tu ordenador): copia limpia de la rama base, dependencias, `.env` y ficheros de Firebase
-  locales, variables del perfil `production` de `eas.json`. iOS: CocoaPods y `expo run:ios --configuration Release --device <udid>`
-  (firma con tu equipo de Xcode, instala y abre). Android: `expo prebuild`, `./gradlew assembleRelease` y `adb install -r` (si la
+  locales, variables del perfil `production` de `eas.json`. iOS: primero monta en el iPhone la imagen de desarrollador de Xcode
+  (solo se puede con el iPhone **desbloqueado**: espera hasta 2 min a que lo desbloquees y, si no, avisa sin compilar); después
+  CocoaPods y `expo run:ios --configuration Release --device <udid> --no-install` (firma con tu equipo de Xcode, instala y abre). Android: `expo prebuild`, `./gradlew assembleRelease` y `adb install -r` (si la
   instalada es de Google Play, con otra firma, hay que desinstalarla antes). Sin checks: solo llega a tu móvil.
 
 ### Builds para testers (TestFlight / Internal Testing)

@@ -6,7 +6,7 @@ import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
-import { adbPath, androidSdk, listDevices, type DevicePlatform } from "./devices.js";
+import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
@@ -304,6 +304,13 @@ async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok:
   if (!device) return { ok: false, result: { error: t("install.deviceGone") } };
   if (device.state !== "ready") return { ok: false, result: { error: t(`install.state.${device.state}`, { name: device.name }) } };
 
+  // iPhone: antes de compilar (minutos), que esté desbloqueado y con la imagen de desarrollador montada; si no, Xcode
+  // acaba con «Timed out waiting for all destinations» tras la build entera.
+  if (platform === "ios") {
+    const notReady = await prepareIosDevice(device.id);
+    if (notReady) return { ok: false, result: { error: notReady === "locked" ? t("install.locked", { name: device.name }) : t("install.ddi", { name: device.name, log: notReady }) } };
+  }
+
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: t("build.notExpo") } };
@@ -322,7 +329,8 @@ async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok:
     if (platform === "ios") {
       const failed = await prepareNativeProject(dir, env);
       if (failed) return { ok: false, result: { sha: commit, error: failed.detail } };
-      const out = await exec(["npx", "expo", "run:ios", "--configuration", "Release", "--device", device.id, "--no-bundler"], dir, { env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+      // --no-install: los pods ya los ha dejado listos prepareNativeProject (como en la prueba de arranque de los OTA).
+      const out = await exec(["npx", "expo", "run:ios", "--configuration", "Release", "--device", device.id, "--no-bundler", "--no-install"], dir, { env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
         throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
       });
       return { ok: true, result: { sha: commit, log: `${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
