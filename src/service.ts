@@ -40,8 +40,12 @@ async function stableKitDir(): Promise<string> {
 
 const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** `executable`: el ejecutable sin Node que debe lanzar el servicio (la app de Mac pasa su copia de ~/.backcode/bin). */
-export async function installService(opts: { executable?: string } = {}): Promise<void> {
+/**
+ * `executable`: el ejecutable sin Node que debe lanzar el servicio (la app de Mac pasa su copia de ~/.backcode/bin).
+ * `keepRunning`: lo pide el propio servicio (volver a activar «Arrancar al iniciar sesión»): solo se deja la definición
+ * para el próximo inicio de sesión, sin pararlo ni volverlo a lanzar.
+ */
+export async function installService(opts: { executable?: string; keepRunning?: boolean } = {}): Promise<void> {
   const kit = await stableKitDir();
   // El ejecutable sin Node ya está en un sitio fijo (~/.backcode/bin) y se lanza tal cual.
   const program = opts.executable ? [opts.executable, "serve"] : IS_BINARY ? [process.execPath, "serve"] : [process.execPath, join(kit, "dist", "cli.js"), "serve"];
@@ -74,6 +78,7 @@ export async function installService(opts: { executable?: string } = {}): Promis
 `;
     mkdirSync(dirname(PLIST), { recursive: true });
     const domain = `gui/${userInfo().uid}`;
+    if (opts.keepRunning) return writeFileSync(PLIST, plist);
     await exec("launchctl", ["bootout", `${domain}/${LABEL}`]).catch(() => undefined);
     writeFileSync(PLIST, plist);
     await exec("launchctl", ["bootstrap", domain, PLIST]);
@@ -100,10 +105,22 @@ WantedBy=default.target
     mkdirSync(dirname(UNIT), { recursive: true });
     writeFileSync(UNIT, unit);
     await exec("systemctl", ["--user", "daemon-reload"]);
-    await exec("systemctl", ["--user", "enable", "--now", "backcode-runner.service"]);
+    await exec("systemctl", ["--user", "enable", ...(opts.keepRunning ? [] : ["--now"]), "backcode-runner.service"]);
     return;
   }
   throw new Error(`unsupported platform: ${process.platform}`);
+}
+
+/**
+ * Desactiva «Arrancar al iniciar sesión» sin parar nada: el servicio sigue en marcha (y relanzándose si se cae) hasta
+ * que cierres sesión o lo apagues, y al próximo inicio de sesión ya no arranca.
+ */
+export async function disableAutostart(): Promise<void> {
+  if (process.platform === "darwin") rmSync(PLIST, { force: true });
+  else if (process.platform === "linux") {
+    await exec("systemctl", ["--user", "disable", "backcode-runner.service"]).catch(() => undefined);
+    rmSync(UNIT, { force: true });
+  }
 }
 
 /** Quita el servicio. Si este proceso es el servicio, el sistema lo para (hay que responder antes de llamar aquí). */

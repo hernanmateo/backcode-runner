@@ -70,15 +70,16 @@ export class Supervisor {
       const known = new Set(this.projects.keys());
       this.scan();
       for (const id of this.projects.keys()) {
-        if (known.has(id) || this.stoppedByUser.has(id)) continue;
+        if (known.has(id) || this.stoppedByUser.has(id) || this.off) continue;
         this.log(this.projects.get(id)!, t("all.newProject"));
         this.start(id);
       }
     }, 10_000);
   }
 
-  /** Arranca todos los proyectos salvo los que paraste a mano. */
+  /** Arranca todos los proyectos salvo los que paraste a mano (y ninguno con el botón general en «apagado»). */
   startAll(opts: { includeStopped?: boolean } = {}): void {
+    if (this.off) return;
     for (const p of this.projects.values()) if (opts.includeStopped || !this.stoppedByUser.has(p.id)) this.start(p.id);
   }
 
@@ -116,6 +117,16 @@ export class Supervisor {
   async restart(id: string): Promise<boolean> {
     await this.stop(id, { byUser: false });
     return this.start(id);
+  }
+
+  /** Botón general del panel: apagado para todos los runners (la tarea a medias vuelve a la cola) y se recuerda. */
+  get off(): boolean {
+    return !!readState().off;
+  }
+  async setPower(on: boolean): Promise<void> {
+    updateState({ off: !on });
+    if (on) this.startAll();
+    else await this.stopAll();
   }
 
   async stopAll(): Promise<void> {

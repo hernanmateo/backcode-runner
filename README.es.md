@@ -45,7 +45,7 @@ comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
-**Desinstalar:** en el panel, apaga «Arrancar al iniciar sesión» (o `backcode service uninstall`); borra la app y `~/.backcode`;
+**Desinstalar:** `backcode service uninstall` (para el servicio y lo quita); borra la app y `~/.backcode`;
 quita la línea `# Backcode runner` de tu perfil de shell si usaste `install.sh`; con npm, `npm uninstall -g backcode`.
 
 Desde el panel:
@@ -62,7 +62,11 @@ Desde el panel:
 - **Idioma**: el que elijas arriba a la derecha (español, inglés o catalán); si no, el de tu perfil en la app y, mientras no lo
   sepa, el del navegador. Mismos colores e icono que la app, en claro u oscuro según el sistema.
 - **Arrancar al iniciar sesión**: lo instala como servicio de tu usuario (launchd en macOS, systemd `--user` en Linux). Corre en
-  segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx backcode`.
+  segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx backcode`. Desactivarlo
+  no para nada: lo que está en marcha sigue hasta que cierres sesión, y la próxima vez ya no arranca solo (abrir la app de Mac
+  tampoco lo vuelve a activar; solo abre el panel).
+- **Encendido / Apagado** (arriba, junto al modo): el interruptor general. Apagado para todos los runners (una tarea a medias
+  vuelve a la cola) y ninguno arranca, ni al reiniciar el panel ni con proyectos nuevos, hasta volver a encenderlo. Se recuerda.
 
 Sin el servicio, los runners funcionan mientras esté abierta la terminal donde lanzaste el panel (Ctrl+C los para).
 

@@ -25,6 +25,10 @@ export const STATE_FILE = join(HOME_DIR, "state.json");
 export interface PanelState {
   /** Proyectos que se pararon desde el panel: no se arrancan solos. */
   stopped?: string[];
+  /** Apagado con el botón general del panel: ningún runner arranca hasta volver a encenderlo. */
+  off?: boolean;
+  /** «Arrancar al iniciar sesión» desactivado a mano: la app de Mac ya no lo vuelve a activar al abrirse. */
+  autostartOff?: boolean;
   /** Idioma elegido en el panel. */
   panelLang?: string;
   /** Idioma del perfil en la app (lo apuntan los runners al iniciar sesión). */

@@ -96,7 +96,7 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 <summary><strong>Uninstall</strong></summary>
 <br>
 
-1. In the panel, turn off **Start at login** (or `backcode service uninstall`).
+1. Run `backcode service uninstall` (stops the service and removes it).
 2. Delete **Backcode Runner** from Applications (if you used the Mac app), and the folder `~/.backcode`.
 3. If you used `install.sh`, remove the `# Backcode runner` line it added to your shell profile (`~/.zshrc`, `~/.bash_profile`…).
 4. With npm: `npm uninstall -g backcode`.
@@ -218,7 +218,8 @@ Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.
 | **Projects** | Turn each project on or off (remembered across restarts), restart it, watch its live activity or remove it. |
 | **Connect a project** | Paste the configuration from the app. It validates your key, finds the repo on your computer by its remote (or clones it into `~/Backcode/<project>`, or lets you pick a folder) and asks for a Bitbucket token when needed. |
 | **Accounts** | See your `gh` sign-in and add, check or change your Bitbucket API token, used for every project and to create new repos from the app (add the `admin:repository:bitbucket` scope for that). |
-| **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. |
+| **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. Turning it off stops nothing: what's running keeps going until you log out, and it just won't start at the next login (opening the Mac app won't turn it back on either). |
+| **On / Off** | The main switch, at the top. Off stops every runner (a task in progress goes back to the queue) and none starts again (not after a panel restart, not for new projects) until you turn it back on. Remembered. |
 
 Coming from the old `git clone` setup? The panel finds those projects and offers to import them.
 
@@ -315,8 +316,8 @@ task as <em>Stopped</em> and sends a push notification to the assignee and the a
 it, it copies itself to <code>~/.backcode/bin/backcode</code> (the runner updates go to that copy; the app itself is replaced by
 the latest signed and notarized release, checked against <code>SHA256SUMS</code> and the same Apple team, next time you open it),
 installs the runner as a login item (a LaunchAgent in <code>~/Library/LaunchAgents</code>), opens the panel and quits. It has no
-Dock icon: the runner keeps working in the background. To remove it, turn off <em>Start at login</em> in the panel and delete
-the app and <code>~/.backcode</code>.
+Dock icon: the runner keeps working in the background (closing the window stops nothing; use <em>On / Off</em> for that). To remove
+it, run <code>backcode service uninstall</code> and delete the app and <code>~/.backcode</code>.
 </details>
 
 <details>

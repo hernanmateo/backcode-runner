@@ -6,7 +6,7 @@ import { VERSION } from "./assets.js";
 import { newer } from "./autoupdate.js";
 import { openBrowser } from "./panel.js";
 import { panelAlive, panelUrl } from "./panel-client.js";
-import { BIN_DIR } from "./paths.js";
+import { BIN_DIR, readState } from "./paths.js";
 import { installService, serviceInstalled } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
@@ -38,8 +38,9 @@ export async function prepareApp(): Promise<string> {
     await exec("xattr", ["-d", "com.apple.quarantine", tmp]).catch(() => undefined);
     renameSync(tmp, installed);
   }
-  // BACKCODE_APP_NO_SERVICE (solo para probar la app sin instalar un LaunchAgent): el panel en segundo plano, sin más.
-  if (process.env.BACKCODE_APP_NO_SERVICE === "1") {
+  // BACKCODE_APP_NO_SERVICE (solo para probar la app sin instalar un LaunchAgent) o «Arrancar al iniciar sesión»
+  // desactivado a mano: el panel en segundo plano, sin más (no se vuelve a activar por abrir la app).
+  if (process.env.BACKCODE_APP_NO_SERVICE === "1" || readState().autostartOff) {
     if (!(await panelAlive())) spawn(installed, ["serve"], { detached: true, stdio: "ignore" }).unref();
   } else if (!serviceInstalled()) await installService({ executable: installed });
 
