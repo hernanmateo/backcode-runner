@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
+import { updateMacApp } from "./mac-app-update.js";
 import { t } from "./i18n.js";
 import { migrateLegacyConfigs, projectFiles, readState, selfCommand, updateState } from "./paths.js";
 import { valueIn } from "./setup.js";
@@ -139,8 +140,14 @@ export class Supervisor {
 
   /** Pide a cada runner que se reinicie al quedar libre (sin interrumpir lo que esté haciendo): versión nueva. */
   restartAllWhenIdle(): void {
-    for (const p of this.projects.values()) p.child?.kill("SIGUSR2");
+    for (const p of this.projects.values()) {
+      if (!p.child) continue;
+      this.pendingRestart.add(p.id);
+      p.child.kill("SIGUSR2");
+    }
   }
+  /** Runners que aún no se han reiniciado con la versión nueva (están terminando algo). */
+  readonly pendingRestart = new Set<string>();
 
   /** Comprueba actualizaciones (una vez para todos) y, con versión nueva lista, reinicia cada runner al quedar libre. */
   watchUpdates(onReady?: () => void): void {
@@ -153,6 +160,8 @@ export class Supervisor {
           this.restartAllWhenIdle();
           onReady?.();
         }
+        // La ventana de macOS (Backcode Runner.app), aparte: se sustituye por la del DMG de la última versión.
+        await updateMacApp({ force }).catch(() => undefined);
       } catch {
         // sin red o git/npm no disponible: se vuelve a intentar en la próxima comprobación
       } finally {
@@ -191,6 +200,7 @@ export class Supervisor {
       }
       p.child = undefined;
       p.exitCode = code ?? undefined;
+      this.pendingRestart.delete(p.id);
       if (code === RESTART_CODE && p.state !== "stopping" && !this.draining) return this.launch(p);
       const wasStopping = p.state === "stopping";
       this.log(p, t("all.exited", { code: code ?? signal ?? 0 }));

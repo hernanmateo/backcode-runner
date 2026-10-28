@@ -13,6 +13,8 @@ export { VERSION } from "./assets.js";
 export const UPDATE_EVERY_MS = 2 * 60_000;
 /** En npm, el registro se consulta con menos frecuencia. */
 const NPM_EVERY_MS = 30 * 60_000;
+/** Las Releases de GitHub (ejecutable sin Node), más a menudo: una versión nueva llega en minutos, no en media hora. */
+const BINARY_EVERY_MS = 5 * 60_000;
 /** Código de salida con el que un runner pide a su supervisor (panel, `npm run all`) que lo vuelva a lanzar (ya con la versión nueva). */
 export const RESTART_CODE = 75;
 export const PACKAGE_NAME = "backcode";
@@ -37,7 +39,7 @@ let lastNpmCheck = 0;
 export async function updateIfAvailable(opts: { force?: boolean } = {}): Promise<boolean> {
   if (UPDATE_MODE === "git") return updateFromGit();
   if (UPDATE_MODE === "binary") {
-    if (!opts.force && Date.now() - lastNpmCheck < NPM_EVERY_MS) return false;
+    if (!opts.force && Date.now() - lastNpmCheck < BINARY_EVERY_MS) return false;
     lastNpmCheck = Date.now();
     return updateBinary();
   }
