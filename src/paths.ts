@@ -56,10 +56,13 @@ export const FROM_NPM = !IS_BINARY && KIT_DIR.split(sep).includes("node_modules"
 /** Dónde instala el ejecutable install.sh (y donde se actualiza solo), y donde el panel instala GitHub CLI si falta. */
 export const BIN_DIR = join(HOME_DIR, "bin");
 // El runner encuentra `backcode`, `gh`, `claude`, `eas`… aunque su PATH no los tenga: abierto desde la app de Mac o como
-// servicio no hereda el de tu terminal. Se añaden ~/.backcode/bin, ~/.local/bin (Claude Code) y Homebrew.
+// servicio no hereda el de tu terminal. Se añaden ~/.backcode/bin, ~/.local/bin (Claude Code), Homebrew y los gestores de
+// paquetes que se instalan en tu carpeta y solo se añaden en el .zshrc (bun, pnpm, Volta): sin ellos, `bun install` falla.
 {
   const current = (process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(":");
-  const extra = [BIN_DIR, join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"].filter((d) => !current.includes(d) && existsSync(d));
+  const bun = join(process.env.BUN_INSTALL ?? join(homedir(), ".bun"), "bin");
+  const pnpm = process.env.PNPM_HOME ?? join(homedir(), "Library", "pnpm");
+  const extra = [BIN_DIR, join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", bun, pnpm, join(homedir(), ".volta", "bin")].filter((d) => !current.includes(d) && existsSync(d));
   if (extra.length) process.env.PATH = [...extra, ...current].join(":");
 }
 

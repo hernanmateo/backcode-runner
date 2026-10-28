@@ -176,6 +176,8 @@ tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica
 tiene arreglo por OTA (el móvil no llega a descargar el siguiente). Requisitos: Mac con Xcode, y que la app compile en tu
 máquina (sus `.env` y ficheros de Firebase locales, como `GoogleService-Info.plist`, se copian solos). La primera vez por
 proyecto tarda ~10 min (compilación nativa); después, unos minutos.
+El runner encuentra `bun`, `pnpm` y Volta en sus carpetas de instalación (`~/.bun/bin`, `~/Library/pnpm`, `~/.volta/bin`)
+aunque solo estén en el PATH de tu `.zshrc`: abierto desde la app de Mac o como servicio, no hereda el de tu terminal.
 
 **Primero lo rápido.** Antes de compilar se mira si la copia a publicar tiene archivos sin commitear: si los hay, falla al
 momento diciendo cuáles, y la app ofrece **Commit y publicar** (los commitea en la rama base, sin forzar, y publica ese commit;
@@ -187,6 +189,12 @@ if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "$
 ```
 Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
 build y borra lo que genera, p. ej. `ios/`).
+
+**Publicar rápido (sin prueba).** Junto a Publicar, la app tiene **Publicar rápido (sin prueba)** (siempre pide confirmación):
+se salta la prueba de arranque (la del runner y la del script, que recibe `BACKCODE_SMOKE_DONE=1`) y mantiene todo lo demás
+(checks en verde, archivos sin commitear, cambios nativos del script). Sirve también en un runner sin Xcode. Úsalo solo si
+sabes que el cambio no puede romper el arranque: si lo rompe, solo lo arregla una build nueva. En el historial queda marcada
+como «sin prueba».
 
 ## Cambiar la ruta del repo, la rama base o los PR
 App → Proyecto → Conectar → **Configurar de nuevo** → cambia lo que quieras → "Ya tengo una llave en este ordenador" → **Copiar
