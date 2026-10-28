@@ -17,6 +17,16 @@ const NPM_EVERY_MS = 30 * 60_000;
 const BINARY_EVERY_MS = 5 * 60_000;
 /** Código de salida con el que un runner pide a su supervisor (panel, `npm run all`) que lo vuelva a lanzar (ya con la versión nueva). */
 export const RESTART_CODE = 75;
+/**
+ * Línea con la que un runner supervisado anuncia que va a salir (y con qué código), justo antes de process.exit: el
+ * ejecutable de Bun a veces no termina con process.exit y se queda dormido; el supervisor lo remata (supervisor.ts).
+ */
+export const EXIT_MARK = "@@backcode:exit ";
+/** Sale; si es un runner supervisado, avisando antes al supervisor (ver EXIT_MARK). */
+export function exitSupervised(code: number): never {
+  if (process.env.BACKCODE_SUPERVISED === "1") console.log(`${EXIT_MARK}${code}`);
+  process.exit(code);
+}
 export const PACKAGE_NAME = "backcode";
 /** Repositorio de GitHub con las versiones del ejecutable sin Node (Releases). */
 export const RELEASES_REPO = "hernanmateo/backcode-runner";

@@ -128,6 +128,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     else await supervisor.stopAll();
     server.close();
     if (why === "restart" && !service) return relaunch();
+    // El ejecutable de Bun a veces no termina con process.exit: si sigue vivo, se remata (el servicio lo relanza launchd).
+    setTimeout(() => process.kill(process.pid, "SIGKILL"), 3_000);
     process.exit(0);
   };
 

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
+import { EXIT_MARK, RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
 import { updateMacApp } from "./mac-app-update.js";
 import { t } from "./i18n.js";
 import { migrateLegacyConfigs, projectFiles, readState, selfCommand, updateState } from "./paths.js";
@@ -187,8 +187,20 @@ export class Supervisor {
     p.state = "running";
     p.startedAt = Date.now();
     p.exitCode = undefined;
-    for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream }).on("line", (line) => this.log(p, line));
-    child.on("exit", (code, signal) => {
+    // El runner anuncia su salida (EXIT_MARK) justo antes de process.exit: si a los 3 s sigue vivo (el ejecutable de Bun a
+    // veces se queda dormido ahí), se mata y cuenta como la salida anunciada. Sin esto, reiniciar el panel esperaba siempre.
+    let announced: number | undefined;
+    for (const stream of [child.stdout, child.stderr]) {
+      createInterface({ input: stream }).on("line", (line) => {
+        if (!line.startsWith(EXIT_MARK)) return this.log(p, line);
+        announced = Number(line.slice(EXIT_MARK.length)) || 0;
+        setTimeout(() => {
+          if (p.child === child && child.pid && alive(child.pid)) process.kill(child.pid, "SIGKILL");
+        }, 3_000).unref();
+      });
+    }
+    child.on("exit", (exitCode, signal) => {
+      const code = exitCode ?? announced ?? null;
       // Que haya terminado de verdad: con el ejecutable sin Node se han visto procesos que avisan de su salida y siguen
       // vivos (al 100 % de CPU y con el proyecto cogido). Si sigue ahí, se mata: nunca dos runners del mismo proyecto.
       if (child.pid && alive(child.pid)) {
