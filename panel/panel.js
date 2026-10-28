@@ -54,6 +54,17 @@ function reportSize() {
   if (compact || leavingCompact) native.postMessage({ compact, height });
 }
 if (native && "ResizeObserver" in window) new ResizeObserver(() => compact && reportSize()).observe(document.body);
+// En la app de Mac la franja de arriba (la cabecera y lo que queda a sus lados, donde iría la barra de título) hace de
+// barra de título: arrastrarla mueve la ventana. La WKWebView se queda los clics, así que lo nativo no lo hace solo y
+// hay que avisarle. Los controles de la cabecera (vista compacta, idioma) siguen respondiendo como siempre.
+if (native) {
+  document.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target.closest("button, select, input, a, textarea, label")) return;
+    if (e.clientY > document.querySelector("header.top").getBoundingClientRect().bottom) return;
+    e.preventDefault(); // sin seleccionar texto mientras se arrastra
+    native.postMessage({ drag: true });
+  });
+}
 document.documentElement.classList.toggle("compact", compact);
 let state = null;
 let logsFor = null;
