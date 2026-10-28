@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@backcode/runner"><img alt="npm version" src="https://img.shields.io/npm/v/@backcode/runner?style=flat-square&color=C96442&label=npm"></a>
-  <a href="https://www.npmjs.com/package/@backcode/runner"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@backcode/runner?style=flat-square&color=C96442"></a>
+  <a href="https://www.npmjs.com/package/backcode"><img alt="npm version" src="https://img.shields.io/npm/v/backcode?style=flat-square&color=C96442&label=npm"></a>
+  <a href="https://www.npmjs.com/package/backcode"><img alt="npm downloads" src="https://img.shields.io/npm/dm/backcode?style=flat-square&color=C96442"></a>
   <a href="https://github.com/hernanmateo/backcode-runner/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hernanmateo/backcode-runner/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-1F1E1D?style=flat-square"></a>
   <a href="https://github.com/hernanmateo/backcode-runner/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hernanmateo/backcode-runner?style=flat-square&color=C96442&label=release"></a>
@@ -23,7 +23,13 @@
 </p>
 
 <p align="center">
+  <a href="https://backcode-626c6.web.app"><img alt="Open the Backcode web app" src="https://img.shields.io/badge/Open_the_web_app-backcode-C96442?style=for-the-badge&logo=googlechrome&logoColor=white"></a>
+  <!-- App Store y Google Play: badges cuando la app sea pública -->
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#the-panel">The panel</a> ·
   <a href="#security">Security</a> ·
@@ -39,37 +45,63 @@
 
 ## Quick start
 
-### macOS
-
 <p>
   <a href="https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg"><img alt="Download for Mac" src="https://img.shields.io/badge/Download_for_Mac-Apple_Silicon_%26_Intel-1F1E1D?style=for-the-badge&logo=apple&logoColor=white"></a>
 </p>
 
-Open the `.dmg`, drag **Backcode Runner** to Applications and open it. No Terminal, no Node: it installs the runner, sets it to
-start at login and opens its panel in your browser. Opening the app again just opens the panel.
+**On a Mac, that's it:** open the `.dmg`, drag **Backcode Runner** to Applications and open it. No Terminal, no Node. It installs
+the runner, sets it to start at login and opens its panel in your browser.
 
-### Linux (or the Terminal on a Mac)
+In the panel:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | sh
-```
+1. **This computer.** Anything missing turns into a step-by-step guide with a button that does it: install Claude Code, sign
+   in to Claude (or paste an Anthropic API key), **Connect with GitHub** (an 8-character code in your browser, no Terminal) and
+   install git or GitHub CLI if needed.
+2. **Connect a project.** In the Backcode app: **Project → Connect step by step → Copy configuration**, then **Paste
+   configuration** in the panel. The runner finds the repo on your computer (or clones it into `~/Backcode/<project>` with one
+   click) and starts. Your next task becomes a draft pull request.
 
-It installs a single executable in `~/.backcode/bin` (**no Node required**), verifies its checksum and opens the same panel.
+**You need:** macOS or Linux, and [Claude Code](https://docs.claude.com/claude-code) with a Pro or Max plan (or an API key).
+The panel sets up everything else.
 
-### Then
+## Install
 
-The panel opens in your browser. The panel checks your computer and **guides you through anything missing**, step by step, with buttons that do it
-for you: install Claude Code, sign in to Claude or GitHub, install git or GitHub CLI. Then paste the configuration you copy in
-the Backcode app (**Project → Connect step by step → Copy configuration**) and turn on *Start at login*. Next time, just run `backcode`.
+Every option installs the same runner and opens the same panel. Pick the one that suits you.
 
-**Already use Node?** Same runner, from npm:
+| | How | Best for |
+|---|---|---|
+| **🍎 Mac app** · *easiest* | [Download Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg), drag it to Applications, open it | Anyone on macOS. No Terminal, no Node |
+| **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
+| **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
+| **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
+| **🤖 Claude Code plugin** | In Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
-```bash
-npx @backcode/runner
-```
+<details>
+<summary><strong>More options</strong></summary>
+<br>
 
-**You need:** macOS or Linux · [Claude Code](https://docs.claude.com/claude-code) signed in · `git` with push access to your repo ·
-for PRs, [GitHub CLI](https://cli.github.com) signed in or a Bitbucket API token. The panel helps you with all of them.
+- **A specific version:** `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | BACKCODE_VERSION=1.0.0 sh`,
+  or `npx backcode@1.0.0`.
+- **Install without opening the panel:** `… | BACKCODE_NO_OPEN=1 sh`.
+- **Just the executable:** download `backcode-<os>-<arch>` from the [latest release](https://github.com/hernanmateo/backcode-runner/releases/latest)
+  (`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`), check it against `SHA256SUMS` and run it.
+- **Headless (servers, no browser):** `backcode connect` to paste the configuration in the terminal, `backcode service install`
+  to keep it running, `backcode start` to run it in the foreground.
+- **Everything in another folder:** set `BACKCODE_HOME` (default `~/.backcode`) and `BACKCODE_PANEL_PORT` (default `47474`).
+
+</details>
+
+<details>
+<summary><strong>Uninstall</strong></summary>
+<br>
+
+1. In the panel, turn off **Start at login** (or `backcode service uninstall`).
+2. Delete **Backcode Runner** from Applications (if you used the Mac app), and the folder `~/.backcode`.
+3. If you used `install.sh`, remove the `# Backcode runner` line it added to your shell profile (`~/.zshrc`, `~/.bash_profile`…).
+4. With npm: `npm uninstall -g backcode`.
+
+</details>
 
 ## What is Backcode?
 
@@ -86,7 +118,7 @@ This repository is the part that runs on your computer. It's open source so you 
 
 <p align="center">
   <img src="docs/web-board.png" alt="The Backcode board on the web: Backlog, Queued, Claude working, Need a reply, PR ready, Merged, Deployed" width="820">
-  <br><sub>The same app on iPhone and on the web. Screenshots from a demo project.</sub>
+  <br><sub>The same app on iPhone and on the web (<a href="https://backcode-626c6.web.app">open it</a>). Screenshots from a demo project.</sub>
 </p>
 
 ## How it works
@@ -160,15 +192,31 @@ publish an **Expo OTA update** (after a boot test in a simulator), build for Tes
   </tr>
 </table>
 
+## Claude Code plugin
+
+Prefer to do it from Claude Code? The `backcode` plugin sets everything up with you, conversationally:
+
+```text
+/plugin install backcode --marketplace hernanmateo/backcode-runner
+/backcode:setup
+```
+
+- **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
+  configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
+  running at login.
+- **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it.
+
+It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
+
 ## The panel
 
-Run `npx @backcode/runner` and it opens at `http://127.0.0.1:47474`:
+Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.1:47474`:
 
 | Section | What you can do |
 |---|---|
-| **This computer** | See whether Claude Code and its session, git and GitHub CLI are ready. Anything missing opens a step-by-step guide with a button that fixes it (official Claude Code installer, sign-in in the Terminal, Xcode tools, Homebrew) and the command if you'd rather do it yourself. |
+| **This computer** | See whether Claude Code and its session, git and GitHub CLI are ready. Anything missing opens a step-by-step guide with a button that fixes it (official Claude Code installer, Claude sign-in or an Anthropic API key, **Connect with GitHub** with a code in the browser, official GitHub CLI, Xcode tools) and the command if you'd rather do it yourself. |
 | **Projects** | Turn each project on or off (remembered across restarts), restart it, watch its live activity or remove it. |
-| **Connect a project** | Paste the configuration from the app. It validates your key, offers to clone the repo if it's missing and asks for a Bitbucket token when needed. |
+| **Connect a project** | Paste the configuration from the app. It validates your key, finds the repo on your computer by its remote (or clones it into `~/Backcode/<project>`, or lets you pick a folder) and asks for a Bitbucket token when needed. |
 | **Accounts** | See your `gh` sign-in and add, check or change your Bitbucket API token, used for every project and to create new repos from the app (add the `admin:repository:bitbucket` scope for that). |
 | **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. |
 
@@ -176,7 +224,7 @@ Coming from the old `git clone` setup? The panel finds those projects and offers
 
 ## Command line
 
-Everything in the panel also works from the terminal. `install.sh` puts `backcode` in your `PATH`; with npm, use `npx @backcode/runner <command>` or `npm i -g @backcode/runner`:
+Everything in the panel also works from the terminal. `install.sh` puts `backcode` in your `PATH` (with the Mac app, it's `~/.backcode/bin/backcode`); with npm, use `npx backcode <command>` or `npm i -g backcode`:
 
 | Command | Description |
 |---|---|
@@ -308,6 +356,6 @@ Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[Apache License 2.0](LICENSE) © Hernan Mateo. See [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE) © Brothapps S.L. See [NOTICE](NOTICE).
 
 <p align="center"><sub>Built with Claude Code. Not affiliated with Anthropic.</sub></p>

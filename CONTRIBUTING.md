@@ -25,7 +25,7 @@ Requirements: macOS or Linux, Node.js 22+ and Claude Code signed in.
 
 ## Reporting bugs
 
-Open an issue with your OS, Node and Claude Code versions (`npx @backcode/runner --version`, `claude -v`) and the relevant lines
+Open an issue with your OS, Node and Claude Code versions (`npx backcode --version`, `claude -v`) and the relevant lines
 from the panel's **Activity** view. Remove anything private (paths, repo names, tokens) first.
 
 Security issues: please don't open a public issue, see [SECURITY.md](SECURITY.md).

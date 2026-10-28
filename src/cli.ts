@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// `backcode` (o `npx @backcode/runner`): sin argumentos abre el panel. Los demás comandos, para quien prefiere la terminal.
+// `backcode` (o `npx backcode`): sin argumentos abre el panel. Los demás comandos, para quien prefiere la terminal.
 // La versión se lee antes de cargar nada más: `--version` tiene que funcionar aunque falte algo (lo usa la actualización
 // automática para comprobar que la versión nueva arranca).
 
@@ -9,6 +9,11 @@ if (command === "--version" || command === "-v") {
   console.log((await import("./assets.js")).VERSION);
   process.exit(0);
 }
+// git usa la sesión de GitHub CLI (la del panel) para clonar y hacer push, en este proceso y en los runners que lance.
+(await import("./github.js")).useGhForGit();
+// La API key de Anthropic guardada desde el panel (si usas una en vez de un plan Pro o Max).
+(await import("./anthropic.js")).loadSavedApiKey();
+
 // El ejecutable sin Node lleva su propio motor (Bun); solo con Node hace falta la versión 22.
 if (!process.versions.bun && Number(process.versions.node.split(".")[0]) < 22) {
   console.error(`Backcode runner needs Node 22 or newer (you have ${process.version}): https://nodejs.org`);
@@ -39,6 +44,16 @@ switch (command) {
   case "smoke":
     // Prueba de arranque de un OTA (la llama el script ota:publish del repo).
     await import("./smoke-cli.js");
+    break;
+  case "app-url": {
+    // Para la app de Mac: prepara la instalación y el servicio, y devuelve la dirección del panel (la última línea).
+    const { prepareApp } = await import("./app-launch.js");
+    console.log(await prepareApp());
+    process.exit(0);
+    break;
+  }
+  case "status":
+    await import("./status.js");
     break;
   case "start":
     // `backcode start` todos en esta terminal; `backcode start <proyecto>…` solo esos.

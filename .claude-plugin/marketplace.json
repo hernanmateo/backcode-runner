@@ -1,0 +1,19 @@
+{
+  "name": "backcode",
+  "owner": {
+    "name": "Brothapps S.L.",
+    "url": "https://github.com/hernanmateo"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for Backcode: your team's backlog, implemented by Claude Code on your own machine."
+  },
+  "plugins": [
+    {
+      "name": "backcode",
+      "source": "./plugins/backcode",
+      "description": "Set up and troubleshoot the Backcode runner from Claude Code: installs it, connects your projects and keeps it running.",
+      "category": "productivity",
+      "keywords": ["backcode", "runner", "setup", "pull-requests"]
+    }
+  ]
+}

@@ -5,6 +5,12 @@ import { panelCall } from "./panel-client.js";
 import { migrateLegacyConfigs, selfCommand } from "./paths.js";
 import { checkMachine } from "./preflight.js";
 import { connectProject, parseConfig, type Answers } from "./setup.js";
+import { useGhForGit } from "./github.js";
+import { loadSavedApiKey } from "./anthropic.js";
+
+// Con `npm start` / `npm run connect` (sin pasar por cli.ts): git con la sesión de GitHub CLI.
+useGhForGit();
+loadSavedApiKey();
 
 // `backcode connect` (o `npm run connect`): pega la configuración que genera la app (Proyecto → Conectar mi Claude Code),
 // se guarda en ~/.backcode/config/<proyecto>.env con permisos 600 y arranca el runner. Leerla desde un prompt (y no
@@ -70,7 +76,13 @@ function askHidden(question: string): Promise<string> {
 }
 
 // Se repite hasta que está guardada: cada vuelta contesta lo que pidió la anterior (clonar, token de Bitbucket).
-const answers: Answers = {};
+// Sin interacción (p. ej. `pbpaste | backcode connect --clone --no-start`, lo que usa el plugin de Claude Code):
+//   --clone          si el repo no está en este ordenador, clonarlo sin preguntar (en ~/Backcode/<proyecto>)
+//   --repo <ruta>    el repo está en esa carpeta
+//   --no-start       guardar y no arrancar el runner en esta terminal (si hay panel o servicio, lo arrancan ellos)
+const flag = (name: string) => process.argv.includes(name);
+const flagValue = (name: string) => (process.argv.indexOf(name) > 0 ? process.argv[process.argv.indexOf(name) + 1] : undefined);
+const answers: Answers = { ...(flag("--clone") ? { clone: true } : {}), ...(flagValue("--repo") ? { repoPath: flagValue("--repo") } : {}) };
 const tty = !!process.stdin.isTTY;
 let bbAttempts = 0;
 let shown = 0;
@@ -80,7 +92,7 @@ for (;;) {
   shown = r.notes.length;
   if ("ok" in r) {
     console.log(`\n${t("connect.saved", { file: r.file })}`);
-    await start(r.projectId);
+    await start(r.projectId, r.restart);
     break;
   }
   if ("error" in r) {
@@ -91,6 +103,11 @@ for (;;) {
     const answer = tty ? (await ask(`\n${t("connect.askClone", { path: r.path, url: r.url })} `)).toLowerCase() : "n";
     answers.clone = ["", "s", "si", "sí", "y", "yes"].includes(answer);
     continue;
+  }
+  if (r.need === "repo") {
+    // Solo lo pide el panel; en la terminal, la ruta de la configuración tiene que ser el repo.
+    console.error(`\n✗ ${t("connect.notRepo", { path: r.clonePath })}`);
+    process.exit(1);
   }
   // Bitbucket: hasta 3 intentos en la terminal; sin terminal o tras 3 fallos, se sigue sin abrir PR.
   if (!tty || bbAttempts >= 3) {
@@ -114,9 +131,15 @@ for (;;) {
 }
 
 /** Si el panel o el servicio ya están en marcha, lo arrancan ellos; si no, se arranca aquí, en esta terminal. */
-async function start(projectId: string): Promise<void> {
+async function start(projectId: string, others: string[]): Promise<void> {
   if (await panelCall("POST", `/api/projects/${projectId}/restart`).then((r) => r.ok, () => false)) {
+    // Llave nueva: los otros proyectos que la han recibido se reinician con ella.
+    for (const id of others) await panelCall("POST", `/api/projects/${id}/restart`).catch(() => undefined);
     console.log(`  ${t("connect.startedByPanel")}\n`);
+    process.exit(0);
+  }
+  if (flag("--no-start")) {
+    console.log(`  ${t("connect.notStarted")}\n`);
     process.exit(0);
   }
   console.log(`  ${t("connect.next", { project: projectId })}\n`);

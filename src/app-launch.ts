@@ -21,7 +21,11 @@ export function launchedAsApp(): boolean {
   return process.platform === "darwin" && process.execPath.includes(".app/Contents/MacOS/") && args.length === 0;
 }
 
-export async function launchApp(): Promise<void> {
+/**
+ * Lo que hace la app al abrirse: instala o pone al día la copia de ~/.backcode/bin, deja el servicio y espera al panel.
+ * Devuelve su dirección (con el token). La ventana nativa de la app (mac/BackcodeRunner.swift) la carga con `backcode app-url`.
+ */
+export async function prepareApp(): Promise<string> {
   const installed = join(BIN_DIR, "backcode");
   const current = existsSync(installed) ? await exec(installed, ["--version"], { timeout: 15_000 }).then((r) => r.stdout.trim(), () => "") : "";
   // Solo hacia delante: si la copia instalada ya se actualizó sola a una versión más nueva que la de la app, se queda.
@@ -41,7 +45,12 @@ export async function launchApp(): Promise<void> {
 
   // El servicio tarda unos segundos en abrir el panel la primera vez.
   for (let i = 0; i < 60 && !(await panelAlive()); i++) await new Promise((r) => setTimeout(r, 500));
-  openBrowser(panelUrl());
+  return panelUrl();
+}
+
+/** Abierto sin la ventana nativa (el ejecutable directamente desde una .app): el panel en el navegador. */
+export async function launchApp(): Promise<void> {
+  openBrowser(await prepareApp());
   // Que dé tiempo a lanzar el navegador antes de salir.
   await new Promise((r) => setTimeout(r, 1500));
   process.exit(0);

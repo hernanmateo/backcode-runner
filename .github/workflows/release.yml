@@ -3,7 +3,8 @@ name: Release
 # Al subir una etiqueta vX.Y.Z (npm version minor && git push --follow-tags):
 #   · ejecutables sin Node para Linux y macOS (Intel y ARM) y la app de Mac (Backcode-Runner.dmg, universal)
 #   · una Release con todo, SHA256SUMS e install.sh
-#   · el paquete @backcode/runner en npm (si el repo tiene el secreto NPM_TOKEN)
+#   · el paquete backcode en npm: con Trusted Publishing (sin token; se configura una vez en npmjs.com →
+#     backcode → Settings → Trusted Publisher → GitHub Actions, este repo y release.yml) o con el secreto NPM_TOKEN
 # Los runners instalados (install.sh, la app de Mac o npm como servicio) se actualizan solos.
 #
 # Secretos opcionales para firmar y notarizar en macOS (sin ellos, la app y los ejecutables de Mac salen sin firmar):
@@ -93,8 +94,6 @@ jobs:
   publish:
     needs: [linux, macos]
     runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -113,7 +112,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist-bin/* install.sh --title "$GITHUB_REF_NAME" --generate-notes
       - name: npm
-        if: ${{ env.NPM_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm ci && npm publish --provenance --access public
+        run: |
+          # Trusted Publishing necesita npm 11.5 o superior.
+          npm install -g npm@latest
+          VERSION="$(node -p 'require("./package.json").version')"
+          # La primera versión se publica a mano (npm lo exige para configurar Trusted Publishing): si ya está, nada que hacer.
+          if npm view "backcode@$VERSION" version >/dev/null 2>&1; then echo "backcode@$VERSION ya está en npm"; exit 0; fi
+          npm ci
+          npm publish --provenance --access public

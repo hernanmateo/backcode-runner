@@ -13,7 +13,7 @@ until it's fixed. Please give us reasonable time to release a fix before disclos
 
 ## Supported versions
 
-Only the latest published version of `@backcode/runner` receives security fixes. Installed runners update themselves.
+Only the latest published version of `backcode` receives security fixes. Installed runners update themselves.
 
 ## Scope
 

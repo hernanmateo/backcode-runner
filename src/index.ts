@@ -22,6 +22,12 @@ import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildApprovedPlanPrompt, buildFollowUpPrompt, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult } from "./store.js";
+import { useGhForGit } from "./github.js";
+import { loadSavedApiKey } from "./anthropic.js";
+
+// Con `npm start` / `npm run connect` (sin pasar por cli.ts): git con la sesión de GitHub CLI.
+useGhForGit();
+loadSavedApiKey();
 
 const cfg = (() => {
   try {

@@ -7,6 +7,7 @@ import { readCredentials, saveBitbucketCredentials } from "./credentials.js";
 import { publicRepoUrl } from "./git.js";
 import { t } from "./i18n.js";
 import { ensureConfigDir, projectFile, projectFiles } from "./paths.js";
+import { defaultClonePath, findProjectRepo, findRepos, type FoundRepo } from "./repos.js";
 
 // Conectar un proyecto con la configuración que genera la app (Proyecto → Conectar → Copiar configuración). Lo usan la
 // terminal (`backcode connect`) y el panel: los dos pegan el texto y contestan lo que haga falta (clonar el repo, el token
@@ -40,15 +41,22 @@ export function parseConfig(text: string): Pasted {
 
 /** Respuestas a lo que pidió connectProject en una llamada anterior. */
 export interface Answers {
-  /** true: clonar el repo en la ruta de la configuración; false: no. */
+  /** true: clonar el repo (en `clonePath` o, si no, en la ruta de la configuración o ~/Backcode/<proyecto>); false: no. */
   clone?: boolean;
+  /** Carpeta donde clonarlo. */
+  clonePath?: string;
+  /** Carpeta de un repo que ya está en este ordenador (elegida en el panel). */
+  repoPath?: string;
   /** Credenciales de Bitbucket nuevas, o "skip" para seguir sin PR. */
   bitbucket?: { email: string; token: string } | "skip";
 }
 
 export type ConnectResult =
-  | { ok: true; projectId: string; file: string; notes: string[] }
+  /** restart: otros proyectos de este ordenador a los que se ha copiado la llave nueva (hay que reiniciarlos). */
+  | { ok: true; projectId: string; file: string; notes: string[]; restart: string[] }
   | { need: "clone"; url: string; path: string; notes: string[] }
+  /** El panel no sabe dónde está el repo: clonarlo (si hay URL), elegir carpeta o uno de los repos encontrados. */
+  | { need: "repo"; url: string | null; clonePath: string; candidates: FoundRepo[]; notes: string[] }
   /** retry: el problema es de las credenciales que se acaban de dar (no de las guardadas o de que no haya). */
   | { need: "bitbucket"; problem: string; email?: string; retry: boolean; notes: string[] }
   | { error: string; notes: string[] };
@@ -127,7 +135,9 @@ export async function connectProject(pasted: Map<string, string>, answers: Answe
   const values = new Map(pasted);
   const notes: string[] = [];
   const projectId = values.get("BACKCODE_PROJECT_ID") ?? "";
-  const repoPath = (values.get("BACKCODE_REPO_PATH") ?? "").replace(/^~(?=\/)/, homedir());
+  const expand = (p: string) => p.replace(/^~(?=\/|$)/, homedir());
+  let repoPath = expand(answers.repoPath ?? values.get("BACKCODE_REPO_PATH") ?? "");
+  const restart: string[] = [];
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) return { error: t("connect.noProject"), notes };
   ensureConfigDir();
   const others = otherConfigs(projectId);
@@ -154,20 +164,42 @@ export async function connectProject(pasted: Map<string, string>, answers: Answe
   for (const c of others.filter((x) => sameBackend(x.text) && valueIn(x.text, "BACKCODE_RUNNER_KEY") !== valid)) {
     writeFileSync(c.file, c.text.replace(/^BACKCODE_RUNNER_KEY=.*$/m, `BACKCODE_RUNNER_KEY=${valid}`), { mode: 0o600 });
     notes.push(t("connect.keyCopied", { file: c.file }));
+    const other = valueIn(c.text, "BACKCODE_PROJECT_ID");
+    if (other) restart.push(other);
   }
 
-  // ¿Aún no tienes el repo? Si la ruta no existe y la app sabe de dónde viene, se ofrece clonarlo ahí (con tus credenciales
-  // de git: https o ssh, como lo tengas configurado). Solo URLs de GitHub o Bitbucket sin credenciales.
-  if (!existsSync(join(repoPath, ".git"))) {
-    const url = publicRepoUrl(values.get("BACKCODE_REPO_URL") ?? "");
-    if (url && !existsSync(repoPath)) {
-      if (answers.clone === undefined) return { need: "clone", url, path: repoPath, notes };
-      if (answers.clone) {
-        if (!(await gitClone(url, repoPath, !!opts.interactive))) return { error: t("connect.cloneFailed", { url }), notes };
-        notes.push(t("connect.cloned", { path: repoPath }));
-      }
+  // El repo: la ruta de la configuración (o la elegida en el panel) si ya es un repo; si no, uno de este ordenador cuyo
+  // remoto sea el del proyecto (sin preguntar); si no, clonarlo (con tus credenciales de git o la sesión de GitHub del
+  // panel). La app ya no tiene por qué mandar la ruta: la resuelve el runner.
+  const isRepo = (p: string) => !!p && existsSync(join(p, ".git"));
+  const url = publicRepoUrl(values.get("BACKCODE_REPO_URL") ?? "");
+  if (!isRepo(repoPath) && !answers.repoPath && url && answers.clone === undefined) {
+    const found = findProjectRepo(url);
+    if (found) {
+      repoPath = found;
+      notes.push(t("connect.repoFound", { path: found }));
     }
   }
+  if (!isRepo(repoPath)) {
+    const clonePath = expand(answers.clonePath ?? (repoPath && !existsSync(repoPath) ? repoPath : defaultClonePath(values.get("BACKCODE_PROJECT_NAME"), projectId)));
+    if (answers.clone === undefined && !answers.repoPath) {
+      // La terminal pregunta sí/no (como siempre); el panel ofrece clonar, elegir carpeta o un repo encontrado.
+      if (opts.interactive) {
+        if (url && !existsSync(clonePath)) return { need: "clone", url, path: clonePath, notes };
+      } else return { need: "repo", url, clonePath, candidates: findRepos().slice(0, 40), notes };
+    }
+    if (answers.clone && url) {
+      if (existsSync(clonePath) && !isRepo(clonePath)) return { error: t("connect.cloneExists", { path: clonePath }), notes };
+      if (!isRepo(clonePath)) {
+        // Por https si es GitHub: así vale la sesión de GitHub del panel aunque no tengas claves ssh.
+        const cloneUrl = url.replace(/^git@github\.com:(.+?)(?:\.git)?$/, "https://github.com/$1.git");
+        if (!(await gitClone(cloneUrl, clonePath, !!opts.interactive))) return { error: t("connect.cloneFailed", { url: cloneUrl }), notes };
+        notes.push(t("connect.cloned", { path: clonePath }));
+      }
+      repoPath = clonePath;
+    }
+  }
+  values.set("BACKCODE_REPO_PATH", repoPath);
   values.delete("BACKCODE_REPO_URL");
 
   // Bitbucket: el API token no pasa por la app; se reutiliza el de este ordenador o se pide aquí, y siempre se valida
@@ -204,7 +236,7 @@ export async function connectProject(pasted: Map<string, string>, answers: Answe
   const file = projectFile(projectId);
   writeFileSync(file, [...values].map(([k, v]) => `${k}=${v}`).join("\n") + "\n", { mode: 0o600 });
   chmodSync(file, 0o600); // por si ya existía con otros permisos
-  return { ok: true, projectId, file, notes };
+  return { ok: true, projectId, file, notes, restart };
 }
 
 /** Estado del token de Bitbucket de tu cuenta en este ordenador (para el panel; nunca devuelve el token). */

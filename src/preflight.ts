@@ -141,8 +141,10 @@ export async function machineReport(): Promise<Check[]> {
   const cli = installed ? await claudeVersion(installed) : null;
   if (!bundled) checks.push({ id: "claude", status: "fail", detail: IS_BINARY ? t("pre.claudeMissing", { cmd: CLAUDE_INSTALL }) : t("pre.sdkMissing", { pkg: sdkBinaryPackages()[0].replace(/\/claude(\.exe)?$/, "") }), fix: IS_BINARY ? CLAUDE_INSTALL : undefined });
   else checks.push(cli ? { id: "claude", status: "ok", detail: `Claude Code ${cli}` } : { id: "claude", status: "warn", detail: t("pre.noCli"), fix: CLAUDE_INSTALL });
-  const loggedIn = bundled ? await claudeLoggedIn(installed ?? bundled) : null;
-  checks.push(loggedIn === false ? { id: "login", status: "warn", missing: "session", detail: t("pre.notLoggedIn"), fix: "claude" } : { id: "login", status: loggedIn ? "ok" : "warn", detail: loggedIn ? t("panel.check.loggedIn") : t("panel.check.loginUnknown"), fix: loggedIn ? undefined : "claude" });
+  // Con una API key (guardada en el panel o en el entorno) no hace falta iniciar sesión.
+  const apiKey = !!process.env.ANTHROPIC_API_KEY;
+  const loggedIn = apiKey ? true : bundled ? await claudeLoggedIn(installed ?? bundled) : null;
+  checks.push(loggedIn === false ? { id: "login", status: "warn", missing: "session", detail: t("pre.notLoggedIn"), fix: "claude" } : { id: "login", status: loggedIn ? "ok" : "warn", missing: loggedIn ? undefined : "session", detail: apiKey ? t("panel.check.apiKey") : loggedIn ? t("panel.check.loggedIn") : t("panel.check.loginUnknown"), fix: loggedIn ? undefined : "claude" });
   const git = /\d+\.\d+(\.\d+)?/.exec(await run("git", ["--version"], 10_000))?.[0];
   checks.push(git ? { id: "git", status: "ok", detail: `git ${git}` } : { id: "git", status: "fail", detail: t("panel.check.noGit"), fix: process.platform === "darwin" ? "xcode-select --install" : "sudo apt install git" });
   const gh = /\d+\.\d+\.\d+/.exec(await run("gh", ["--version"], 10_000))?.[0];

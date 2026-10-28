@@ -47,7 +47,7 @@
   <text x="508" y="163" font-size="13" fill="#A39E93">its own branch, asking in the</text>
   <text x="508" y="182" font-size="13" fill="#A39E93">task thread when unsure.</text>
   <rect x="508" y="200" width="184" height="24" rx="12" fill="#3D261D"/>
-  <text x="600" y="216" font-size="12" font-weight="600" fill="#D97757" text-anchor="middle">@backcode/runner · this repo</text>
+  <text x="600" y="216" font-size="12" font-weight="600" fill="#D97757" text-anchor="middle">backcode · this repo</text>
 
   <!-- 4. PR -->
   <g filter="url(#shadow)">

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // «Backcode Runner.app» y Backcode-Runner.dmg (macOS, universal: Apple Silicon e Intel) a partir de los ejecutables de
-// dist-bin/ (npm run build:bin -- darwin-arm64 darwin-x64). Solo en un Mac (lipo, iconutil, hdiutil, codesign).
+// dist-bin/ (npm run build:bin -- darwin-arm64 darwin-x64). Solo en un Mac (swiftc, lipo, iconutil, hdiutil, codesign).
+// La app es una ventana nativa (mac/BackcodeRunner.swift, WKWebView) con el panel dentro; el runner va en
+// Contents/Resources/backcode y la app lo llama para instalarse y saber la dirección del panel.
 //
 // Firma y notarización, si están las variables (en CI vienen de los secretos del repo):
 //   MAC_SIGN_IDENTITY   "Developer ID Application: Nombre (TEAMID)" (el certificado ya en el llavero)
@@ -31,7 +33,17 @@ const app = join(out, "Backcode Runner.app");
 rmSync(app, { recursive: true, force: true });
 mkdirSync(join(app, "Contents", "MacOS"), { recursive: true });
 mkdirSync(join(app, "Contents", "Resources"), { recursive: true });
-run("lipo", ["-create", join(out, "backcode-darwin-arm64"), join(out, "backcode-darwin-x64"), "-output", join(app, "Contents", "MacOS", "Backcode Runner")]);
+// El runner, universal, en Resources; la ventana nativa (Swift), universal, como ejecutable de la app.
+const runner = join(app, "Contents", "Resources", "backcode");
+run("lipo", ["-create", join(out, "backcode-darwin-arm64"), join(out, "backcode-darwin-x64"), "-output", runner]);
+const swiftOut = join(out, "swift");
+rmSync(swiftOut, { recursive: true, force: true });
+mkdirSync(swiftOut);
+for (const arch of ["arm64", "x86_64"]) {
+  run("xcrun", ["swiftc", "-O", "-target", `${arch}-apple-macos12.0`, "-o", join(swiftOut, arch), join(root, "mac", "BackcodeRunner.swift")]);
+}
+run("lipo", ["-create", join(swiftOut, "arm64"), join(swiftOut, "x86_64"), "-output", join(app, "Contents", "MacOS", "Backcode Runner")]);
+rmSync(swiftOut, { recursive: true, force: true });
 
 // Icono: el de la app de Backcode en todos los tamaños de un .icns.
 const iconset = join(out, "Backcode.iconset");
@@ -62,15 +74,17 @@ writeFileSync(
   <key>CFBundleVersion</key><string>${version}</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <!-- Sin icono en el Dock: abre el panel en el navegador y termina; el runner sigue como servicio. -->
-  <key>LSUIElement</key><true/>
-  <key>NSHumanReadableCopyright</key><string>© Hernan Mateo · Apache-2.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticTermination</key><false/>
+  <key>NSHumanReadableCopyright</key><string>© Brothapps S.L. · Apache-2.0</string>
 </dict>
 </plist>
 `,
 );
-sign(join(app, "Contents", "MacOS", "Backcode Runner"));
-if (identity) run("codesign", ["--force", "--timestamp", "--options", "runtime", "--entitlements", join(root, "mac", "entitlements.plist"), "--sign", identity, app]);
+// Primero lo de dentro: el runner (con los permisos de JIT de Bun), después la ventana y la app (hardened runtime, sin más).
+sign(runner);
+if (identity) run("codesign", ["--force", "--timestamp", "--options", "runtime", "--sign", identity, join(app, "Contents", "MacOS", "Backcode Runner")]);
+if (identity) run("codesign", ["--force", "--timestamp", "--options", "runtime", "--sign", identity, app]);
 
 // .dmg con el atajo a Aplicaciones para arrastrar.
 const stage = join(out, "dmg");

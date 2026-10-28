@@ -1,4 +1,4 @@
-# @backcode/runner
+# backcode
 
 [English](README.md) · **Español**
 
@@ -20,21 +20,49 @@ curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/in
 ```
 Instala un único ejecutable en `~/.backcode/bin` (**sin Node**), comprueba su SHA-256, deja `backcode` en el PATH (una línea
 en el perfil de tu shell) y abre el **panel** en el navegador (http://127.0.0.1:47474). Las próximas veces: `backcode`.
-¿Ya usas Node? Es el mismo runner desde npm: `npx @backcode/runner`.
+¿Ya usas Node? Es el mismo runner desde npm: `npx backcode`.
+
+### Todas las formas de instalarlo
+Todas instalan el mismo runner y abren el mismo panel.
+
+| Forma | Cómo | Para quién |
+|---|---|---|
+| **App de Mac** (la más fácil) | [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg) → Aplicaciones → abrir | Cualquiera con macOS. Sin Terminal ni Node |
+| **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
+| **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
+| **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
+| **Plugin de Claude Code** | En Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
+
+Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
+(`BACKCODE_NO_OPEN=1`), solo el ejecutable (`backcode-<os>-<arch>` de la Release, con `SHA256SUMS`) o en un servidor sin navegador
+(`backcode connect` + `backcode service install`).
+
+**Plugin de Claude Code.** `/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
+runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
+clona el repo y lo deja arrancando al iniciar sesión) y `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
+comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
+está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
+con `claude plugin validate .`.
+
+**Desinstalar:** en el panel, apaga «Arrancar al iniciar sesión» (o `backcode service uninstall`); borra la app y `~/.backcode`;
+quita la línea `# Backcode runner` de tu perfil de shell si usaste `install.sh`; con npm, `npm uninstall -g backcode`.
 
 Desde el panel:
 - **Este ordenador**: comprueba Claude Code y su sesión, git y GitHub CLI (y Node, solo con npm). Lo que falte se abre en una
-  **guía paso a paso** con un botón que lo hace por ti (instalador oficial de Claude Code, iniciar sesión en Claude o GitHub en la
-  Terminal, herramientas de Xcode, GitHub CLI con Homebrew) y el comando por si prefieres hacerlo a mano.
+  **guía paso a paso** con un botón que lo hace por ti (instalador oficial de Claude Code, iniciar sesión en Claude o pegar una API
+  key de Anthropic, **Conectar con GitHub** con un código en el navegador y sin Terminal, GitHub CLI oficial sin Homebrew ni
+  administrador, herramientas de Xcode) y el comando por si prefieres hacerlo a mano.
 - **Conectar un proyecto**: en la app, **Proyecto → Conectar paso a paso → Copiar configuración**, y en el panel **Pegar
-  configuración**. Si la carpeta del repo no existe, te ofrece clonarlo; si los PR van a Bitbucket, te pide el token.
+  configuración**. Encuentra solo el repo en tu ordenador (por su remoto) o te ofrece clonarlo con un clic en `~/Backcode/<proyecto>`
+  o elegir la carpeta; si los PR van a Bitbucket, te pide el token.
 - **Proyectos**: un interruptor por proyecto para activarlo o pararlo (se recuerda: uno parado no arranca solo al volver),
   reiniciarlo, ver su actividad en vivo o quitarlo. Si encuentra proyectos conectados con la versión anterior (`git clone`, p. ej.
   en `~/Projects/backcode-runner`), ofrece **importarlos** (los copia; no borra nada de allí).
 - **Idioma**: el que elijas arriba a la derecha (español, inglés o catalán); si no, el de tu perfil en la app y, mientras no lo
   sepa, el del navegador. Mismos colores e icono que la app, en claro u oscuro según el sistema.
 - **Arrancar al iniciar sesión**: lo instala como servicio de tu usuario (launchd en macOS, systemd `--user` en Linux). Corre en
-  segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx @backcode/runner`.
+  segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx backcode`.
 
 Sin el servicio, los runners funcionan mientras esté abierta la terminal donde lanzaste el panel (Ctrl+C los para).
 
@@ -51,8 +79,8 @@ Sin el servicio, los runners funcionan mientras esté abierta la terminal donde 
   propio script (p. ej. xprem), lo que ese script necesite en tu copia local (p. ej. `EOO_TOKEN` en el `.env`)
 
 ## Desde la terminal
-Todo lo del panel se puede hacer también con comandos (`npm i -g @backcode/runner` deja `backcode` en el PATH; si no, delante
-`npx @backcode/runner`):
+Todo lo del panel se puede hacer también con comandos (`npm i -g backcode` deja `backcode` en el PATH; si no, delante
+`npx backcode`):
 
 | Comando | Qué hace |
 |---|---|
@@ -79,7 +107,7 @@ Claude no puede leer `~/.backcode/config`, `~/.backcode/logs` ni la carpeta del 
 
 **¿Venías de la versión con `git clone`?** Las configuraciones `.env.<proyecto>` de la carpeta del runner se mueven solas a
 `~/.backcode/config/` al arrancar, y los comandos de antes (`npm run connect`, `npm run all`, `npm start -- --env .env.<id>`)
-siguen funcionando en esa copia. Para pasarte a npm: `npx @backcode/runner`, **Importar** en el aviso del panel, para los runners antiguos (Ctrl+C en su
+siguen funcionando en esa copia. Para pasarte a npm: `npx backcode`, **Importar** en el aviso del panel, para los runners antiguos (Ctrl+C en su
 terminal), activa cada proyecto y «Arrancar al iniciar sesión».
 
 ## Conectar un proyecto (detalles)
@@ -88,11 +116,25 @@ Bitbucket o solo subir la rama); eso decide qué hace falta preparar en el orden
 en el panel (o en `backcode connect`). Se guarda en `~/.backcode/config/<proyecto>.env` y el runner arranca; en la app verás
 **"¡Tu Claude Code está conectado!"**.
 
-**¿Aún no tienes el repo?** El runner de quien ya está conectado guarda en el proyecto la URL del repo (sin credenciales; solo
-GitHub o Bitbucket, https o `git@`). En el paso 1 de la guía, **"¿Aún no tienes el repo en este ordenador? Clónalo"** te deja
-elegir la carpeta (por defecto `~/Projects`) y te da el `git clone` listo para copiar. O no hagas nada: si la ruta de la
-configuración no existe, el panel te pregunta si lo clona ahí (con tus credenciales de git) antes de seguir. Desde el panel, git no
-puede pedirte contraseñas: si tu remoto las necesita, clónalo tú o usa `backcode connect`.
+**¿Dónde está el repo?** No hace falta decirlo. Al conectar, el runner usa, por orden:
+1. La ruta de la configuración, si la trae y es un repo git (las configuraciones antiguas la llevan).
+2. Un repo de este ordenador cuyo remoto es el del proyecto (`origin`, https o ssh), buscando dos niveles dentro de `~/Projects`,
+   `~/Developer`, `~/Code`, `~/code`, `~/dev`, `~/src`, `~/Sites`, `~/GitHub`, `~/Documents/GitHub`, `~/Documents/Projects`,
+   `~/repos`, `~/workspace` y `~/Backcode`. Lo usa sin preguntar.
+3. Si no lo encuentra, el panel ofrece **Clonar en `~/Backcode/<proyecto>`** (si el proyecto ya tiene URL: la guarda el runner del
+   primero que conecta; solo GitHub o Bitbucket, sin credenciales), **Elegir carpeta…** (selector de macOS) o uno de los repos
+   que ha encontrado. Los repos de GitHub se clonan por https con la sesión de **Conectar con GitHub** (sin claves ssh).
+En la terminal (`backcode connect`), si la ruta no existe, pregunta si lo clona ahí. Desde el panel git no puede pedir contraseñas:
+con GitHub, conecta antes GitHub en el panel; con Bitbucket, que tu git tenga credenciales (o clónalo tú).
+
+**GitHub sin terminal.** El panel instala GitHub CLI si falta (Homebrew si lo tienes; si no, el binario oficial de
+github.com/cli/cli con su SHA-256, en `~/.backcode/bin/gh`, sin administrador) y **Conectar con GitHub** inicia la sesión con el
+código de un solo uso en el navegador (`gh auth login --web` por detrás; la sesión queda en tu llavero, como si lo hicieras tú).
+git usa esa sesión para clonar y hacer push solo dentro de los procesos del runner (variables `GIT_CONFIG_*`): tu `~/.gitconfig`
+no cambia y Claude no la hereda.
+
+**API key de Anthropic.** Si usas Claude Code con una API key en vez de un plan Pro o Max, pégala en el panel («Sesión de
+Claude»): se comprueba con Anthropic, se guarda en `~/.backcode/config/anthropic-key` (600) y los runners se reinician con ella.
 
 **La llave (runner key) es por usuario, no por proyecto.** Solo hace falta generarla en la app la primera vez en cada ordenador.
 Si ya tienes otro proyecto conectado, en la guía elige **"Ya tengo una llave en este ordenador"**: se reutiliza la que tienes.
@@ -110,7 +152,7 @@ mensaje final). Antes de iniciar sesión (el panel, `backcode connect`, errores 
 tu plataforma, comprueba su SHA-256 contra `SHA256SUMS` y que arranca, y sustituye `~/.backcode/bin/backcode`. Con npm instalado
 como servicio (o en `~/.backcode/app`), lo mismo desde npm. En los dos casos, cada runner se reinicia con la versión nueva **al quedar libre** (sin tarea ni acción en marcha; no
 interrumpe nada ni coge trabajo nuevo mientras). El panel avisa cuando él también puede reiniciarse para ver la versión nueva.
-Con `npx` sin servicio, el panel y la terminal avisan de la versión nueva y basta con volver a lanzar `npx @backcode/runner@latest`.
+Con `npx` sin servicio, el panel y la terminal avisan de la versión nueva y basta con volver a lanzar `npx backcode@latest`.
 
 En una copia de git (desarrollo, o quien venía de `git clone`), cada 2 minutos mira si la rama tiene commits nuevos: si los hay y
 la copia está limpia, `git pull --ff-only`, `npm install` si cambiaron dependencias, comprueba que compila y se reinicia igual,
@@ -358,7 +400,7 @@ La app de Mac: `npm run build:mac` (en un Mac) compila los dos ejecutables de ma
 
 Publicar (claves, pruebas y pasos en el monorepo: `docs/RUNNER-PUBLICAR.md`): `npm version minor && git push --follow-tags`. La etiqueta `vX.Y.Z` lanza el workflow `release.yml`: compila y pasa los
 tests, compila los ejecutables (`npm run build:bin`, con [Bun](https://bun.sh)) para macOS y Linux (Intel y ARM), los publica en
-una Release con `SHA256SUMS` e `install.sh`, y publica `@backcode/runner` en npm si el repo tiene el secreto `NPM_TOKEN`.
+una Release con `SHA256SUMS` e `install.sh`, y publica `backcode` en npm si el repo tiene el secreto `NPM_TOKEN`.
 El ejecutable es el mismo código TypeScript con el panel, las instrucciones y el `package.json` incrustados (`src/embedded.ts`
 solo se rellena en la copia de compilación).
 Variables útiles para probar sin tocar tu configuración: `BACKCODE_HOME=/tmp/bc` y `BACKCODE_PANEL_PORT=47999`.

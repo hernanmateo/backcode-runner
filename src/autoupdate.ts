@@ -15,7 +15,7 @@ export const UPDATE_EVERY_MS = 2 * 60_000;
 const NPM_EVERY_MS = 30 * 60_000;
 /** Código de salida con el que un runner pide a su supervisor (panel, `npm run all`) que lo vuelva a lanzar (ya con la versión nueva). */
 export const RESTART_CODE = 75;
-export const PACKAGE_NAME = "@backcode/runner";
+export const PACKAGE_NAME = "backcode";
 /** Repositorio de GitHub con las versiones del ejecutable sin Node (Releases). */
 export const RELEASES_REPO = "hernanmateo/backcode-runner";
 

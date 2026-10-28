@@ -19,6 +19,6 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: OS, `npx @backcode/runner --version`, `node -v`, `claude -v`
+      description: OS, `npx backcode --version`, `node -v`, `claude -v`
     validations:
       required: true

@@ -144,3 +144,16 @@ a.button { display: inline-block; text-decoration: none; border-radius: 12px; ba
 .fix-error { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--danger); background: var(--code); border-radius: 10px; padding: 8px 10px; max-height: 160px; overflow: auto; }
 .guide > * { min-width: 0; }
 .links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; font-size: 14px; }
+
+/* Conectar con GitHub (código de un solo uso), API key y elección del repo */
+.device { display: grid; gap: 8px; padding: 12px; border-radius: 12px; background: var(--card); }
+.code-row { display: flex; align-items: center; gap: 10px; }
+.device-code { font-size: 26px; font-weight: 700; letter-spacing: .08em; }
+a.button.primary { background: var(--primary); color: var(--primary-text); }
+.apikey summary { cursor: pointer; color: var(--primary); font-weight: 600; font-size: 14px; }
+.apikey { display: grid; gap: 6px; }
+.repos { display: grid; gap: 6px; margin-top: 6px; }
+button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); border: 1px solid var(--border); font-weight: 400; }
+
+/* Ventana nativa de la app de Mac: sitio para los botones de la ventana */
+.native .top { padding-top: 44px; }

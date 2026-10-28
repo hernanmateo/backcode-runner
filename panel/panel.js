@@ -1,15 +1,23 @@
 // Panel del runner: habla con la API de este mismo servidor (127.0.0.1). El token llega en el enlace (#t=…) que abre
 // `backcode`; se guarda en la pestaña para que recargar funcione.
 
+// También se recuerda en este navegador (localStorage, solo de tu usuario): así el panel instalado como app, o abierto
+// sin el enlace, funciona sin volver a pasar por `backcode`.
 const token = (() => {
   const fromHash = new URLSearchParams(location.hash.slice(1)).get("t");
   try {
-    if (fromHash) sessionStorage.setItem("backcode-token", fromHash);
-    return fromHash || sessionStorage.getItem("backcode-token") || "";
+    if (fromHash) {
+      sessionStorage.setItem("backcode-token", fromHash);
+      localStorage.setItem("backcode-token", fromHash);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    return fromHash || sessionStorage.getItem("backcode-token") || localStorage.getItem("backcode-token") || "";
   } catch {
     return fromHash || "";
   }
 })();
+// Dentro de la app de Mac (ventana nativa).
+if (new URLSearchParams(location.search).has("native")) document.documentElement.classList.add("native");
 
 let S = {}; // textos del idioma del runner
 let state = null;
@@ -94,7 +102,7 @@ function renderBanner() {
     el.append(h("span", null, s("restartNeeded")), h("button", { type: "button", class: "primary", onclick: restartPanel }, s("restartPanel")));
   } else if (state.updateAvailable) {
     if (state.updateMode === "manual") {
-      el.append(h("span", null, s("updateManual", { version: state.latest })), h("div", { class: "cmd" }, h("code", null, "npx @backcode/runner@latest"), copyButton("npx @backcode/runner@latest")));
+      el.append(h("span", null, s("updateManual", { version: state.latest })), h("div", { class: "cmd" }, h("code", null, "npx backcode@latest"), copyButton("npx backcode@latest")));
     } else {
       el.append(h("span", null, s("update", { version: state.latest })), h("button", { type: "button", onclick: (e) => { e.target.disabled = true; api("POST", "/api/update").then(apply, () => undefined); } }, s("updateNow")));
     }
@@ -128,15 +136,74 @@ async function fix(c, action, button) {
   renderChecks();
   try {
     const r = await api("POST", "/api/fix", { action });
-    fixResult[c.id] = r.terminal ? { note: s("terminalOpened") } : r.ok ? { note: s("fixDone") } : { error: `${s("fixFailed")} ${r.output ?? ""}` };
+    fixResult[c.id] = r.device ? { device: r.device } : r.terminal ? { note: s("terminalOpened") } : r.ok ? { note: s("fixDone") } : { error: `${s("fixFailed")} ${r.output ?? ""}` };
     if (r.state) apply(r.state);
+    if (r.device) {
+      window.open(r.device.url, "_blank", "noopener");
+      waitForGithub();
+    }
   } catch (err) {
     fixResult[c.id] = { error: `${s("fixFailed")} ${err.message}` };
   }
   renderChecks();
 }
 
+// Mientras se autoriza GitHub en el navegador, se comprueba cada pocos segundos hasta que la sesión existe.
+let githubTimer = null;
+function waitForGithub() {
+  clearInterval(githubTimer);
+  let tries = 0;
+  githubTimer = setInterval(async () => {
+    const next = await api("POST", "/api/checks").catch(() => null);
+    if (next) apply(next);
+    if (next?.checks.find((c) => c.id === "gh")?.status === "ok" || ++tries > 120) {
+      clearInterval(githubTimer);
+      delete fixResult.gh;
+      renderChecks();
+    }
+  }, 4000);
+}
+
+/** Alternativa a iniciar sesión: una API key de Anthropic, pegada aquí. */
+function apiKeyBox() {
+  if (state.apiKeySaved) {
+    return h("div", { class: "row" }, h("span", { class: "muted small" }, s("apiKeySaved")),
+      h("button", { type: "button", class: "link danger", onclick: () => api("POST", "/api/anthropic-key", { remove: true }).then(apply, () => undefined) }, s("apiKeyRemove")));
+  }
+  const input = h("input", { type: "password", placeholder: "sk-ant-…", autocomplete: "off" });
+  const err = h("div", { class: "error", hidden: true });
+  return h("details", { class: "apikey" },
+    h("summary", null, s("apiKeyQuestion")),
+    h("div", { class: "muted small" }, s("apiKeyBody")),
+    input,
+    h("div", { class: "row" }, h("button", { type: "button", onclick: async (e) => {
+      e.target.disabled = true;
+      err.hidden = true;
+      try {
+        apply(await api("POST", "/api/anthropic-key", { key: input.value }));
+      } catch (x) {
+        err.textContent = x.message;
+        err.hidden = false;
+      }
+      e.target.disabled = false;
+    } }, s("apiKeySave"))),
+    err);
+}
+
+function deviceBox(device) {
+  return h("div", { class: "device" },
+    h("div", { class: "muted small" }, s("ghCodeIntro")),
+    h("div", { class: "code-row" }, h("code", { class: "device-code" }, device.code), copyButton(device.code)),
+    h("div", { class: "row" }, h("a", { class: "button primary", href: device.url, target: "_blank", rel: "noreferrer" }, s("ghOpen"))),
+    h("div", { class: "muted small" }, s("ghWaiting")));
+}
+
+// Solo se repinta si algo ha cambiado: si no, un campo a medio escribir (la API key) o un desplegable abierto se perderían.
+let checksKey = "";
 function renderChecks() {
+  const key = JSON.stringify([state.checks, state.checking, state.apiKeySaved, state.lang, fixResult]);
+  if (key === checksKey) return;
+  checksKey = key;
   const list = $("checks");
   list.replaceChildren();
   if (!state.checks.length) {
@@ -149,11 +216,13 @@ function renderChecks() {
       h("ol", { class: "steps" }, s(guideKey(c)).split("\n").map((step) => h("li", null, step))),
       c.actions?.length ? h("div", { class: "row" }, c.actions.map((a) => h("button", { type: "button", class: "primary", disabled: result?.busy, onclick: (e) => fix(c, a, e.target) }, s(`action.${a}`)))) : null,
       result?.busy ? h("div", { class: "muted" }, s("fixRunning")) : null,
+      result?.device ? deviceBox(result.device) : null,
       result?.note ? h("div", { class: "success" }, result.note) : null,
       result?.error ? h("pre", { class: "fix-error" }, result.error) : null,
       c.fix ? (c.fix.startsWith("http")
         ? h("div", { class: "row" }, h("a", { class: "button", href: c.fix, target: "_blank", rel: "noreferrer" }, s("openSite")))
-        : h("div", null, h("div", { class: "muted small" }, s("manual")), h("div", { class: "cmd" }, h("code", null, c.fix), copyButton(c.fix)))) : null);
+        : h("div", null, h("div", { class: "muted small" }, s("manual")), h("div", { class: "cmd" }, h("code", null, c.fix), copyButton(c.fix)))) : null,
+      c.id === "login" ? apiKeyBox() : null);
     list.append(h("li", null,
       h("span", { class: `dot ${c.status}`, title: c.status }),
       h("div", { class: "detail" },
@@ -286,6 +355,26 @@ async function connect(fresh) {
         h("div", { class: "row" },
           h("button", { type: "button", class: "primary", onclick: () => { answers.clone = true; connect(); } }, s("cloneYes")),
           h("button", { type: "button", onclick: () => { answers.clone = false; connect(); } }, s("cloneNo"))),
+      ]);
+    } else if (r.need === "repo") {
+      showResult([notes]);
+      const pick = async (e) => {
+        e.target.disabled = true;
+        const p = await api("POST", "/api/pick-folder").catch(() => null);
+        e.target.disabled = false;
+        if (p?.path) { answers.repoPath = p.path; connect(); }
+      };
+      ask([
+        h("p", null, h("strong", null, s("repoTitle"))),
+        h("p", { class: "muted" }, s(r.url ? "repoBody" : "repoBodyNoUrl")),
+        h("div", { class: "row" },
+          r.url ? h("button", { type: "button", class: "primary", onclick: () => { answers.clone = true; answers.clonePath = r.clonePath; connect(); } }, s("repoClone", { path: r.clonePath.replace(/^\/Users\/[^/]+/, "~") })) : null,
+          state.platform === "darwin" ? h("button", { type: "button", onclick: pick }, s("repoPick")) : null),
+        r.candidates.length ? h("div", { class: "muted small" }, s("repoFoundList")) : null,
+        r.candidates.length ? h("div", { class: "repos" }, r.candidates.slice(0, 10).map((c) =>
+          h("button", { type: "button", class: "repo", onclick: () => { answers.repoPath = c.path; connect(); } },
+            h("strong", null, c.name), h("span", { class: "muted small" }, c.remote ?? c.path)))) : null,
+        state.platform === "darwin" ? null : h("div", null, h("input", { type: "text", placeholder: "/home/…/repo", onchange: (e) => { answers.repoPath = e.target.value.trim(); connect(); } })),
       ]);
     } else if (r.need === "bitbucket") {
       showResult([notes]);
@@ -425,13 +514,13 @@ async function refresh() {
     if (leaving !== "gone") leaving = null;
     $("offline").hidden = true;
   } catch (err) {
-    if (err.token) return showOffline(S.noToken ?? "Open the panel with: npx @backcode/runner");
+    if (err.token) return showOffline(S.noToken ?? "Open the panel with: npx backcode");
     if (++failures >= 2 || leaving) showOffline();
   }
 }
 
 if (!token) {
-  showOffline("Open the panel with: npx @backcode/runner");
+  showOffline("Open the panel with: npx backcode");
 } else {
   $("recheck").addEventListener("click", () => { fixResult = {}; api("POST", "/api/checks").then(apply, () => undefined); });
   $("paste").addEventListener("click", pasteFromClipboard);

@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { timingSafeEqual } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { latestVersion, newer, UPDATE_MODE } from "./autoupdate.js";
 import { readAsset, VERSION } from "./assets.js";
@@ -11,6 +12,7 @@ import { lang, panelStrings, setLang, t } from "./i18n.js";
 import { PANEL_HOST, PANEL_PORT, panelAlive, panelToken, panelUrl } from "./panel-client.js";
 import { CONFIG_DIR, importLegacy, IS_BINARY, legacyConfigs, ownArgs, readState, updateState } from "./paths.js";
 import { APP_LINKS } from "./links.js";
+import { hasSavedApiKey, removeApiKey, saveApiKey } from "./anthropic.js";
 import { FIX_ACTIONS, fixesFor, runFix, type FixAction } from "./fixes.js";
 import { machineReport, type Check } from "./preflight.js";
 import { installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
@@ -27,8 +29,11 @@ const STATIC: Record<string, [string, string]> = {
   "/panel.js": ["panel.js", "text/javascript; charset=utf-8"],
   "/panel.css": ["panel.css", "text/css; charset=utf-8"],
   "/icon.png": ["icon.png", "image/png"],
+  "/icon-192.png": ["icon-192.png", "image/png"],
+  "/icon-512.png": ["icon-512.png", "image/png"],
+  "/manifest.webmanifest": ["manifest.webmanifest", "application/manifest+json"],
 };
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const COLORS = [36, 35, 33, 32, 34, 31];
 
 /** Idioma del panel (y de sus mensajes): elegido en el panel > perfil de la app > navegador > sistema. BACKCODE_LANG manda. */
@@ -99,6 +104,7 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       platform: process.platform,
       configDir: CONFIG_DIR,
       links: APP_LINKS,
+      apiKeySaved: hasSavedApiKey(),
       legacy: legacyConfigs(),
       projects: [...supervisor.projects.values()].map((p) => ({
         id: p.id,
@@ -133,6 +139,22 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       if (!("terminal" in result)) await refreshChecks();
       return { ...result, state: state() };
     },
+    // Selector de carpeta nativo (macOS) para elegir dónde está el repo.
+    "POST /api/pick-folder": async () => {
+      if (process.platform !== "darwin") return { error: "unsupported" };
+      const path = await new Promise<string | null>((resolve) =>
+        execFile("osascript", ["-e", `POSIX path of (choose folder with prompt "${t("panel.pickFolder").replace(/"/g, "")}")`], { timeout: 10 * 60_000 }, (err, out) => resolve(err ? null : out.trim().replace(/\/$/, ""))),
+      );
+      return path ? { path } : { cancelled: true };
+    },
+    "POST /api/anthropic-key": async (body) => {
+      const r = body.remove ? (removeApiKey(), { ok: true as const }) : await saveApiKey(String(body.key ?? ""));
+      if ("error" in r) return { error: t(`panel.apiKey.${r.error}` as "panel.apiKey.invalid") };
+      await refreshChecks();
+      // Los runners en marcha la leen al arrancar: se reinician (sin cortar nada que no se pueda retomar).
+      for (const p of supervisor.projects.values()) if (p.child) await supervisor.restart(p.id);
+      return state();
+    },
     "POST /api/import": async (body) => {
       const legacy = legacyConfigs().find((l) => l.dir === body.dir);
       if (!legacy) return state();
@@ -156,7 +178,11 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       const pasted = parseConfig(String(body.text ?? ""));
       if ("error" in pasted) return { error: pasted.error, notes: [] };
       const result = await connectProject(pasted.values, (body.answers ?? {}) as Answers);
-      if ("ok" in result) await supervisor.restart(result.projectId);
+      if ("ok" in result) {
+        await supervisor.restart(result.projectId);
+        // Llave nueva: la anterior queda revocada, así que los demás proyectos de este ordenador se reinician con ella.
+        for (const id of result.restart) if (supervisor.projects.get(id)?.child) await supervisor.restart(id);
+      }
       return { ...result, ignored: pasted.ignored };
     },
     "POST /api/projects/(\\w[\\w-]*)/(start|stop|restart|remove)": async (_body, m) => {
@@ -293,9 +319,27 @@ async function waitForPort(opts: { open: boolean }): Promise<void> {
   return servePanel(opts);
 }
 
+/**
+ * Abre el panel como una app y no como una pestaña más: la app de Mac si está instalada; si no, una ventana de app de un
+ * navegador Chromium (Chrome, Brave, Edge…: sin barra de direcciones ni pestañas); si no hay ninguno, el navegador por
+ * defecto. BACKCODE_BROWSER=default fuerza el navegador normal.
+ */
 export function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-  execFile(cmd, [url], () => undefined);
+  const plain = () => void execFile(process.platform === "darwin" ? "open" : "xdg-open", [url], () => undefined);
+  if (process.env.BACKCODE_BROWSER === "default") return plain();
+  if (process.platform === "darwin") {
+    // La app de Mac ya sabe abrir su panel (sin token en la línea de comandos). Solo con el servicio instalado: si no, la
+    // app lo instalaría y chocaría con el panel de esta terminal.
+    for (const dir of ["/Applications", join(homedir(), "Applications")]) {
+      if (serviceInstalled() && existsSync(join(dir, "Backcode Runner.app")) && !process.execPath.includes("Backcode Runner.app")) return void execFile("open", ["-a", join(dir, "Backcode Runner.app")], () => undefined);
+    }
+    const chromium = ["Google Chrome", "Brave Browser", "Microsoft Edge", "Chromium", "Vivaldi"].find((app) => existsSync(`/Applications/${app}.app`) || existsSync(join(homedir(), "Applications", `${app}.app`)));
+    if (chromium) return void execFile("open", ["-na", chromium, "--args", `--app=${url}`], (err) => err && plain());
+    return plain();
+  }
+  const bin = ["google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge"].find((b) => (process.env.PATH ?? "").split(":").some((d) => existsSync(join(d, b))));
+  if (bin) return void execFile(bin, [`--app=${url}`], (err) => err && plain());
+  plain();
 }
 
 /** Vuelve a arrancar este proceso (mismos argumentos, misma terminal) con el código nuevo. */

@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { installGh, startGhLogin } from "./github.js";
 import { CLAUDE_INSTALL, type Check } from "./preflight.js";
 
 // Lo que el panel puede arreglar por ti cuando falta algo en este ordenador. Es una lista cerrada: el panel solo pide
@@ -7,21 +7,6 @@ import { CLAUDE_INSTALL, type Check } from "./preflight.js";
 // (iniciar sesión) se abre en la Terminal, a la vista.
 
 export type FixAction = "install-claude" | "login-claude" | "install-git" | "install-gh" | "login-gh";
-
-const GH_LOGIN = "gh auth login --hostname github.com --git-protocol https --web";
-const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
-
-const brew = (): string | null => {
-  for (const b of BREW) {
-    try {
-      accessSync(b, constants.X_OK);
-      return b;
-    } catch {
-      // siguiente
-    }
-  }
-  return null;
-};
 
 /** Qué botones ofrecer para un requisito, según el sistema. */
 export function fixesFor(check: Check): FixAction[] {
@@ -35,9 +20,8 @@ export function fixesFor(check: Check): FixAction[] {
     case "git":
       return mac ? ["install-git"] : [];
     case "gh":
-      // Sin instalar: con Homebrew se instala aquí; sin él, el panel enlaza al instalador oficial.
-      if (check.missing === "program") return mac && brew() ? ["install-gh"] : [];
-      return mac ? ["login-gh"] : [];
+      // Se instala aquí (Homebrew o el binario oficial) y la sesión se inicia desde el panel, con el código en el navegador.
+      return check.missing === "program" ? ["install-gh"] : ["login-gh"];
     default:
       return [];
   }
@@ -66,7 +50,7 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: bool
   });
 }
 
-export async function runFix(action: FixAction): Promise<{ ok: boolean; output?: string; terminal?: boolean }> {
+export async function runFix(action: FixAction): Promise<{ ok: boolean; output?: string; terminal?: boolean; device?: { code: string; url: string } }> {
   switch (action) {
     case "install-claude":
       // El instalador oficial de Anthropic (nativo, sin Node), el mismo que en su documentación.
@@ -78,14 +62,13 @@ export async function runFix(action: FixAction): Promise<{ ok: boolean; output?:
       // Abre la ventana de macOS para instalar las herramientas de desarrollador (incluye git).
       await run("xcode-select", ["--install"], 30_000);
       return { ok: true };
-    case "install-gh": {
-      const b = brew();
-      if (!b) return { ok: false, output: "Homebrew not found" };
-      return run(b, ["install", "gh"], 15 * 60_000);
+    case "install-gh":
+      return installGh();
+    case "login-gh": {
+      // Sin terminal: el panel enseña el código y abre github.com/login/device; gh espera la autorización por detrás.
+      const r = await startGhLogin();
+      return "error" in r ? { ok: false, output: r.error } : { ok: true, device: r };
     }
-    case "login-gh":
-      await openTerminal(GH_LOGIN);
-      return { ok: true, terminal: true };
   }
 }
 

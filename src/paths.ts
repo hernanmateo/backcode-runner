@@ -53,8 +53,10 @@ export function updateState(patch: Partial<PanelState>): void {
 
 /** ¿Este runner se ejecuta desde un paquete de npm (npx, global o la instalación propia) y no desde una copia de git? */
 export const FROM_NPM = !IS_BINARY && KIT_DIR.split(sep).includes("node_modules");
-/** Dónde instala el ejecutable install.sh (y donde se actualiza solo). */
+/** Dónde instala el ejecutable install.sh (y donde se actualiza solo), y donde el panel instala GitHub CLI si falta. */
 export const BIN_DIR = join(HOME_DIR, "bin");
+// El runner encuentra ahí `backcode` y `gh` aunque tu PATH (o el del servicio) no lo tenga.
+if (!(process.env.PATH ?? "").split(":").includes(BIN_DIR)) process.env.PATH = `${BIN_DIR}:${process.env.PATH ?? "/usr/bin:/bin"}`;
 
 /**
  * Cómo lanzar este mismo runner con otros argumentos (un runner por proyecto, relanzarse, el servicio): el ejecutable
