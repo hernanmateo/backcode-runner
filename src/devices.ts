@@ -121,3 +121,24 @@ async function androidDevices(): Promise<Device[]> {
   }
   return devices;
 }
+
+/**
+ * Deja el iPhone listo para instalar: monta la imagen de desarrollador (Developer Disk Image), sin la que Xcode no lo
+ * acepta como destino («Timed out waiting for all destinations…»). Solo se puede con el iPhone desbloqueado: si está
+ * bloqueado, se reintenta durante `waitMs` (para que dé tiempo a desbloquearlo) y luego se avisa. Devuelve null si está
+ * listo, "locked" si siguió bloqueado o el error de devicectl.
+ */
+export async function prepareIosDevice(udid: string, waitMs = 120_000): Promise<null | "locked" | string> {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const res = await exec("xcrun", ["devicectl", "device", "info", "ddiServices", "--device", udid], { timeout: 90_000 }).then(
+      () => null,
+      (err: { stdout?: string; stderr?: string; message?: string }) => `${err.stdout ?? ""}\n${err.stderr ?? ""}\n${err.message ?? ""}`,
+    );
+    if (res === null) return null;
+    // Bloqueado o dormido (por wifi, con la pantalla apagada deja de responder): se espera a que lo desbloquees.
+    if (!/DeviceLocked|device is locked|acquire assertion|disconnected immediately|not connected|tunnel|timed out/i.test(res)) return res.replace(/\s+\n/g, "\n").trim().slice(-800);
+    if (Date.now() > until) return "locked";
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+}

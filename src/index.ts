@@ -743,7 +743,7 @@ async function main(): Promise<void> {
         const id = pendingActions.shift()!;
         const action = await store.claimAction(id);
         if (!action) continue;
-        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
+        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
         const release = awake.hold();
         const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action)
