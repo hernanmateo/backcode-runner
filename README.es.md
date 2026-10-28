@@ -194,11 +194,11 @@ if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "$
 Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
 build y borra lo que genera, p. ej. `ios/`).
 
-**Publicar rápido (sin prueba).** Junto a Publicar, la app tiene **Publicar rápido (sin prueba)** (siempre pide confirmación):
-se salta la prueba de arranque (la del runner y la del script, que recibe `BACKCODE_SMOKE_DONE=1`) y mantiene todo lo demás
-(checks en verde, archivos sin commitear, cambios nativos del script). Sirve también en un runner sin Xcode. Úsalo solo si
-sabes que el cambio no puede romper el arranque: si lo rompe, solo lo arregla una build nueva. En el historial queda marcada
-como «sin prueba».
+**Publicar sin comprobaciones (peligroso).** Junto a Publicar, la app tiene **Publicar sin comprobaciones** (siempre pide
+confirmación): se salta la prueba de arranque (la del runner y la del script, que recibe `BACKCODE_SMOKE_DONE=1`) y, si el
+script `ota:publish` admite `--allow-native` (su guarda de cambios nativos), se lo pasa. Mantiene todo lo demás (checks en
+verde, archivos sin commitear). Sirve también en un runner sin Xcode. Úsalo solo si sabes que el cambio es solo JS y no
+puede romper el arranque: si lo rompe, solo lo arregla una build nueva. En el historial queda marcada como «sin comprobaciones».
 
 ## Cambiar la ruta del repo, la rama base o los PR
 App → Proyecto → Conectar → **Configurar de nuevo** → cambia lo que quieras → "Ya tengo una llave en este ordenador" → **Copiar
