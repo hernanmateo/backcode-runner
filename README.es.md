@@ -65,9 +65,8 @@ Desde el panel:
   segundo plano sin terminal, se reinicia si se cae y se actualiza solo. Para volver al panel: `npx backcode`. Desactivarlo
   no para nada: lo que está en marcha sigue hasta que cierres sesión, y la próxima vez ya no arranca solo (abrir la app de Mac
   tampoco lo vuelve a activar; solo abre el panel).
-- **Tareas directas de los admins (decretazos)**: el mismo interruptor que «Los admins pueden ejecutar tareas en mi Claude Code»
-  del perfil de la app, sincronizado en los dos sentidos (los runners leen tu perfil; al cambiarlo aquí, lo guarda en tu perfil el
-  primer runner conectado: es lo único del perfil que un runner puede tocar).
+- **Tareas directas de los admins (decretazos)**: muestra si los admins pueden poner tareas en tu runner sin preguntarte (lo leen
+  los runners de tu perfil, en vivo). Solo se ve: se cambia en la app, Perfil › Decretazos (un runner no toca tu perfil).
 - **Encendido / Apagado** (arriba, junto al modo): el interruptor general. Apagado para todos los runners (una tarea a medias
   vuelve a la cola) y ninguno arranca, ni al reiniciar el panel ni con proyectos nuevos, hasta volver a encenderlo. Se recuerda.
 

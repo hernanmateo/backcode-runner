@@ -51,16 +51,15 @@
     </section>
 
     <section id="assign-section" hidden>
-      <div class="card service">
-        <label class="switch">
-          <input id="assign" type="checkbox">
-          <span class="slider" aria-hidden="true"></span>
-          <span class="label">
-            <strong data-s="assignTitle"></strong>
-            <span id="assign-body" class="muted"></span>
-          </span>
-        </label>
-      </div>
+      <ul class="checks">
+        <li>
+          <span id="assign-dot" class="dot"></span>
+          <div class="detail">
+            <div><strong data-s="assignTitle"></strong> · <span id="assign-state"></span></div>
+            <div id="assign-body" class="muted small"></div>
+          </div>
+        </li>
+      </ul>
     </section>
 
     <section id="devices-section">
