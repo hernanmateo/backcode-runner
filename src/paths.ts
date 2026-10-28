@@ -27,6 +27,10 @@ export interface PanelState {
   stopped?: string[];
   /** Apagado con el botón general del panel: ningún runner arranca hasta volver a encenderlo. */
   off?: boolean;
+  /** «Decretazos» de tu perfil en la app (lo apuntan los runners): si los admins pueden poner tareas en tu runner. */
+  allowAdminAssign?: boolean;
+  /** Cambio pedido desde el panel: el primer runner conectado lo guarda en tu perfil y lo borra de aquí. */
+  wantAdminAssign?: boolean;
   /** «Arrancar al iniciar sesión» desactivado a mano: la app de Mac ya no lo vuelve a activar al abrirse. */
   autostartOff?: boolean;
   /** Idioma elegido en el panel. */

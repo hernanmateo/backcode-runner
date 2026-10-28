@@ -633,6 +633,15 @@ async function main(): Promise<void> {
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
+  // Interruptor de «decretazos» del panel: lo guarda en tu perfil el primer runner que lo vea (el panel no tiene sesión).
+  const assignTimer = setInterval(() => {
+    const want = readState().wantAdminAssign;
+    if (typeof want !== "boolean") return;
+    void store.setAllowAdminAssign(want).then(
+      () => updateState({ wantAdminAssign: undefined, allowAdminAssign: want }),
+      (err: Error) => console.warn(`[backcode] ${err.message}`),
+    );
+  }, 3_000);
   // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
   let devicesKey = "";
   const watchDevices = async () => {
@@ -865,6 +874,7 @@ async function main(): Promise<void> {
     refineAbort.abort();
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    clearInterval(assignTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     stopQuotaRequests();
@@ -895,6 +905,7 @@ async function main(): Promise<void> {
     clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    clearInterval(assignTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     clearInterval(updateTimer);
