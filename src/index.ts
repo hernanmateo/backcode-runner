@@ -614,7 +614,7 @@ async function main(): Promise<void> {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const expoApp = await findExpoApp(cfg.repoPath, head).catch(() => null);
   // Despliegues que el repo declara (scripts backcode:deploy:*): web, api, scripts… cada uno con su botón en la app.
-  const deploys = (await findDeployTargets(cfg.repoPath, head).catch(() => [])).map(({ id, name, dir }) => ({ id, name, dir }));
+  const deploys = (await findDeployTargets(cfg.repoPath, head).catch(() => [])).map(({ id, name, dir, env }) => ({ id, name, dir, ...(env ? { env } : {}) }));
   store.capabilities = {
     pr: prHost?.kind ?? null,
     expo: !!expoApp,

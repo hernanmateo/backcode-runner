@@ -156,7 +156,8 @@ a.button.primary { background: var(--primary); color: var(--primary-text); }
 button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); border: 1px solid var(--border); font-weight: 400; }
 
 /* Ventana nativa de la app de Mac: sitio para los botones de la ventana */
-.native .top { padding-top: 44px; }
+/* En la app de Mac la cabecera hace de barra de título (se arrastra): sin seleccionar su texto al tirar de ella. */
+.native .top { padding-top: 44px; -webkit-user-select: none; user-select: none; }
 
 /* Cuentas */
 .section-sub { margin: -2px 4px 10px; font-size: 13px; line-height: 18px; }

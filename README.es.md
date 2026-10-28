@@ -194,6 +194,13 @@ if [ -n "${BACKCODE_SMOKE_CLI:-}" ]; then node "$BACKCODE_SMOKE_CLI" . --from "$
 Si no lo usa, el runner hace la prueba antes de llamar al script. La prueba deja la copia como estaba (deshace lo que toca la
 build y borra lo que genera, p. ej. `ios/`).
 
+**Si falla por CocoaPods.** La prueba genera `ios/` (`expo prebuild`) e instala los pods ella misma, paso a paso: si
+`pod install` falla, el error lo dice con su causa (red, `pod` que no está en el PATH del runner, locale sin UTF-8, una
+dependencia que no resuelve…) en vez del «The sandbox is not in sync with the Podfile.lock» y el código 65 con que moriría
+xcodebuild. Ese fallo no es del código JS: arréglalo en el Mac del runner (p. ej. `brew install cocoapods`) y vuelve a
+publicar. Si lo que no compila es el código, el error trae las líneas `error:` de xcodebuild y guarda una copia del log
+completo (`smoke-xcodebuild-*.log`, junto a las capturas en la carpeta de copias del runner).
+
 **Publicar sin comprobaciones (peligroso).** Junto a Publicar, la app tiene **Publicar sin comprobaciones** (siempre pide
 confirmación): se salta la prueba de arranque (la del runner y la del script, que recibe `BACKCODE_SMOKE_DONE=1`) y, si el
 script `ota:publish` admite `--allow-native` (su guarda de cambios nativos), se lo pasa. Mantiene todo lo demás (checks en
@@ -357,6 +364,18 @@ lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `
 (solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 detectan al arrancar: tras añadir uno, reinicia el runner.
+
+Si el script llama a `firebase` (directamente, vía `npm run <otro>` o en un `.sh` del repo), el runner deduce sin ejecutarlo a
+qué va: proyecto (`-P`/`--project`, alias de `.firebaserc` o su `default`) y canal de Hosting (`hosting:channel:deploy <canal>`
+o el sitio principal con `firebase deploy`). La app lo enseña junto al botón, en la confirmación y en el historial, p. ej.
+«Firebase Hosting · proyecto derbi-admin-staging · canal staging (preview)». Para un staging de Firebase basta con:
+
+```json
+"backcode:deploy:staging": "firebase hosting:channel:deploy staging -P staging --expires 7d --non-interactive"
+```
+
+(o `firebase deploy --only hosting -P <proyecto-staging>` si el staging es otro proyecto de Firebase). La sesión de Firebase es
+la de tu ordenador (`firebase login`): si falla por sesión, proyecto o CLI, la app lo explica encima del error.
 
 ## Mapa e icono del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato

@@ -22,7 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     buildMenu()
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
-    // El panel avisa de la vista compacta y de cuánto ocupa (window.webkit.messageHandlers.backcode).
+    // El panel avisa de la vista compacta y de cuánto ocupa, y de cuándo se arrastra la ventana desde su cabecera
+    // (window.webkit.messageHandlers.backcode).
     config.userContentController.add(self, name: "backcode")
     webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = self
@@ -168,9 +169,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
   @objc func reload() { webView.reload() }
 
-  /** Vista compacta: la ventana se ajusta al contenido (las filas de los proyectos); al salir, vuelve a su tamaño. */
+  /**
+   * Mensajes del panel. `drag`: se ha pulsado en su cabecera, que hace de barra de título (la ventana no tiene la suya:
+   * .fullSizeContentView y el título oculto), y la ventana sigue al ratón como cualquier otra. `compact`: vista compacta,
+   * la ventana se ajusta al contenido (las filas de los proyectos); al salir, vuelve a su tamaño.
+   */
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-    guard let body = message.body as? [String: Any], let compact = body["compact"] as? Bool else { return }
+    guard let body = message.body as? [String: Any] else { return }
+    if body["drag"] as? Bool == true {
+      // El mensaje llega con el botón aún pulsado: el evento en curso es ese mouseDown (o el arrastre que le sigue).
+      if let event = NSApp.currentEvent { window.performDrag(with: event) }
+      return
+    }
+    guard let compact = body["compact"] as? Bool else { return }
     var frame = window.frame
     let screen = window.screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
     if compact {

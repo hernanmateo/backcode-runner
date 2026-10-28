@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { promisify } from "node:util";
+import { type DeployEnvContext, type FirebaseDeployEnv, firebaseDeployEnv } from "./firebase-env.js";
 import type { PrHost } from "./hosts.js";
 import { t, type Key } from "./i18n.js";
 
@@ -240,6 +241,8 @@ export interface DeployTarget {
   name: string;
   dir: string;
   pm: "npm" | "pnpm" | "yarn" | "bun";
+  /** A qué proyecto y canal de Firebase apunta (leído del script, sin ejecutarlo); la app lo enseña antes de desplegar. */
+  env?: FirebaseDeployEnv;
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
@@ -247,23 +250,52 @@ const DEPLOY_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 export async function findDeployTargets(repoPath: string, commit: string): Promise<DeployTarget[]> {
   const files = (await git(repoPath, ["ls-tree", "-r", "--name-only", commit])).split("\n").filter((f) => !/(^|\/)node_modules\//.test(f));
+  const show = (path: string) => git(repoPath, ["show", `${commit}:${path}`]);
   const out: DeployTarget[] = [];
   for (const pkg of files.filter((f) => /(^|\/)package\.json$/.test(f))) {
     const dir = pkg.includes("/") ? pkg.slice(0, pkg.lastIndexOf("/")) : "";
     let scripts: Record<string, unknown> = {};
     try {
-      scripts = (JSON.parse(await git(repoPath, ["show", `${commit}:${pkg}`])) as { scripts?: Record<string, unknown> }).scripts ?? {};
+      scripts = (JSON.parse(await show(pkg)) as { scripts?: Record<string, unknown> }).scripts ?? {};
     } catch {
       continue;
     }
     const has = (f: string) => files.includes(dir ? `${dir}/${f}` : f) || files.includes(f);
     const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
-    for (const key of Object.keys(scripts)) {
+    const strScripts = Object.fromEntries(Object.entries(scripts).filter((e): e is [string, string] => typeof e[1] === "string"));
+    const ctx: DeployEnvContext = {
+      scripts: strScripts,
+      firebaserc: await firebaserc(dir, files, show),
+      // Solo ficheros versionados dentro del repo (la ruta se resuelve desde la carpeta del package.json).
+      readFile: async (p) => {
+        const path = normalize(dir ? `${dir}/${p}` : p);
+        return !path.startsWith("..") && files.includes(path) ? show(path).catch(() => null) : null;
+      },
+    };
+    for (const key of Object.keys(strScripts)) {
       const name = key.startsWith(DEPLOY_PREFIX) ? key.slice(DEPLOY_PREFIX.length) : "";
-      if (DEPLOY_NAME_RE.test(name) && typeof scripts[key] === "string") out.push({ id: `${dir}#${name}`, name, dir, pm });
+      if (!DEPLOY_NAME_RE.test(name)) continue;
+      const env = await firebaseDeployEnv(strScripts[key], ctx).catch(() => null);
+      out.push({ id: `${dir}#${name}`, name, dir, pm, ...(env ? { env } : {}) });
     }
   }
   return out.slice(0, 20);
+}
+
+/** Alias de proyectos (`projects`) del .firebaserc más cercano a la carpeta (ella misma o cualquier carpeta por encima). */
+async function firebaserc(dir: string, files: string[], show: (path: string) => Promise<string>): Promise<Record<string, string> | null> {
+  const parts = dir ? dir.split("/") : [];
+  for (let i = parts.length; i >= 0; i--) {
+    const path = [...parts.slice(0, i), ".firebaserc"].join("/");
+    if (!files.includes(path)) continue;
+    try {
+      const projects = (JSON.parse(await show(path)) as { projects?: Record<string, unknown> }).projects ?? {};
+      return Object.fromEntries(Object.entries(projects).filter((e): e is [string, string] => typeof e[1] === "string"));
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** Excluye una ruta de git en el repo (info/exclude, compartido por los worktrees) sin tocar su .gitignore. */
