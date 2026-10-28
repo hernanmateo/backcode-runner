@@ -176,6 +176,8 @@ tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica
 tiene arreglo por OTA (el móvil no llega a descargar el siguiente). Requisitos: Mac con Xcode, y que la app compile en tu
 máquina (sus `.env` y ficheros de Firebase locales, como `GoogleService-Info.plist`, se copian solos). La primera vez por
 proyecto tarda ~10 min (compilación nativa); después, unos minutos.
+El runner encuentra `bun`, `pnpm` y Volta en sus carpetas de instalación (`~/.bun/bin`, `~/Library/pnpm`, `~/.volta/bin`)
+aunque solo estén en el PATH de tu `.zshrc`: abierto desde la app de Mac o como servicio, no hereda el de tu terminal.
 
 **Primero lo rápido.** Antes de compilar se mira si la copia a publicar tiene archivos sin commitear: si los hay, falla al
 momento diciendo cuáles, y la app ofrece **Commit y publicar** (los commitea en la rama base, sin forzar, y publica ese commit;
