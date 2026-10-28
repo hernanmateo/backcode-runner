@@ -23,7 +23,7 @@ import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
-import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type ThreadMessage } from "./store.js";
+import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
 
@@ -247,13 +247,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   }
 
   // --- Lo que pide la app sobre la tarea en curso: parar o abrir/cerrar Remote Control.
-  const stopAt = (feature as { stopRequest?: { toMillis(): number } }).stopRequest?.toMillis() ?? 0;
+  const control = await store.control(id).catch(() => ({}) as LiveControl);
+  const stopAt = control.stopRequest?.toMillis() ?? 0;
   let stopRequested = false;
-  let remoteWanted = feature.remote?.state === "requested";
+  let remoteWanted = control.remote?.state === "requested";
   // Marca de una vuelta anterior que no terminó bien (el runner se cerró con Remote Control abierto).
-  if (feature.remote && !remoteWanted) await store.setRemote(id, null).catch(() => undefined);
+  if (control.remote && !remoteWanted && control.remote.state !== "failed") await store.setRemote(id, null).catch(() => undefined);
   let remoteSession: RemoteSession | null = null;
-  const unwatchFeature = store.watchFeature(id, (f) => {
+  const unwatchFeature = store.watchControl(id, (f) => {
     if (!stopRequested && (f.stopRequest?.toMillis() ?? 0) > stopAt) {
       stopRequested = true;
       void store.event(id, "say", t("run.stopRequested"));
@@ -273,6 +274,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
   /** Una fase con el SDK: el prompt y, después, lo que la persona vaya escribiendo, hasta que Claude termina. */
   async function runPhase(prompt: string): Promise<void> {
+    // Parada antes de empezar (p. ej. mientras se preparaba el worktree): no se arranca.
+    if (stopRequested) return;
     inputQueue = [];
     inputOpen = true;
     flushLive();
@@ -385,7 +388,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     remoteWanted = false;
     const bin = installedClaude();
     if (!bin || !sessionId || !REMOTE_PLATFORMS.includes(process.platform)) {
-      await store.setRemote(id, null).catch(() => undefined);
+      await store.setRemote(id, { state: "failed", error: t("remote.unavailable") }).catch(() => undefined);
       await store.event(id, "error", t("remote.unavailable"));
       return false;
     }
@@ -395,8 +398,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       remoteSession = await startRemoteControl({ bin, cwd: wt.path, sessionId, name: `${project.name} · ${feature.title}`.slice(0, 80) });
     } catch (err) {
       remoteSession = null;
-      await store.setRemote(id, null).catch(() => undefined);
-      await store.event(id, "error", t("remote.failed", { error: (err as Error).message.slice(0, 600) }));
+      const error = t("remote.failed", { error: (err as Error).message.slice(0, 400) });
+      await store.setRemote(id, { state: "failed", error }).catch(() => undefined);
+      await store.event(id, "error", error);
       armTimeout();
       return false;
     }
@@ -433,7 +437,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const legacy = !fromUser.some((m) => m.read);
     const replies = legacy ? thread.slice(lastClaude + 1).filter((m) => m.author === "user") : fromUser.filter((m) => !m.read);
     const seen = legacy ? fromUser.filter((m) => !replies.includes(m)) : [];
-    for (const m of replies) if (m.id) handled.add(m.id);
+    // Todo lo ya existente cuenta como entregado: lo de antes ya lo recibió en vueltas anteriores y lo nuevo va en el prompt.
+    for (const m of [...replies, ...seen]) if (m.id) handled.add(m.id);
     const delivered = [...replies, ...seen].map((m) => m.id).filter((m): m is string => !!m);
     if (delivered.length) void store.markRead(id, delivered);
     // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
@@ -543,7 +548,9 @@ async function drain(): Promise<void> {
         if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
           await store.requeue(id);
         } else {
-          await store.finish(id, status, result, sessionId);
+          // Volver a la cola con mensajes sin leer necesita las reglas nuevas: sin ellas, queda esperando (no fallida).
+          const fallback = result.prUrl ? "done" : "waiting";
+          await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
           await store.event(id, status, result.prUrl ?? result.error ?? "");
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);

@@ -8,15 +8,22 @@
 import AppKit
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
   var window: NSWindow!
   var webView: WKWebView!
   let spinner = NSProgressIndicator()
+  /** Tamaño de la ventana en la vista completa, para volver a él al salir de la compacta. */
+  var fullFrame: NSRect?
+  /** Mínimos: en compacto, unas filas; en completo, lo justo para que el panel no se apriete. */
+  static let compactMin = NSSize(width: 340, height: 150)
+  static let fullMin = NSSize(width: 560, height: 620)
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     buildMenu()
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
+    // El panel avisa de la vista compacta y de cuánto ocupa (window.webkit.messageHandlers.backcode).
+    config.userContentController.add(self, name: "backcode")
     webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = self
     webView.uiDelegate = self
@@ -26,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     window.title = "Backcode Runner"
     window.titleVisibility = .hidden // el panel ya lleva su cabecera
     window.titlebarAppearsTransparent = true
-    window.minSize = NSSize(width: 340, height: 220) // en vista compacta cabe en una ventana pequeña
+    window.minSize = Self.fullMin // en compacto baja a compactMin (lo pide el panel)
     window.backgroundColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(red: 0.12, green: 0.118, blue: 0.114, alpha: 1) : NSColor(red: 0.961, green: 0.949, blue: 0.918, alpha: 1) }
     window.contentView = webView
     window.setFrameAutosaveName("BackcodeRunnerMain")
@@ -160,6 +167,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   }
 
   @objc func reload() { webView.reload() }
+
+  /** Vista compacta: la ventana se ajusta al contenido (las filas de los proyectos); al salir, vuelve a su tamaño. */
+  func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+    guard let body = message.body as? [String: Any], let compact = body["compact"] as? Bool else { return }
+    var frame = window.frame
+    let screen = window.screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    if compact {
+      guard let height = body["height"] as? Double, height > 0 else { return }
+      if fullFrame == nil, frame.height > CGFloat(height) + 40 { fullFrame = frame }
+      window.minSize = Self.compactMin
+      let width = min(max(frame.width, 380), 520)
+      let newHeight = min(max(CGFloat(height), Self.compactMin.height), screen.height - 40)
+      frame.origin.y += frame.height - newHeight // se queda arriba, donde estaba
+      frame.size = NSSize(width: width, height: newHeight)
+      window.setFrame(frame, display: true, animate: true)
+    } else {
+      // Completa: el tamaño de antes o, si se abrió ya en compacto, uno cómodo; nunca por debajo del mínimo.
+      window.minSize = Self.fullMin
+      var target = fullFrame ?? NSRect(x: frame.minX, y: frame.maxY - 920, width: 860, height: 920)
+      fullFrame = nil
+      target.size.width = min(max(target.width, Self.fullMin.width), screen.width - 40)
+      target.size.height = min(max(target.height, Self.fullMin.height), screen.height - 40)
+      target.origin.y = min(max(frame.maxY - target.height, screen.minY + 20), screen.maxY - target.height) // arriba, donde estaba
+      target.origin.x = min(max(target.minX, screen.minX + 20), screen.maxX - target.width - 20)
+      window.setFrame(target, display: true, animate: true)
+    }
+  }
 }
 
 let app = NSApplication.shared
