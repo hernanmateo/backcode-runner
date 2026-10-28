@@ -150,7 +150,9 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       // se copia a la copia limpia y se devuelve.
       copyLastPublish(repoAppDir, dir);
       // El script del repo puede tener su propia prueba de arranque: ya está hecha (arriba) con este mismo commit.
-      out = await exec([app.pm, ...scriptArgs.args], dir, { env: { BACKCODE_SMOKE_DONE: "1" } });
+      out = await exec([app.pm, ...scriptArgs.args], dir, { env: { BACKCODE_SMOKE_DONE: "1" } }).catch(async (err: Error) => {
+        throw new Error(`${err.message}${await publishedOffBase(cfg, repoAppDir, commit)}`);
+      });
       copyLastPublish(dir, repoAppDir);
     } else {
       // Siempre al 100 % y para todas las plataformas (sin despliegue gradual).
@@ -355,6 +357,23 @@ async function linkLocalFiles(repo: string, wt: string, paths: string[]): Promis
     mkdirSync(dirname(join(wt, p)), { recursive: true });
     symlinkSync(realpathSync(from), join(wt, p));
   }
+}
+
+/**
+ * Si la última publicación que recuerda el script del repo salió de un commit que no está en lo que se publica ahora (p. ej.
+ * se publicó a mano desde una rama sin mergear), publicar la rama base desharía esa versión: se explica en el error.
+ */
+async function publishedOffBase(cfg: RunnerConfig, appDir: string, commit: string): Promise<string> {
+  const dir = join(appDir, ".expo");
+  if (!existsSync(dir)) return "";
+  const notes: string[] = [];
+  for (const f of readdirSync(dir).filter((n) => n.startsWith("eoas-last-publish-"))) {
+    const sha = readFileSync(join(dir, f), "utf8").trim();
+    if (/^[0-9a-f]{40}$/.test(sha) && !(await isAncestor(cfg.repoPath, sha, commit).catch(() => true))) {
+      notes.push(t("act.publishedOffBase", { channel: f.slice("eoas-last-publish-".length), sha: sha.slice(0, 7), base: `${cfg.remote}/${cfg.baseBranch}` }));
+    }
+  }
+  return notes.length ? `\n\n${notes.join("\n")}` : "";
 }
 
 function copyLastPublish(fromAppDir: string, toAppDir: string): void {
