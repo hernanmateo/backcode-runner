@@ -24,7 +24,7 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
-import { connectStorageEmulator, getBytes, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
+import { connectStorageEmulator, getBytes, getMetadata, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
@@ -471,6 +471,11 @@ export class Store {
       iconPath: d.get("iconPath") as string | undefined,
       iconHint: d.get("iconHint") as string | undefined,
     };
+  }
+
+  /** MD5 (base64) del icono del repo ya subido, o undefined si no hay. */
+  async repoIconMd5(): Promise<string | undefined> {
+    return getMetadata(ref(this.storage, `projects/${this.cfg.projectId}/branding/repo`)).then((m) => m.md5Hash, () => undefined);
   }
 
   /** Sube el icono encontrado en el repo y lo enlaza en el mapa (el documento ya debe existir). */

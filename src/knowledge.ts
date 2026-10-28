@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, findRepoIcon, remoteHead, removeWorktree, SECRET_PATTERNS } from "./git.js";
@@ -30,12 +31,17 @@ export async function refreshKnowledge(cfg: RunnerConfig, store: Store, env: Rec
   await refreshIcon(cfg, store).catch((err) => console.warn(`[icon] ${(err as Error).message}`));
 }
 
-/** Icono del repo para la app (una vez; luego solo si no se encontró antes y cambia la rama base). */
+/**
+ * Icono del repo para la app: el de la rama base de ahora. Se vuelve a subir cuando cambia (antes solo se subía la
+ * primera vez y un icono nuevo en el repo no llegaba nunca a la app). Se compara con el MD5 del que hay en Storage.
+ */
 async function refreshIcon(cfg: RunnerConfig, store: Store): Promise<void> {
   const saved = await store.knowledgeState();
-  if (!saved.exists || saved.iconPath || !saved.commit) return;
-  const icon = await findRepoIcon(cfg.repoPath, saved.commit, saved.iconHint);
+  if (!saved.exists || !saved.commit) return;
+  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch).catch(() => saved.commit!);
+  const icon = await findRepoIcon(cfg.repoPath, commit, saved.iconHint);
   if (!icon) return;
+  if (saved.iconPath && (await store.repoIconMd5()) === createHash("md5").update(icon.data).digest("base64")) return;
   await store.saveRepoIcon(icon.data, icon.contentType);
   console.log(`[icon] ${t("kn.icon")}`);
 }
