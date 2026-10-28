@@ -103,9 +103,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       // Móviles de este ordenador para «Instalar en mi móvil» (los mismos que ven los runners).
       devices: panelDevices,
       devicePlatforms,
-      // «Decretazos» de tu perfil (null hasta que un runner lo lea) y si hay un cambio pendiente de guardar.
-      allowAdminAssign: readState().wantAdminAssign ?? readState().allowAdminAssign ?? null,
-      assignPending: typeof readState().wantAdminAssign === "boolean",
+      // «Decretazos» de tu perfil (null hasta que un runner lo lea). Solo se muestra: se cambia en la app.
+      allowAdminAssign: readState().allowAdminAssign ?? null,
       // Reiniciando: los runners que aún terminan algo (el panel se reinicia cuando acaban).
       waitingFor: leaving === "restart" ? [...supervisor.projects.values()].filter((p) => p.child).map((p) => p.name ?? p.id) : [],
       lang: lang(),
@@ -232,10 +231,6 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     "POST /api/restart": () => {
       setTimeout(() => void leave("restart"), 100);
       return { ok: true };
-    },
-    "POST /api/assign": (body) => {
-      updateState({ wantAdminAssign: !!body.allow });
-      return state();
     },
     "POST /api/power": async (body) => {
       // Sin esperar a que paren (una tarea puede tardar en soltar): el panel muestra cada runner «parando».
