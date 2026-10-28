@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { VERSION } from "./assets.js";
 import { KIT_DIR } from "./config.js";
@@ -24,7 +24,8 @@ export const RESTART_CODE = 75;
 export const EXIT_MARK = "@@backcode:exit ";
 /** Sale; si es un runner supervisado, avisando antes al supervisor (ver EXIT_MARK). */
 export function exitSupervised(code: number): never {
-  if (process.env.BACKCODE_SUPERVISED === "1") console.log(`${EXIT_MARK}${code}`);
+  // Escritura síncrona: con console.log (asíncrono en Bun) la línea no llegaba si el proceso se quedaba en process.exit.
+  if (process.env.BACKCODE_SUPERVISED === "1") writeSync(1, `${EXIT_MARK}${code}\n`);
   process.exit(code);
 }
 export const PACKAGE_NAME = "backcode";
