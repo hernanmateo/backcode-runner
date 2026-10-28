@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { t } from "./i18n.js";
+import { ghPath } from "./github.js";
 import { IS_BINARY } from "./paths.js";
 
 /** Instalador oficial de Claude Code (nativo, sin Node). */
@@ -147,8 +148,10 @@ export async function machineReport(): Promise<Check[]> {
   checks.push(loggedIn === false ? { id: "login", status: "warn", missing: "session", detail: t("pre.notLoggedIn"), fix: "claude" } : { id: "login", status: loggedIn ? "ok" : "warn", missing: loggedIn ? undefined : "session", detail: apiKey ? t("panel.check.apiKey") : loggedIn ? t("panel.check.loggedIn") : t("panel.check.loginUnknown"), fix: loggedIn ? undefined : "claude" });
   const git = /\d+\.\d+(\.\d+)?/.exec(await run("git", ["--version"], 10_000))?.[0];
   checks.push(git ? { id: "git", status: "ok", detail: `git ${git}` } : { id: "git", status: "fail", detail: t("panel.check.noGit"), fix: process.platform === "darwin" ? "xcode-select --install" : "sudo apt install git" });
-  const gh = /\d+\.\d+\.\d+/.exec(await run("gh", ["--version"], 10_000))?.[0];
-  const ghAuth = gh ? await exec("gh", ["auth", "status"], { timeout: 15_000 }).then(() => true, () => false) : false;
+  // El mismo gh que usa el runner (PATH, ~/.backcode/bin o Homebrew): el servicio no trae el PATH de tu terminal.
+  const ghBin = ghPath() ?? "gh";
+  const gh = /\d+\.\d+\.\d+/.exec(await run(ghBin, ["--version"], 10_000))?.[0];
+  const ghAuth = gh ? await exec(ghBin, ["auth", "status"], { timeout: 15_000 }).then(() => true, () => false) : false;
   checks.push(!gh ? { id: "gh", status: "warn", missing: "program", detail: t("panel.check.noGh"), fix: process.platform === "darwin" ? "brew install gh" : "https://cli.github.com" } : ghAuth ? { id: "gh", status: "ok", detail: `GitHub CLI ${gh}` } : { id: "gh", status: "warn", missing: "session", detail: t("panel.check.ghLogin"), fix: "gh auth login --hostname github.com --git-protocol https --web" });
   return checks;
 }

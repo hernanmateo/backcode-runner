@@ -55,8 +55,13 @@ export function updateState(patch: Partial<PanelState>): void {
 export const FROM_NPM = !IS_BINARY && KIT_DIR.split(sep).includes("node_modules");
 /** Dónde instala el ejecutable install.sh (y donde se actualiza solo), y donde el panel instala GitHub CLI si falta. */
 export const BIN_DIR = join(HOME_DIR, "bin");
-// El runner encuentra ahí `backcode` y `gh` aunque tu PATH (o el del servicio) no lo tenga.
-if (!(process.env.PATH ?? "").split(":").includes(BIN_DIR)) process.env.PATH = `${BIN_DIR}:${process.env.PATH ?? "/usr/bin:/bin"}`;
+// El runner encuentra `backcode`, `gh`, `claude`, `eas`… aunque su PATH no los tenga: abierto desde la app de Mac o como
+// servicio no hereda el de tu terminal. Se añaden ~/.backcode/bin, ~/.local/bin (Claude Code) y Homebrew.
+{
+  const current = (process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(":");
+  const extra = [BIN_DIR, join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"].filter((d) => !current.includes(d) && existsSync(d));
+  if (extra.length) process.env.PATH = [...extra, ...current].join(":");
+}
 
 /**
  * Cómo lanzar este mismo runner con otros argumentos (un runner por proyecto, relanzarse, el servicio): el ejecutable

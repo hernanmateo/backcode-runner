@@ -20,6 +20,25 @@ const token = (() => {
 if (new URLSearchParams(location.search).has("native")) document.documentElement.classList.add("native");
 
 let S = {}; // textos del idioma del runner
+// Vista compacta: solo una fila por proyecto (estado, nombre, qué hace e interruptor). Se recuerda en este navegador.
+let compact = (() => {
+  try {
+    return localStorage.getItem("backcode-compact") === "1";
+  } catch {
+    return false;
+  }
+})();
+function setCompact(on) {
+  compact = on;
+  try {
+    localStorage.setItem("backcode-compact", on ? "1" : "0");
+  } catch {
+    /* sin almacenamiento: solo esta vez */
+  }
+  document.documentElement.classList.toggle("compact", on);
+  render();
+}
+document.documentElement.classList.toggle("compact", compact);
 let state = null;
 let logsFor = null;
 let logsAfter = 0;
@@ -86,7 +105,20 @@ function renderStatic() {
   $("links").hidden = !links.length;
 }
 
+function renderCompactControls() {
+  const btn = $("compact");
+  btn.textContent = s(compact ? "viewFull" : "viewCompact");
+  btn.setAttribute("aria-pressed", String(compact));
+  // En compacto, si falta algo en el ordenador o hay versión nueva, un aviso que vuelve a la vista completa.
+  const missing = state.checks.filter((c) => c.status !== "ok").length;
+  const alert = $("compact-alert");
+  const text = missing ? s("compactMissing", { n: missing }) : state.restartNeeded || state.updateAvailable ? s("compactUpdate") : "";
+  alert.textContent = text;
+  alert.hidden = !compact || !text;
+}
+
 function render() {
+  renderCompactControls();
   $("mode").textContent = state.service.self ? s("mode.service") : s("mode.foreground");
   renderBanner();
   renderLegacy();
@@ -150,7 +182,7 @@ async function fix(c, action, button) {
 
 // Mientras se autoriza GitHub en el navegador, se comprueba cada pocos segundos hasta que la sesión existe.
 let githubTimer = null;
-function waitForGithub() {
+function waitForGithub(onDone) {
   clearInterval(githubTimer);
   let tries = 0;
   githubTimer = setInterval(async () => {
@@ -160,6 +192,7 @@ function waitForGithub() {
       clearInterval(githubTimer);
       delete fixResult.gh;
       renderChecks();
+      onDone?.();
     }
   }, 4000);
 }
@@ -239,6 +272,7 @@ function renderProjects() {
     box.append(h("div", { class: "card empty" }, s("noProjects")));
     return;
   }
+  if (compact) return renderCompactProjects(box);
   for (const p of state.projects) {
     const act = (action) => (e) => {
       e.target.disabled = true;
@@ -263,6 +297,25 @@ function renderProjects() {
       p.lastLine ? h("div", { class: "last", title: p.lastLine }, p.lastLine) : null,
       h("div", { class: "row" }, actions)));
   }
+}
+
+function renderCompactProjects(box) {
+  const list = h("ul", { class: "checks compact-list" });
+  for (const p of state.projects) {
+    const active = p.state === "running" || p.state === "retrying";
+    const toggle = h("input", { type: "checkbox", checked: active || p.state === "stopping", disabled: p.state === "stopping", onchange: (e) => {
+      e.target.disabled = true;
+      api("POST", `/api/projects/${encodeURIComponent(p.id)}/${e.target.checked ? "start" : "stop"}`).then(refresh, refresh);
+    } });
+    list.append(h("li", { class: "crow" },
+      h("span", { class: `dot ${p.state}` }),
+      h("div", { class: "detail" },
+        h("div", { class: "crow-head" }, h("strong", { class: "name" }, title(p)), h("span", { class: "state" }, s(`state.${p.state}`))),
+        h("div", { class: "last", title: p.lastLine ?? "" }, p.lastLine ?? "")),
+      h("button", { type: "button", class: "icon-button", title: s("logs"), "aria-label": s("logs"), onclick: () => { setCompact(false); openLogs(p); } }, "≡"),
+      h("label", { class: "switch small", title: s(active ? "stop" : "start") }, toggle, h("span", { class: "slider", "aria-hidden": "true" }))));
+  }
+  box.append(list);
 }
 
 function renderService() {
@@ -344,8 +397,9 @@ async function connect(fresh) {
       $("config").value = "";
       pastedText = "";
       $("config").hidden = $("connect-row").hidden = true;
-      showResult([h("div", { class: "success" }, s("connected", { name: r.projectId })), notes, ignored]);
       await refresh();
+      const connected = state.projects.find((p) => p.id === r.projectId);
+      showResult([h("div", { class: "success" }, s("connected", { name: connected ? title(connected) : r.projectId })), notes, ignored]);
     } else if (r.error) {
       showResult([h("div", { class: "error" }, r.error), notes]);
     } else if (r.need === "clone") {
@@ -424,20 +478,49 @@ async function loadAccounts() {
   renderAccounts();
 }
 
+// Cuentas con las que el runner abre PR y crea repos nuevos: una fila por servicio, como «Este ordenador».
+let ghDevice = null;
 function renderAccounts() {
   const box = $("accounts");
   if (!box || !state) return;
-  if (!accounts) return box.replaceChildren(h("p", { class: "muted" }, "…"));
+  if (!accounts) return box.replaceChildren(h("li", null, h("span", { class: "dot" }), h("span", { class: "detail muted" }, s("checking"))));
   const bb = accounts.bitbucket;
-  const lines = [
-    h("p", null, accounts.github ? s("ghLoggedIn", { login: accounts.github.login }) : s("ghNone")),
-    h("p", { class: bb?.problem ? "error" : undefined }, bb ? (bb.problem ? s("bbAccountBad", { problem: bb.problem }) : s("bbAccount", { email: bb.email })) : s("bbNone")),
-  ];
-  if (bbMessage) lines.push(h("p", { class: bbMessage.error ? "error" : "muted" }, bbMessage.text));
-  if (!bbForm) {
-    lines.push(h("div", { class: "row" }, h("button", { type: "button", onclick: () => { bbForm = true; bbMessage = null; renderAccounts(); } }, s(bb ? "bbChange" : "bbAdd"))));
-    return box.replaceChildren(...lines);
-  }
+  const gh = accounts.github;
+  const ghCheck = state.checks.find((c) => c.id === "gh");
+
+  const githubRow = h("li", null,
+    h("span", { class: `dot ${gh ? "ok" : "warn"}` }),
+    h("div", { class: "detail" },
+      h("div", { class: "account-head" },
+        h("div", null, h("strong", null, "GitHub"), " · ", h("span", { class: gh ? "muted" : "" }, gh ? s("accountAs", { who: gh.login }) : s("accountNone"))),
+        gh ? null : h("button", { type: "button", class: "primary", disabled: ghCheck?.missing === "program", onclick: async (e) => {
+          e.target.disabled = true;
+          const r = await api("POST", "/api/fix", { action: "login-gh" }).catch((err) => ({ output: err.message }));
+          if (r.device) {
+            ghDevice = r.device;
+            window.open(r.device.url, "_blank", "noopener");
+            waitForGithub(() => { ghDevice = null; loadAccounts(); });
+          }
+          renderAccounts();
+        } }, s("action.login-gh"))),
+      h("div", { class: "muted small" }, s("accountGithubUse")),
+      ghCheck?.missing === "program" && !gh ? h("div", { class: "muted small" }, s("accountGhMissing")) : null,
+      ghDevice && !gh ? deviceBox(ghDevice) : null));
+
+  const bitbucketRow = h("li", null,
+    h("span", { class: `dot ${bb && !bb.problem ? "ok" : bb?.problem ? "fail" : ""}` }),
+    h("div", { class: "detail" },
+      h("div", { class: "account-head" },
+        h("div", null, h("strong", null, "Bitbucket"), " · ", h("span", { class: bb && !bb.problem ? "muted" : "" }, bb ? (bb.problem ? s("bbAccountBad", { problem: bb.problem }) : s("accountAs", { who: bb.email })) : s("accountNoToken"))),
+        bbForm ? null : h("button", { type: "button", class: bb ? undefined : "primary", onclick: () => { bbForm = true; bbMessage = null; renderAccounts(); } }, s(bb ? "accountChange" : "accountAdd"))),
+      h("div", { class: "muted small" }, s("accountBitbucketUse")),
+      bbMessage ? h("div", { class: bbMessage.error ? "error" : "success" }, bbMessage.text) : null,
+      bbForm ? bitbucketForm(bb) : null));
+
+  box.replaceChildren(githubRow, bitbucketRow);
+}
+
+function bitbucketForm(bb) {
   const email = h("input", { type: "email", placeholder: s("bbEmail"), value: bb?.email || "", autocomplete: "off" });
   const tok = h("input", { type: "password", placeholder: s("bbToken"), autocomplete: "off" });
   const save = h("button", { type: "button", class: "primary", onclick: async () => {
@@ -454,14 +537,14 @@ function renderAccounts() {
     }
     await loadAccounts();
   } }, s("bbSave"));
-  box.replaceChildren(...lines,
+  return h("div", { class: "guide" },
     h("ol", { class: "steps" },
       h("li", null, h("a", { href: "https://id.atlassian.com/manage-profile/security/api-tokens", target: "_blank", rel: "noreferrer" }, s("bbStep1"))),
       h("li", null, s("bbStep2")),
-      h("li", null, s("bbStep3"), h("div", { class: "cmd" }, h("code", null, "read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket, read:pullrequest:bitbucket, write:pullrequest:bitbucket, admin:repository:bitbucket")), h("p", { class: "muted" }, s("bbCreateScope")))),
+      h("li", null, s("bbStep3"), h("div", { class: "cmd" }, h("code", null, "read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket, read:pullrequest:bitbucket, write:pullrequest:bitbucket, admin:repository:bitbucket"), copyButton("read:user:bitbucket, read:repository:bitbucket, write:repository:bitbucket, read:pullrequest:bitbucket, write:pullrequest:bitbucket, admin:repository:bitbucket")))),
     email,
     tok,
-    h("div", { class: "row" }, save, h("button", { type: "button", onclick: () => { bbForm = false; bbMessage = null; renderAccounts(); } }, s("close"))));
+    h("div", { class: "row" }, save, h("button", { type: "button", class: "link", onclick: () => { bbForm = false; bbMessage = null; renderAccounts(); } }, s("cancel"))));
 }
 
 // ── Servicio y reinicio ────────────────────────────────────────────────────────────────────────────────────────
@@ -529,6 +612,8 @@ if (!token) {
   $("connect").addEventListener("click", () => connect(true));
   $("logs-close").addEventListener("click", () => { logsFor = null; $("logs-section").hidden = true; });
   $("service").addEventListener("change", toggleService);
+  $("compact").addEventListener("click", () => setCompact(!compact));
+  $("compact-alert").addEventListener("click", () => setCompact(false));
   $("lang").addEventListener("change", (e) => api("POST", "/api/lang", { lang: e.target.value }).then(apply, () => undefined));
   refresh().then(loadAccounts);
   setInterval(refresh, 2000);

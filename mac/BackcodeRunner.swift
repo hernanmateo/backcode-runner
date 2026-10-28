@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     window.title = "Backcode Runner"
     window.titleVisibility = .hidden // el panel ya lleva su cabecera
     window.titlebarAppearsTransparent = true
-    window.minSize = NSSize(width: 480, height: 560)
+    window.minSize = NSSize(width: 340, height: 220) // en vista compacta cabe en una ventana pequeña
     window.backgroundColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(red: 0.12, green: 0.118, blue: 0.114, alpha: 1) : NSColor(red: 0.961, green: 0.949, blue: 0.918, alpha: 1) }
     window.contentView = webView
     window.setFrameAutosaveName("BackcodeRunnerMain")
