@@ -22,10 +22,16 @@ export const RESTART_CODE = 75;
  * ejecutable de Bun a veces no termina con process.exit y se queda dormido; el supervisor lo remata (supervisor.ts).
  */
 export const EXIT_MARK = "@@backcode:exit ";
+/**
+ * ¿Lo lanzó el supervisor (panel o `npm run all`)? Se lee al cargar el módulo: después, loadConfig retira del entorno
+ * todas las BACKCODE_* (secretos). Antes se leía tarde y siempre salía false: el runner, en vez de salir para que el
+ * supervisor lo relanzara, se relanzaba él mismo (mismo PID) y «Reiniciar el panel» esperaba una salida que no llegaba.
+ */
+export const SUPERVISED = process.env.BACKCODE_SUPERVISED === "1";
 /** Sale; si es un runner supervisado, avisando antes al supervisor (ver EXIT_MARK). */
 export function exitSupervised(code: number): never {
   // Escritura síncrona: con console.log (asíncrono en Bun) la línea no llegaba si el proceso se quedaba en process.exit.
-  if (process.env.BACKCODE_SUPERVISED === "1") writeSync(1, `${EXIT_MARK}${code}\n`);
+  if (SUPERVISED) writeSync(1, `${EXIT_MARK}${code}\n`);
   process.exit(code);
 }
 export const PACKAGE_NAME = "backcode";
