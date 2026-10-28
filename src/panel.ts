@@ -96,6 +96,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       restartNeeded: updateReady || onDisk !== VERSION,
       service: { supported: serviceSupported(), installed: serviceInstalled(), self: service },
       leaving,
+      // Reiniciando: los runners que aún terminan algo (el panel se reinicia cuando acaban).
+      waitingFor: leaving === "restart" ? [...supervisor.projects.values()].filter((p) => p.child).map((p) => p.name ?? p.id) : [],
       lang: lang(),
       langChosen: !!readState().panelLang,
       strings: panelStrings(),
@@ -295,7 +297,16 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   });
 
   supervisor.startAll();
-  supervisor.watchUpdates(() => void (updateReady = true));
+  // Versión nueva: los runners se reinician al quedar libres y, cuando lo han hecho todos, el panel también (unos segundos
+  // sin runners): así no hace falta darle a «Reiniciar el panel» ni esperar con él a que acabe una tarea larga.
+  supervisor.watchUpdates(() => {
+    updateReady = true;
+    const timer = setInterval(() => {
+      if (supervisor.pendingRestart.size || leaving) return;
+      clearInterval(timer);
+      void leave("restart");
+    }, 5_000);
+  });
   supervisor.watchNewProjects();
   const shutdown = () => void leave("quit");
   process.on("SIGTERM", shutdown);

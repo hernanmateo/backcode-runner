@@ -146,7 +146,10 @@ function render() {
 function renderBanner() {
   const el = $("banner");
   el.replaceChildren();
-  if (state.restartNeeded) {
+  if (state.leaving === "restart") {
+    // El panel sigue respondiendo mientras espera a los runners: que se vea a qué espera (antes parecía que no hacía nada).
+    el.append(h("span", null, state.waitingFor.length ? s("restartWaiting", { names: state.waitingFor.join(", ") }) : s("restarting")));
+  } else if (state.restartNeeded) {
     el.append(h("span", null, s("restartNeeded")), h("button", { type: "button", class: "primary", onclick: restartPanel }, s("restartPanel")));
   } else if (state.updateAvailable) {
     if (state.updateMode === "manual") {

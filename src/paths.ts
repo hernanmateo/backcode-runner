@@ -63,7 +63,22 @@ export const BIN_DIR = join(HOME_DIR, "bin");
   const bun = join(process.env.BUN_INSTALL ?? join(homedir(), ".bun"), "bin");
   const pnpm = process.env.PNPM_HOME ?? join(homedir(), "Library", "pnpm");
   const extra = [BIN_DIR, join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", bun, pnpm, join(homedir(), ".volta", "bin")].filter((d) => !current.includes(d) && existsSync(d));
-  if (extra.length) process.env.PATH = [...extra, ...current].join(":");
+  // Y el PATH de tu shell de login (rbenv con `pod`, nvm, bun…): lo que funciona en tu terminal funciona en el runner. Se
+  // pregunta una vez; los procesos hijos (un runner por proyecto) lo heredan.
+  const shell = process.platform === "win32" || process.env.BACKCODE_SHELL_PATH ? [] : loginShellPath();
+  process.env.BACKCODE_SHELL_PATH = "1";
+  const merged = [...new Set([...extra, ...current, ...shell.filter((d) => existsSync(d))])];
+  if (merged.length !== current.length) process.env.PATH = merged.join(":");
+}
+
+/** Las carpetas del PATH de tu shell de login (zsh -il), o [] si no responde en unos segundos. */
+function loginShellPath(): string[] {
+  try {
+    const out = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", 'printf "\n__BACKCODE_PATH__%s__BACKCODE_PATH__\n" "$PATH"'], { encoding: "utf8", timeout: 8_000, stdio: ["ignore", "pipe", "ignore"] });
+    return out.match(/__BACKCODE_PATH__(.*)__BACKCODE_PATH__/)?.[1]?.split(":").filter((d) => isAbsolute(d)) ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /**

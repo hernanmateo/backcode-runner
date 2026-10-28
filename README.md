@@ -312,7 +312,8 @@ task as <em>Stopped</em> and sends a push notification to the assignee and the a
 <summary><strong>What does the Mac app do exactly?</strong></summary>
 <br>
 <em>Backcode Runner.app</em> is the same executable (universal: Apple Silicon and Intel), signed and notarized by Apple. When you open
-it, it copies itself to <code>~/.backcode/bin/backcode</code> (so the signed app is never modified and updates go to that copy),
+it, it copies itself to <code>~/.backcode/bin/backcode</code> (the runner updates go to that copy; the app itself is replaced by
+the latest signed and notarized release, checked against <code>SHA256SUMS</code> and the same Apple team, next time you open it),
 installs the runner as a login item (a LaunchAgent in <code>~/Library/LaunchAgents</code>), opens the panel and quits. It has no
 Dock icon: the runner keeps working in the background. To remove it, turn off <em>Start at login</em> in the panel and delete
 the app and <code>~/.backcode</code>.

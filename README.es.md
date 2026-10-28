@@ -148,10 +148,14 @@ mensaje final). Antes de iniciar sesión (el panel, `backcode connect`, errores 
 `BACKCODE_LANG=es|en|ca` (en el entorno o en el `.env`) lo fija y manda sobre todo.
 
 ## Actualizaciones
-**Se actualiza solo.** Con el ejecutable (`install.sh`), cada 30 minutos mira la última versión en GitHub Releases, descarga la de
+**Se actualiza solo.** Con el ejecutable (`install.sh` o la app de Mac), cada 5 minutos mira la última versión en GitHub Releases, descarga la de
 tu plataforma, comprueba su SHA-256 contra `SHA256SUMS` y que arranca, y sustituye `~/.backcode/bin/backcode`. Con npm instalado
 como servicio (o en `~/.backcode/app`), lo mismo desde npm. En los dos casos, cada runner se reinicia con la versión nueva **al quedar libre** (sin tarea ni acción en marcha; no
-interrumpe nada ni coge trabajo nuevo mientras). El panel avisa cuando él también puede reiniciarse para ver la versión nueva.
+interrumpe nada ni coge trabajo nuevo mientras); cuando se han reiniciado todos, el panel también, solo (unos segundos). Si
+le das a **Reiniciar el panel**, dice a qué proyecto espera hasta que termine lo que está haciendo.
+**La app de Mac** (`Backcode Runner.app`, la ventana) también se pone al día: el servicio descarga el `Backcode-Runner.dmg` de
+la última versión, comprueba su SHA-256 y que la app está firmada y notarizada por el mismo equipo que la instalada, y la
+sustituye; la ventana abierta sigue con la suya hasta que la vuelvas a abrir.
 Con `npx` sin servicio, el panel y la terminal avisan de la versión nueva y basta con volver a lanzar `npx backcode@latest`.
 
 En una copia de git (desarrollo, o quien venía de `git clone`), cada 2 minutos mira si la rama tiene commits nuevos: si los hay y

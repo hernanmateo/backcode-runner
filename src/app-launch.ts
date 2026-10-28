@@ -9,8 +9,8 @@ import { panelAlive, panelUrl } from "./panel-client.js";
 import { BIN_DIR } from "./paths.js";
 import { installService, serviceInstalled } from "./service.js";
 
-// «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (la app,
-// firmada, no se toca nunca: las actualizaciones automáticas van a esa copia), deja el runner como servicio («Arrancar al
+// «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
+// actualizaciones del runner van a esa copia; la app la sustituye entera mac-app-update.ts), deja el runner como servicio («Arrancar al
 // iniciar sesión») y abre el panel. Si ya está todo, solo abre el panel.
 
 const exec = promisify(execFile);
