@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
+import { exitSupervised, RESTART_CODE, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { onSnapshot } from "firebase/firestore";
@@ -859,7 +859,7 @@ async function main(): Promise<void> {
     while (busy) await new Promise((r) => setTimeout(r, 200));
     await releaseLock();
     awake.stop();
-    process.exit(0);
+    exitSupervised(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -888,7 +888,7 @@ async function main(): Promise<void> {
     await releaseLock();
     awake.stop();
     console.log(`[backcode] ${t("update.restarting")}`);
-    if (process.env.BACKCODE_SUPERVISED === "1") process.exit(RESTART_CODE);
+    if (process.env.BACKCODE_SUPERVISED === "1") exitSupervised(RESTART_CODE);
     relaunch();
   };
   process.on("SIGUSR2", () => void restartWhenIdle());
