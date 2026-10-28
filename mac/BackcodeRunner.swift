@@ -8,9 +8,21 @@
 import AppKit
 import WebKit
 
+/**
+ * La WKWebView guarda el último clic: el aviso de arrastre del panel llega después, por mensaje, cuando NSApp.currentEvent
+ * ya no es ese mouseDown (y performDrag con otro evento no hace nada: la ventana no se movía).
+ */
+final class PanelWebView: WKWebView {
+  var lastMouseDown: NSEvent?
+  override func mouseDown(with event: NSEvent) {
+    lastMouseDown = event
+    super.mouseDown(with: event)
+  }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
   var window: NSWindow!
-  var webView: WKWebView!
+  var webView: PanelWebView!
   let spinner = NSProgressIndicator()
   /** Tamaño de la ventana en la vista completa, para volver a él al salir de la compacta. */
   var fullFrame: NSRect?
@@ -25,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // El panel avisa de la vista compacta y de cuánto ocupa, y de cuándo se arrastra la ventana desde su cabecera
     // (window.webkit.messageHandlers.backcode).
     config.userContentController.add(self, name: "backcode")
-    webView = WKWebView(frame: .zero, configuration: config)
+    webView = PanelWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = self
     webView.uiDelegate = self
     webView.setValue(false, forKey: "drawsBackground") // sin destello blanco antes de pintar (el panel pone su fondo)
@@ -177,8 +189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
     guard let body = message.body as? [String: Any] else { return }
     if body["drag"] as? Bool == true {
-      // El mensaje llega con el botón aún pulsado: el evento en curso es ese mouseDown (o el arrastre que le sigue).
-      if let event = NSApp.currentEvent { window.performDrag(with: event) }
+      // Con el botón aún pulsado, la ventana sigue al ratón desde el clic que guardó la WKWebView.
+      guard NSEvent.pressedMouseButtons & 1 == 1, let event = webView.lastMouseDown else { return }
+      window.performDrag(with: event)
       return
     }
     guard let compact = body["compact"] as? Bool else { return }
