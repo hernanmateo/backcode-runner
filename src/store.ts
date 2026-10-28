@@ -28,6 +28,7 @@ import { connectStorageEmulator, getBytes, getMetadata, getStorage, ref, uploadB
 import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
+import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
@@ -170,7 +171,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude.
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv }[]; ota: { channels: string[]; via: "eas" | "script" } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -215,6 +216,14 @@ export class Store {
   /** Tareas aceptadas por este usuario y pendientes de ejecutar en este proyecto. */
   myQueue() {
     return query(this.features(), where("status", "==", "execute"), where("assignee", "==", this.uid));
+  }
+
+  /**
+   * Móviles de este ordenador para «Instalar en mi móvil» (projects/{pid}/runners/{uid}/private/devices): solo los lee
+   * su dueño. Nombre, modelo, sistema y si está listo; nada más.
+   */
+  async saveDevices(devices: Device[]): Promise<void> {
+    await setDoc(doc(this.project(), "runners", this.uid, "private", "devices"), { devices: JSON.parse(JSON.stringify(devices.slice(0, 20))) as Device[], updatedAt: serverTimestamp() });
   }
 
   /** Garantiza un único runner por usuario y proyecto. Devuelve una función para liberar el lock. */

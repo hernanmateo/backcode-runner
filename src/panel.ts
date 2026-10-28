@@ -18,6 +18,7 @@ import { machineReport, type Check } from "./preflight.js";
 import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
+import { installPlatforms, listDevices, type Device, type DevicePlatform } from "./devices.js";
 
 // El panel: una página pequeña en http://127.0.0.1:47474 que sirve este mismo proceso, para conectar proyectos, ver y
 // controlar sus runners y activar «Arrancar al iniciar sesión» sin usar la terminal. Solo escucha en 127.0.0.1; la API
@@ -72,6 +73,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   void refreshChecks();
   let updateReady = false;
   let leaving: string | null = null;
+  let panelDevices: Device[] = [];
+  let devicePlatforms: DevicePlatform[] = [];
 
   const state = () => {
     supervisor.scan(); // nombres que acaban de apuntar los runners, proyectos conectados desde la terminal
@@ -97,6 +100,9 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       service: { supported: serviceSupported(), installed: serviceInstalled(), self: service },
       leaving,
       off: supervisor.off,
+      // Móviles de este ordenador para «Instalar en mi móvil» (los mismos que ven los runners).
+      devices: panelDevices,
+      devicePlatforms,
       // Reiniciando: los runners que aún terminan algo (el panel se reinicia cuando acaban).
       waitingFor: leaving === "restart" ? [...supervisor.projects.values()].filter((p) => p.child).map((p) => p.name ?? p.id) : [],
       lang: lang(),
@@ -322,6 +328,12 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     }, 5_000);
   });
   supervisor.watchNewProjects();
+  const lookDevices = async () => {
+    devicePlatforms = await installPlatforms().catch(() => []);
+    if (devicePlatforms.length) panelDevices = await listDevices().catch(() => panelDevices);
+  };
+  void lookDevices();
+  setInterval(() => void lookDevices(), 30_000).unref();
   const shutdown = () => void leave("quit");
   process.on("SIGTERM", shutdown);
   // Ctrl+C ya les llega a los runners (mismo grupo de procesos); aquí se espera a que terminen.

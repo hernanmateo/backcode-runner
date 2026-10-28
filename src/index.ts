@@ -16,6 +16,7 @@ import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
+import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
@@ -622,6 +623,8 @@ async function main(): Promise<void> {
     ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null,
     // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
+    // «Instalar en mi móvil»: app Expo y, en este ordenador, Xcode (iOS) o adb (Android).
+    install: expoApp ? { platforms: await installPlatforms().catch(() => []) } : null,
 
     refine: true,
     live: true,
@@ -630,6 +633,16 @@ async function main(): Promise<void> {
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
+  // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
+  let devicesKey = "";
+  const watchDevices = async () => {
+    const devices = await listDevices().catch(() => null);
+    const key = JSON.stringify(devices);
+    if (!devices || key === devicesKey) return;
+    await store.saveDevices(devices).then(() => (devicesKey = key), () => undefined);
+  };
+  const devicesTimer = store.capabilities.install?.platforms.length ? setInterval(() => void watchDevices(), 45_000) : undefined;
+  if (devicesTimer) void watchDevices();
   await store.recoverOrphans();
   await store.recoverActions().catch(() => undefined);
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
@@ -851,6 +864,7 @@ async function main(): Promise<void> {
     clearInterval(machineTimer);
     refineAbort.abort();
     clearInterval(knowledgeTimer);
+    clearInterval(devicesTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     stopQuotaRequests();
@@ -880,6 +894,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
+    clearInterval(devicesTimer);
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     clearInterval(updateTimer);

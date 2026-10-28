@@ -153,6 +153,7 @@ function render() {
   renderChecks();
   renderProjects();
   renderService();
+  renderDevices();
 }
 
 function renderBanner() {
@@ -533,6 +534,27 @@ async function loadAccounts() {
 
 // Cuentas con las que el runner abre PR y crea repos nuevos: una fila por servicio, como «Este ordenador».
 let ghDevice = null;
+// ── Móviles («Instalar en mi móvil» de la app) ─────────────────────────────────────────────────────────────────
+
+function renderDevices() {
+  const box = $("devices");
+  if (!box) return;
+  const devices = state.devices ?? [];
+  const rows = devices.map((d) => {
+    const ready = d.state === "ready";
+    const meta = [d.model !== d.name ? d.model : null, d.os, ready ? s(d.connection === "wired" ? "deviceCable" : "deviceWifi") : null].filter(Boolean).join(" · ");
+    return h("li", null,
+      h("span", { class: `dot ${ready ? "ok" : "warn"}` }),
+      h("div", { class: "detail" },
+        h("div", null, h("strong", null, d.name), meta ? h("span", { class: "muted" }, ` · ${meta}`) : null),
+        ready ? h("div", { class: "muted small" }, s("deviceReady")) : h("div", { class: "small" }, s(`deviceFix.${d.state}`))));
+  });
+  if (!devices.length) rows.push(h("li", null, h("span", { class: "dot" }), h("div", { class: "detail muted" }, s("devicesNone"))));
+  const help = (state.devicePlatforms ?? []).map((p) => h("li", null, h("span", { class: "dot" }), h("div", { class: "detail small muted", style: "white-space: pre-line" }, s(p === "ios" ? "devicePairIos" : "devicePairAndroid"))));
+  box.replaceChildren(...rows, ...help);
+  $("devices-section").hidden = !(state.devicePlatforms ?? []).length;
+}
+
 function renderAccounts() {
   const box = $("accounts");
   if (!box || !state) return;

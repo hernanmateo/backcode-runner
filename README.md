@@ -138,7 +138,9 @@ For every task you accept, the runner:
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
 It also handles what an admin asks for from the app, always with your own credentials: merge a PR once checks are green,
-publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing, or run a deploy script.
+publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing, **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
+cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready), or run a
+deploy script.
 
 ## Features
 
