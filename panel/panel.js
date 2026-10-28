@@ -154,6 +154,18 @@ function render() {
   renderProjects();
   renderService();
   renderDevices();
+  renderAssign();
+}
+
+// «Decretazos»: el mismo ajuste que «Los admins pueden ejecutar tareas en mi Claude Code» del perfil de la app.
+function renderAssign() {
+  const known = typeof state.allowAdminAssign === "boolean";
+  $("assign-section").hidden = !known;
+  if (!known) return;
+  const input = $("assign");
+  input.checked = state.allowAdminAssign;
+  input.disabled = !!leaving;
+  $("assign-body").textContent = state.assignPending ? s("assignSaving") : s(state.allowAdminAssign ? "assignOn" : "assignOff");
 }
 
 function renderBanner() {
@@ -690,6 +702,10 @@ if (!token) {
   $("logs-close").addEventListener("click", () => { logsFor = null; $("logs-section").hidden = true; });
   $("service").addEventListener("change", toggleService);
   $("power").addEventListener("click", () => void togglePower());
+  $("assign").addEventListener("change", async () => {
+    await api("POST", "/api/assign", { allow: $("assign").checked }).catch(() => undefined);
+    await refresh();
+  });
   $("compact").addEventListener("click", () => setCompact(!compact));
   $("compact-alert").addEventListener("click", () => setCompact(false));
   $("lang").addEventListener("change", (e) => api("POST", "/api/lang", { lang: e.target.value }).then(apply, () => undefined));

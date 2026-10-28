@@ -192,11 +192,19 @@ export class Store {
           setLang(d.get("lang"));
           // El panel usa el mismo idioma que la app (antes de que lo elijas en él).
           if (["es", "en", "ca"].includes(d.get("lang")) && readState().profileLang !== d.get("lang")) updateState({ profileLang: d.get("lang") });
+          // «Decretazos» del perfil, para el interruptor del panel (sin valor = activado, como en la app).
+          const allow = d.get("allowAdminAssign") !== false;
+          if (readState().allowAdminAssign !== allow) updateState({ allowAdminAssign: allow });
           done();
         },
         done,
       );
     });
+  }
+
+  /** Cambia en tu perfil si los admins pueden poner tareas directamente en tu runner (lo pide el panel). */
+  async setAllowAdminAssign(allow: boolean): Promise<void> {
+    await updateDoc(doc(this.db, "users", this.uid), { allowAdminAssign: allow, updatedAt: serverTimestamp() });
   }
 
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */

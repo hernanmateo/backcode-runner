@@ -221,6 +221,7 @@ Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.
 | **Connect a project** | Paste the configuration from the app. It validates your key, finds the repo on your computer by its remote (or clones it into `~/Backcode/<project>`, or lets you pick a folder) and asks for a Bitbucket token when needed. |
 | **Accounts** | See your `gh` sign-in and add, check or change your Bitbucket API token, used for every project and to create new repos from the app (add the `admin:repository:bitbucket` scope for that). |
 | **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. Turning it off stops nothing: what's running keeps going until you log out, and it just won't start at the next login (opening the Mac app won't turn it back on either). |
+| **Direct tasks from admins** | The same switch as "Admins can run tasks on my Claude Code without asking me" in your app profile, synced both ways (it's the only profile field a runner may change). |
 | **On / Off** | The main switch, at the top. Off stops every runner (a task in progress goes back to the queue) and none starts again (not after a panel restart, not for new projects) until you turn it back on. Remembered. |
 
 Coming from the old `git clone` setup? The panel finds those projects and offers to import them.
