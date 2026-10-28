@@ -157,3 +157,43 @@ button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); 
 
 /* Ventana nativa de la app de Mac: sitio para los botones de la ventana */
 .native .top { padding-top: 44px; }
+
+/* Cuentas */
+.section-sub { margin: -2px 4px 10px; font-size: 13px; line-height: 18px; }
+.account-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.account-head button { padding: 7px 12px; font-size: 14px; }
+
+/* Conectar un proyecto: dos pasos numerados, como la guía de la app */
+.connect { display: grid; gap: 16px; }
+.cstep { display: flex; gap: 12px; align-items: flex-start; }
+.cstep .num { flex: none; width: 28px; height: 28px; border-radius: 14px; background: var(--primary); color: var(--primary-text); display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+.cstep .cbody { flex: 1; min-width: 0; display: grid; gap: 4px; padding-top: 3px; }
+.cstep .cbody p { margin: 0; }
+.cstep .row { margin-top: 8px; }
+.cfoot { margin: 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.cfoot code { background: var(--code); padding: 2px 6px; border-radius: 6px; font-size: 12px; }
+/* Comandos largos (permisos de Bitbucket…) dentro de una guía: que bajen de línea en vez de salirse */
+.guide .cmd code { white-space: normal; word-break: break-word; }
+
+/* Vista compacta: solo las filas de los proyectos */
+.icon-button { padding: 5px 10px; font-size: 13px; background: var(--card); border: 1px solid var(--border); }
+.compact #checks-section, .compact #accounts-section, .compact #connect-section, .compact #service-section, .compact #logs-section,
+.compact #legacy, .compact #banner, .compact footer { display: none !important; }
+.compact .top { padding-top: 16px; }
+.compact.native .top { padding-top: 40px; }
+.compact .top .muted, .compact #mode { display: none; }
+.compact section { margin-top: 12px; }
+.compact .section-head { display: none; }
+.compact-alert { margin-top: 12px; width: 100%; text-align: left; background: var(--warning-bg); color: var(--warning-text); border-radius: 12px; font-size: 13px; }
+.compact-list > li.crow { align-items: center; padding: 10px 12px; }
+.crow .detail { display: grid; gap: 2px; }
+.crow-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.crow-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow-head .state { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.crow .last { font: 11px/16px Menlo, ui-monospace, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .dot { margin-top: 0; }
+.crow .icon-button { flex: none; padding: 3px 8px; }
+.switch.small .slider { width: 40px; height: 24px; }
+.switch.small .slider::after { width: 20px; height: 20px; }
+.switch.small input:checked + .slider::after { transform: translateX(16px); }
+@media (max-width: 420px) { main, .top, footer { padding: 0 10px; } }

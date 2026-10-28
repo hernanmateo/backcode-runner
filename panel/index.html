@@ -21,6 +21,7 @@
       <span id="version" class="muted"></span>
     </div>
     <span id="mode" class="pill"></span>
+    <button id="compact" type="button" class="icon-button" aria-pressed="false"></button>
     <select id="lang" aria-label="Idioma · Language · Idioma">
       <option value="es">Español</option>
       <option value="en">English</option>
@@ -31,6 +32,7 @@
   <main>
     <div id="banner" class="banner" hidden></div>
     <div id="legacy"></div>
+    <button id="compact-alert" type="button" class="compact-alert" hidden></button>
 
     <section id="checks-section">
       <div class="section-head">
@@ -51,9 +53,9 @@
       <div class="section-head">
         <h2 data-s="accounts"></h2>
       </div>
-      <div class="card">
-        <p class="muted" data-s="accountsBody"></p>
-        <div id="accounts"></div>
+      <p class="section-sub muted" data-s="accountsBody"></p>
+      <div>
+        <ul id="accounts" class="checks"></ul>
       </div>
     </section>
 
@@ -69,21 +71,33 @@
       <div class="section-head">
         <h2 data-s="connectTitle"></h2>
       </div>
-      <div class="card">
-        <ol class="steps">
-          <li data-s="connectStep1"></li>
-          <li data-s="connectStep2"></li>
-        </ol>
-        <div class="row">
-          <button id="paste" type="button" class="primary" data-s="pasteClipboard"></button>
-          <button id="show-text" type="button" class="link" data-s="pasteByHand"></button>
+      <p class="section-sub muted" data-s="connectSub"></p>
+      <div class="card connect">
+        <div class="cstep">
+          <span class="num">1</span>
+          <div class="cbody">
+            <strong data-s="connectStep1Title"></strong>
+            <p class="muted small" data-s="connectStep1"></p>
+          </div>
         </div>
-        <textarea id="config" rows="6" spellcheck="false" autocomplete="off" hidden></textarea>
-        <div class="row" id="connect-row" hidden>
-          <button id="connect" type="button" class="primary" data-s="connect"></button>
+        <div class="cstep">
+          <span class="num">2</span>
+          <div class="cbody">
+            <strong data-s="connectStep2Title"></strong>
+            <p class="muted small" data-s="connectStep2"></p>
+            <div class="row">
+              <button id="paste" type="button" class="primary" data-s="pasteClipboard"></button>
+              <button id="show-text" type="button" class="link" data-s="pasteByHand"></button>
+            </div>
+            <textarea id="config" rows="6" spellcheck="false" autocomplete="off" placeholder="# Backcode runner · …" hidden></textarea>
+            <div class="row" id="connect-row" hidden>
+              <button id="connect" type="button" class="primary" data-s="connect"></button>
+            </div>
+            <div id="ask" hidden></div>
+            <div id="connect-result" class="result" hidden></div>
+          </div>
         </div>
-        <div id="ask" hidden></div>
-        <div id="connect-result" class="result" hidden></div>
+        <p class="muted small cfoot"><span data-s="connectTerminal"></span> <code>backcode connect</code></p>
       </div>
     </section>
 
