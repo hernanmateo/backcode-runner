@@ -16,7 +16,7 @@ import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
-import { devInstalls, stopDevServer } from "./dev-server.js";
+import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { computePlan } from "./pending.js";
@@ -665,6 +665,8 @@ async function main(): Promise<void> {
   };
   const devicesTimer = store.capabilities.install?.platforms.length ? setInterval(() => void watchDevices(), 45_000) : undefined;
   if (devicesTimer) void watchDevices();
+  // Si antes de reiniciarse el runner servía la versión de desarrollo, vuelve a hacerlo.
+  if (store.capabilities.install?.platforms.length) void resumeDevServer(cfg, store);
   await store.recoverOrphans();
   await store.recoverActions().catch(() => undefined);
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);

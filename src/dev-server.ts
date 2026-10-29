@@ -59,6 +59,42 @@ export function recordDevInstall(projectId: string, deviceId: string, dev: boole
   }
 }
 
+/**
+ * Qué servía Metro (por proyecto), para volver a arrancarlo si el runner se reinicia (p. ej. al actualizarse justo
+ * después de instalar la versión de desarrollo, el móvil se quedaba con «Could not connect to development server»).
+ */
+const SERVING = join(HOME_DIR, "dev-serving.json");
+type Serving = { featureId?: string; since: number };
+function rememberServe(projectId: string, serving: Serving | null): void {
+  let all: Record<string, Serving> = {};
+  try {
+    all = JSON.parse(readFileSync(SERVING, "utf8")) as Record<string, Serving>;
+  } catch {
+    // aún no hay nada
+  }
+  if (serving) all[projectId] = serving;
+  else delete all[projectId];
+  try {
+    writeFileSync(SERVING, JSON.stringify(all, null, 2) + "\n");
+  } catch {
+    // sin permisos en ~/.backcode: no se recuerda
+  }
+}
+
+/** Al arrancar el runner: si Metro estaba sirviendo algo (y no hace más de 4 h), se vuelve a arrancar igual. */
+export async function resumeDevServer(cfg: RunnerConfig, store: Store): Promise<void> {
+  let serving: Serving | undefined;
+  try {
+    serving = (JSON.parse(readFileSync(SERVING, "utf8")) as Record<string, Serving>)[cfg.projectId];
+  } catch {
+    return;
+  }
+  if (!serving) return;
+  if (Date.now() - serving.since > MAX_MS) return rememberServe(cfg.projectId, null);
+  const { ok, result } = await devServe(cfg, store, serving.featureId);
+  if (!ok) console.warn(`[dev] ${result.error ?? ""}`);
+}
+
 export const devServerRunning = () => !!metro && metro.exitCode === null;
 
 export function stopDevServer(): void {
@@ -76,6 +112,7 @@ export function stopDevServer(): void {
 /** Para Metro y lo apunta (para la app). */
 export async function devStop(cfg: RunnerConfig, store: Store): Promise<{ ok: boolean; result: ActionResult }> {
   stopDevServer();
+  rememberServe(cfg.projectId, null);
   await store.saveDevState({ state: "stopped", source: "base", port: devPort(cfg.projectId) }).catch(() => undefined);
   return { ok: true, result: { log: t("dev.stopped") } };
 }
@@ -158,6 +195,7 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
     stopTimer = setTimeout(() => void devStop(cfg, store), MAX_MS);
     stopTimer.unref();
     await save({ state: "running", error: undefined });
+    rememberServe(cfg.projectId, { featureId, since: Date.now() });
     console.log(`[dev] ${t("dev.running", { port, what: featureId ? (state.title ?? featureId) : cfg.baseBranch })}`);
     return { ok: true, result: { sha, log: t("dev.running", { port, what: featureId ? (state.title ?? featureId) : cfg.baseBranch }) } };
   } catch (err) {

@@ -381,6 +381,11 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   El runner apunta en qué móviles instaló la versión de desarrollo de cada proyecto (`~/.backcode/dev-installs.json`; una
   normal encima la quita): sin ninguno, «Probar en mi móvil» lo explica y lleva a instalarla. Al instalarla, Expo arranca su
   propio servidor y no termina: el runner la da por hecha cuando la app ya está abierta en el móvil y arranca el suyo.
+  Si el runner se reinicia (p. ej. al actualizarse), vuelve a arrancar el servidor con lo que servía (`~/.backcode/dev-serving.json`).
+- **Más rápida a partir de la segunda vez**: la instalación usa una sola copia por proyecto que se conserva
+  (`~/.backcode/worktrees/<proyecto>/_install`, con sus dependencias, `ios/`/`android/`, Pods y la caché de Xcode): solo se mueve
+  al commit nuevo y se compila lo que ha cambiado. No se acumulan copias: hay una por proyecto (y otra, `_dev`, para el servidor
+  de desarrollo), y el runner borra las que lleven 14 días sin usarse.
 
 ### Builds para testers (TestFlight / Internal Testing)
 En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
