@@ -184,6 +184,15 @@ button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); 
 
 /* Vista compacta: solo las filas de los proyectos */
 .icon-button { padding: 5px 10px; font-size: 13px; background: var(--card); border: 1px solid var(--border); }
+/* Cabecera: modo, Encendido, Compacto e idioma con la misma altura (la pequeña), letra y redondeo. El idioma, como un
+   botón más con una flechita para desplegar. */
+.top .pill, .top .power, .top .icon-button, .top select { box-sizing: border-box; height: 26px; display: inline-flex; align-items: center; padding: 0 10px; font-size: 12px; font-weight: 600; line-height: 1; border-radius: 999px; border: 1px solid transparent; }
+.top .icon-button, .top select { background-color: var(--card); border-color: var(--border); }
+.top select { -webkit-appearance: none; appearance: none; cursor: pointer; color: var(--text); padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238A857C' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+.top select:hover { filter: brightness(0.97); }
+/* La flechita, dibujada con CSS (la CSP del panel no deja cargar imágenes data:). */
+.select-wrap { position: relative; display: inline-flex; }
+.select-wrap::after { content: ""; position: absolute; right: 11px; top: 50%; width: 5px; height: 5px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: translateY(-70%) rotate(45deg); pointer-events: none; }
 .compact #checks-section, .compact #accounts-section, .compact #connect-section, .compact #service-section, .compact #logs-section,
 .compact #legacy, .compact #banner, .compact footer { display: none !important; }
 .compact .top { padding-top: 16px; }
