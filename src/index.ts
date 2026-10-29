@@ -75,7 +75,8 @@ let busy = false;
 let restarting = false;
 let stopping = false;
 
-type RunOutcome = { status: "done" | "failed" | "waiting" | "execute"; result: FeatureResult; sessionId?: string };
+// "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
+type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
 
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const acceptanceError = await store.verifyAcceptance(id, feature);
@@ -207,7 +208,20 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     timeout = setTimeout(() => abort.abort(), cfg.timeoutMinutes * 60_000);
   };
   armTimeout();
-  const lease = setInterval(() => store.extendLease(id).catch(() => undefined), FEATURE_LEASE_MS / 3);
+  // Si la mueven a mano (p. ej. a «PR listo» mientras está en la app de Claude), las reglas ya no dejan renovarla: el
+  // runner la suelta en vez de quedarse esperando para siempre (y sin coger nada más ni poder actualizarse).
+  let released = false;
+  let onReleased = () => {};
+  const releasedNow = new Promise<void>((r) => (onReleased = r));
+  const lease = setInterval(() => {
+    store.extendLease(id).catch(async () => {
+      if (released || (await store.featureStatus(id).catch(() => "running")) === "running") return;
+      released = true;
+      stopRequested = true;
+      onReleased();
+      void liveQuery?.interrupt().catch(() => undefined);
+    });
+  }, FEATURE_LEASE_MS / 3);
 
   let result: FeatureResult = { branch: wt.branch, prUrl: previousPr };
   let sessionId = feature.sessionId;
@@ -421,10 +435,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         else if (block.type === "tool_use" && block.name) void store.event(id, "tool", describeTool(block.name, block.input ?? {}, wt.path));
       }
     });
-    await session.exited;
+    // Soltada a mano: la sesión de la app de Claude sigue abierta (es tuya); el runner solo deja de esperarla.
+    await Promise.race([session.exited, releasedNow]);
     unfollow();
     abort.signal.removeEventListener("abort", onAbort);
     remoteSession = null;
+    if (released) return true;
     await store.setRemote(id, null).catch(() => undefined);
     await store.event(id, "start", t("remote.back"));
     armTimeout();
@@ -485,6 +501,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     // El worktree se conserva: la conversación puede continuar (se limpia tras días sin uso).
   }
 
+  if (released) {
+    // El PR que abriera Claude desde la app de Claude en la rama de la tarea queda enlazado (si la dejaron en «PR listo»).
+    const pr = !previousPr && prHost ? (await prHost.listOpen().catch(() => [])).find((p) => p.branch === wt.branch) : undefined;
+    if (pr) await store.setPrUrl(id, pr.url).catch(() => undefined);
+    return { status: "released", result: { ...result, prUrl: pr?.url ?? previousPr }, sessionId };
+  }
   // Parada desde la app: queda esperando a que la persona escriba (con el PR que hubiera).
   if (stopRequested && !stopping) {
     const pr = prUrl ?? previousPr;
@@ -553,6 +575,10 @@ async function drain(): Promise<void> {
       const release = awake.hold();
       try {
         const { status, result, sessionId } = await runFeature(id, feature);
+        if (status === "released") {
+          console.log(`[released] ${id} ${result.prUrl ?? ""}`);
+          continue;
+        }
         if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
           await store.requeue(id);
         } else {
@@ -666,7 +692,10 @@ async function main(): Promise<void> {
   const refreshPrs = async () => {
     if (!prHost) return;
     try {
-      const open = (await prHost.listOpen()).filter((p) => !p.branch.startsWith("backcode/")).slice(0, 30);
+      const all = await prHost.listOpen();
+      // PR de una rama de tarea abierto fuera del runner (p. ej. por Claude en la app de Claude): se enlaza a su tarea.
+      for (const p of all.filter((x) => x.branch.startsWith("backcode/"))) await store.adoptPr(p.branch, p.url).catch(() => undefined);
+      const open = all.filter((p) => !p.branch.startsWith("backcode/")).slice(0, 30);
       const items = await Promise.all(open.map(async (p, i) => ({ ...p, ...(i < 15 ? { checks: (await prHost!.prChecks(p.url).catch(() => null))?.state } : {}) })));
       await store.savePrs({ items: items.map((x) => JSON.parse(JSON.stringify(x)) as typeof x) });
     } catch (err) {

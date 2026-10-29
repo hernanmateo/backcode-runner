@@ -292,6 +292,9 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   Claude Code, fuera del sandbox del runner**. La tarea sigue «Ejecutando» y su actividad se sigue viendo en Backcode. Al
   salir de la sesión o pulsar **Volver a Backcode**, el runner retoma la misma sesión en el sandbox: revisa lo hecho,
   publica los cambios (el mismo PR) o te pregunta.
+  Mientras está abierta allí, la tarjeta del tablero y la ficha dicen **En la app de Claude** (no avanza sola). Si la
+  terminas allí, muévela a mano (p. ej. a «PR listo»): en unos minutos el runner la suelta (sin cerrar tu sesión de Claude) y
+  enlaza el PR abierto de su rama.
 - **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Ahí
   trabajas con tus permisos normales, fuera del sandbox del runner.
 
@@ -354,6 +357,8 @@ El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de l
 - Un admin puede **mergearlos** (checks en verde, squash y borrar la rama) o **descartarlos** (cerrar el PR, conservando o
   borrando su rama). Lo hace **su** runner, así que solo se ofrece si el suyo está conectado y con GitHub/Bitbucket enlazado;
   si no, la app dice qué enlazar. El runner solo toca PR que estén abiertos en ese repo.
+- **PR de una tarea abierto fuera del runner** (p. ej. por Claude en la app de Claude, en la rama `backcode/…`): si la tarea
+  está en «PR listo» sin PR enlazado, el runner lo enlaza en esa misma pasada.
 - **Descartar una tarea con PR abierto** (ficha o tablero) también cierra el PR y borra su rama y su copia de trabajo.
 
 ### Pendiente de desplegar
