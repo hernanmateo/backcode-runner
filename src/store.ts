@@ -24,7 +24,7 @@ import {
   writeBatch,
   type Firestore,
 } from "firebase/firestore";
-import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
+import { connectFunctionsEmulator, getFunctions, httpsCallable, type Functions } from "firebase/functions";
 import { connectStorageEmulator, getBytes, getMetadata, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
 import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
@@ -44,6 +44,8 @@ export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "do
 
 export interface Feature {
   title: string;
+  /** "local": hecha con Claude Code fuera de Backcode y registrada con `backcode task pr` (sin sesión ni encargo del runner). */
+  origin?: string;
   refinedPrompt: string;
   acceptanceCriteria?: string[];
   status: FeatureStatus;
@@ -146,7 +148,7 @@ export function promptHash(title: string, refinedPrompt: string, acceptanceCrite
  * El runner se autentica como el usuario dueño de la runner key (token con claim runner=true).
  * Todo lo que hace pasa por las Security Rules: solo puede mover las tareas asignadas a ese usuario.
  */
-export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string }> {
+export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string; fns: Functions }> {
   const app = initializeApp(cfg.firebase);
   const auth = getAuth(app);
   const db = getFirestore(app);
@@ -160,7 +162,7 @@ export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; stora
   }
   const { data } = await httpsCallable<{ key: string }, { token: string }>(fns, "runnerSignIn")({ key: cfg.runnerKey });
   const { user } = await signInWithCustomToken(auth, data.token);
-  return { db, storage, uid: user.uid };
+  return { db, storage, uid: user.uid, fns };
 }
 
 export class Store {
@@ -573,6 +575,11 @@ export class Store {
   }
 
   // --- Proyectos nuevos desde una idea (users/{uid}/scaffolds): los crea el servidor y los atiende cualquier runner mío ---
+
+  /** El ajuste «Pautas de Backcode fuera de Backcode» del proyecto (lo cambian los admins en la app). */
+  watchWorkflow(onChange: (workflow: unknown) => void): () => void {
+    return onSnapshot(this.project(), (d) => onChange(d.get("workflow")), () => undefined);
+  }
 
   /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
   watchWorkspace(onChange: (w: { projectsDir?: string }) => void): () => void {

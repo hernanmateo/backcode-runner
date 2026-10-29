@@ -11,9 +11,15 @@
     {
       "name": "backcode",
       "source": "./plugins/backcode",
-      "description": "Set up and troubleshoot the Backcode runner from Claude Code: installs it, connects your projects and keeps it running.",
+      "description": "Set up and troubleshoot the Backcode runner from Claude Code, and work the Backcode way outside Backcode: one worktree and PR per feature or fix, on the team's board.",
       "category": "productivity",
-      "keywords": ["backcode", "runner", "setup", "pull-requests"]
+      "keywords": [
+        "backcode",
+        "runner",
+        "setup",
+        "worktree",
+        "pull-requests"
+      ]
     }
   ]
 }

@@ -52,6 +52,19 @@ switch (command) {
     process.exit(0);
     break;
   }
+  case "task": {
+    // Trabajo fuera de Backcode con sus pautas: worktree y rama de tarea, y PR registrado como tarea (task.ts).
+    const { taskMain } = await import("./task.js");
+    await taskMain(rest);
+    break;
+  }
+  case "hook": {
+    // Para el plugin de Claude Code (plugins/backcode/hooks): pautas de Backcode en sesiones normales. Nunca falla.
+    const { hookMain } = await import("./workflow-guard.js");
+    await hookMain(rest[0] ?? "").catch(() => undefined);
+    process.exit(0);
+    break;
+  }
   case "status":
     await import("./status.js");
     break;

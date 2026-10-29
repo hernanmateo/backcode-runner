@@ -45,6 +45,27 @@ comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
+**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Pautas de Backcode fuera de
+Backcode**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
+- **Desactivado**: Claude Code trabaja como siempre.
+- **Recordar**: al empezar cada sesión en ese repo (o en un worktree suyo), el plugin le da a Claude las pautas: cada
+  funcionalidad o fix en su worktree y su rama desde la base al día, y a la rama principal solo por PR.
+- **Exigir**: además, un `git commit` en la rama principal o un `git push` que la suba (`main`, `HEAD:main`, `--all`…) pide
+  confirmación antes de ejecutarse. Pregunta en vez de bloquear: hay casos legítimos (p. ej. publicar una release).
+
+Para el trabajo en sí, **`/backcode:feature`**, o a mano:
+- `backcode task start "<título>"`: worktree en `~/.backcode/worktrees/<proyecto>/<id>` con la rama `backcode/<handle>/<id>`
+  desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados.
+- `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
+  la rama, la sube, abre (o actualiza) el PR y lo **registra en el tablero** como tarea tuya en «PR listo» (function
+  `registerLocalWork`). Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
+  sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
+
+El hook no lee la configuración (lleva claves): cada runner deja en `~/.backcode/guard/<proyecto>.json` solo el nombre, la ruta
+del repo, la rama base, el remoto y el modo, y `backcode hook session-start|pre-tool-use` decide con eso. Sin runner (o con uno
+anterior a esto), el plugin no hace nada. El plugin solo actúa dentro de Claude Code: para que a la rama principal solo se llegue
+por PR desde cualquier sitio, activa la protección de rama en GitHub o Bitbucket (la app enlaza los ajustes en modo «Exigir»).
+
 **Desinstalar:** `backcode service uninstall` (para el servicio y lo quita); borra la app y `~/.backcode`;
 quita la línea `# Backcode runner` de tu perfil de shell si usaste `install.sh`; con npm, `npm uninstall -g backcode`.
 

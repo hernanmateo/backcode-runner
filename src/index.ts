@@ -13,6 +13,7 @@ import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js"
 import { followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
+import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
@@ -79,6 +80,12 @@ let stopping = false;
 type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
 
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
+  // Hecha fuera de Backcode: el runner no tiene su sesión ni su encargo, y empezar de cero pisaría la rama del PR. Vuelve a
+  // «PR listo» tal cual; los cambios se siguen haciendo en su worktree (backcode task pr actualiza el PR).
+  if (feature.origin === "local") {
+    await store.event(id, "say", t("run.localTask"));
+    return { status: "done", result: { ...(feature.result ?? {}), error: undefined } };
+  }
   const acceptanceError = await store.verifyAcceptance(id, feature);
   if (acceptanceError) return { status: "failed", result: { error: acceptanceError } };
 
@@ -727,6 +734,14 @@ async function main(): Promise<void> {
 
   const project = await store.projectInfo();
   printConnected(project.name);
+  // Para el plugin de Claude Code: qué repo es de qué proyecto y con qué pautas (sin claves ni tokens).
+  const stopWorkflow = store.watchWorkflow((workflow) => {
+    try {
+      writeGuard({ projectId: cfg.projectId, projectName: project.name, repoPath: cfg.repoPath, baseBranch: cfg.baseBranch, remote: cfg.remote, workflow: asWorkflow(workflow) });
+    } catch (err) {
+      console.warn(`[guard] ${(err as Error).message}`);
+    }
+  });
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -937,6 +952,7 @@ async function main(): Promise<void> {
     unsubscribeRefines();
     unsubscribeScaffolds();
     stopWorkspace();
+    stopWorkflow();
     clearInterval(machineTimer);
     refineAbort.abort();
     clearInterval(knowledgeTimer);
@@ -971,6 +987,7 @@ async function main(): Promise<void> {
     unsubscribeRefines();
     unsubscribeScaffolds();
     stopWorkspace();
+    stopWorkflow();
     clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);

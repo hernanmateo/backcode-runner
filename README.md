@@ -213,6 +213,31 @@ Prefer to do it from Claude Code? The `backcode` plugin sets everything up with 
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
+### Backcode guidelines outside Backcode
+
+An admin chooses in the app (**Edit project › Backcode guidelines outside Backcode**) how people work on the repo with Claude
+Code directly, through the plugin:
+
+- **Off**: Claude Code works as usual.
+- **Remind**: at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
+  fix in its own worktree and branch from the up-to-date base, and the main branch only through a PR.
+- **Require**: on top of that, a `git commit` on the main branch or a `git push` that updates it (`main`, `HEAD:main`, `--all`…)
+  asks for confirmation first. It asks rather than blocks: some cases are legitimate (publishing a release, for example).
+
+For the work itself, **`/backcode:feature`**, or by hand:
+
+- `backcode task start "<title>"`: a worktree in `~/.backcode/worktrees/<project>/<id>` on `backcode/<handle>/<id>`, from a
+  freshly fetched `<remote>/<base>`, with your local `.env` files copied.
+- `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
+  branch, opens (or updates) the PR and **puts it on the board** as your task in “PR ready”, ready to merge and deploy from the
+  app. The runner doesn't continue it (it doesn't have its session): keep working in the worktree and `backcode task pr` updates
+  the same PR.
+
+The hook never reads your configuration (it holds keys): each runner leaves only the project name, repo path, base branch,
+remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook session-start|pre-tool-use` decides from that. Without a
+runner (or with an older one), the plugin does nothing. It only acts inside Claude Code: to make the main branch reachable only
+through PRs from anywhere, turn on branch protection in GitHub or Bitbucket (the app links to the settings in Require mode).
+
 ## The panel
 
 Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.1:47474`:
