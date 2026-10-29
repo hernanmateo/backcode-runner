@@ -136,8 +136,9 @@ export async function prepareIosDevice(udid: string, waitMs = 120_000): Promise<
       (err: { stdout?: string; stderr?: string; message?: string }) => `${err.stdout ?? ""}\n${err.stderr ?? ""}\n${err.message ?? ""}`,
     );
     if (res === null) return null;
-    // Bloqueado o dormido (por wifi, con la pantalla apagada deja de responder): se espera a que lo desbloquees.
-    if (!/DeviceLocked|device is locked|acquire assertion|disconnected immediately|not connected|tunnel|timed out/i.test(res)) return res.replace(/\s+\n/g, "\n").trim().slice(-800);
+    // Bloqueado, dormido (por wifi, con la pantalla apagada deja de responder) o un corte de la conexión por wifi: se
+    // reintenta hasta que responda o se acabe la espera.
+    if (!/DeviceLocked|device is locked|acquire assertion|disconnected immediately|not connected|tunnel|timed out|connection reset|ControlChannelConnection|invalidated|NWError/i.test(res)) return res.replace(/\s+\n/g, "\n").trim().slice(-800);
     if (Date.now() > until) return "locked";
     await new Promise((r) => setTimeout(r, 5_000));
   }
