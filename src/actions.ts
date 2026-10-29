@@ -7,7 +7,7 @@ import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets,
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
-import { adbReverse, devPort, devServe, devServerRunning, devStop } from "./dev-server.js";
+import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
@@ -295,7 +295,8 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
 
 /** Tras instalar la versión de desarrollo, Metro con la rama principal si no estaba en marcha (para que la app arranque). */
-async function afterDevInstall(cfg: RunnerConfig, store: Store, dev: boolean): Promise<string> {
+async function afterDevInstall(cfg: RunnerConfig, store: Store, dev: boolean, deviceId: string): Promise<string> {
+  recordDevInstall(cfg.projectId, deviceId, dev);
   if (!dev || devServerRunning()) return "";
   const served = await devServe(cfg, store);
   return served.ok ? `${served.result.log}\n` : `${served.result.error}\n`;
@@ -384,12 +385,18 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
       const team = await signingTeam(dir, config?.ios?.appleTeamId);
       if (team) setDevelopmentTeam(join(dir, "ios"), team);
       // --no-install: los pods ya los ha dejado listos prepareNativeProject (como en la prueba de arranque de los OTA).
-      // Debug + RCT_METRO_PORT (React Native lo compila dentro): la versión de desarrollo busca Metro en tu ordenador, en el
-      // puerto de este proyecto. Con --no-bundler, Expo no lo pasa por su cuenta a xcodebuild.
-      const out = await exec(["npx", "expo", "run:ios", "--configuration", dev ? "Debug" : "Release", "--device", device.id, "--no-bundler", "--no-install"], dir, { env: dev ? { ...env, RCT_METRO_PORT: String(port) } : env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+      // Versión de desarrollo: Debug con el puerto de Metro de este proyecto (React Native lo compila dentro). En Debug, Expo
+      // arranca siempre su propio servidor y no termina: se da por hecho cuando la app ya está abierta en el móvil («Logs
+      // for your project…») y se cierra; después arranca el Metro del runner (afterDevInstall) en ese mismo puerto.
+      if (dev) stopDevServer();
+      const out = await exec(
+        ["npx", "expo", "run:ios", "--configuration", dev ? "Debug" : "Release", "--device", device.id, "--no-install", ...(dev ? ["--port", String(port)] : ["--no-bundler"])],
+        dir,
+        { env: dev ? { ...env, RCT_METRO_PORT: String(port) } : env, timeoutMs: INSTALL_TIMEOUT_MS, ...(dev ? { doneWhen: /Logs for your project will appear below/ } : {}) },
+      ).catch((err: Error) => {
         throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
       });
-      return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev)}${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
+      return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev, device.id)}${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
     }
 
     const adb = adbPath();
@@ -411,7 +418,7 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
     });
     if (dev) await adbReverse(adb, device.id, port);
     await exec([adb, "-s", device.id, "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"], dir).catch(() => undefined);
-    return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
+    return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev, device.id)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -598,22 +605,42 @@ function copyLastPublish(fromAppDir: string, toAppDir: string): void {
 }
 
 /** Ejecuta un comando y devuelve su salida; falla con las últimas líneas si el código no es 0. */
-function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<string> {
+/**
+ * `doneWhen`: el comando no acaba solo (p. ej. `expo run:ios` en Debug se queda con su servidor de desarrollo abierto):
+ * en cuanto su salida lo cumple, se da por terminado bien y se cierra (con sus hijos).
+ */
+export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number; doneWhen?: RegExp } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: !!opts.doneWhen });
     let out = "";
+    let finished = false;
+    const killGroup = () => {
+      try {
+        if (opts.doneWhen && child.pid) process.kill(-child.pid, "SIGTERM");
+        else child.kill("SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+    };
     const add = (d: Buffer) => {
       out = (out + d.toString()).slice(-200_000);
+      if (opts.doneWhen && !finished && opts.doneWhen.test(out)) {
+        finished = true;
+        clearTimeout(timer);
+        killGroup();
+        resolve(out);
+      }
     };
     child.stdout.on("data", add);
     child.stderr.on("data", add);
-    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? OTA_TIMEOUT_MS);
+    const timer = setTimeout(killGroup, opts.timeoutMs ?? OTA_TIMEOUT_MS);
     child.on("error", (e) => {
       clearTimeout(timer);
-      reject(e);
+      if (!finished) reject(e);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (finished) return;
       if (code === 0) resolve(out);
       else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: out.slice(-2800) })));
     });

@@ -16,7 +16,7 @@ import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
-import { stopDevServer } from "./dev-server.js";
+import { devInstalls, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
@@ -637,7 +637,8 @@ async function main(): Promise<void> {
   // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
   let devicesKey = "";
   const watchDevices = async () => {
-    const devices = await listDevices().catch(() => null);
+    const installs = devInstalls()[cfg.projectId] ?? {};
+    const devices = (await listDevices().catch(() => null))?.map((d) => ({ ...d, devInstalled: installs[d.id] === true })) ?? null;
     const key = JSON.stringify(devices);
     if (!devices || key === devicesKey) return;
     await store.saveDevices(devices).then(() => (devicesKey = key), () => undefined);
