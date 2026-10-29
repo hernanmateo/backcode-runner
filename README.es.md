@@ -343,6 +343,18 @@ acepta commits que ya están en la rama base y no espera checks (esa versión ya
 
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
+### Pendiente de desplegar
+Arriba de la pantalla de publicar, una tarjeta con **lo que hay en la rama principal y aún no ha salido**, en pasos numerados y
+en el orden correcto: primero las reglas (Firestore/Storage), luego las functions, luego el resto de despliegues (web…) y la OTA
+al final, para que la app nueva no llegue antes que lo que necesita en el servidor. El runner lo calcula al arrancar, cada 3 min
+y tras cada acción: compara la rama principal con el commit del último despliegue hecho desde Backcode de cada paso (qué ficheros
+cubre cada uno lo saca del `--only` de Firebase del script o de su carpeta) y dice qué tareas mergeadas traen cada cambio.
+- Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
+  para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
+- Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
+- En la pestaña OTA avisa si hay pasos pendientes que van antes; en la ficha de una tarea mergeada, por dónde le falta salir.
+- Si la OTA trae cambios que parecen nativos (config de Expo, dependencias, `ios/`, `android/`), lo avisa: quizá toca una build.
+
 ### Instalar en mi móvil
 Pestaña **Mi móvil** de la pantalla de publicar (en apps Expo, si el ordenador de tu runner tiene Xcode o adb). Es la vía más rápida
 de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega a tu móvil:

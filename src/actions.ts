@@ -18,7 +18,9 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll";
+  /** «Desplegarlo todo»: pasos (`deploy:<destino>`, `ota:<canal>`) que se ejecutan en el orden del plan, parando al primer fallo. */
+  steps?: string[];
   /** «Instalar en mi móvil»: plataforma y dispositivo (UDID de iOS o serie de adb) de los que publica el runner. */
   platform?: DevicePlatform;
   deviceId?: string;
@@ -40,7 +42,16 @@ export interface Action {
   /** OTA «Publicar sin comprobaciones»: sin prueba de arranque (ni la del runner ni la del script) y con --allow-native si el script lo admite. */
   skipSmoke?: boolean;
 }
+export interface StepResult {
+  id: string;
+  ok: boolean;
+  sha?: string;
+  url?: string;
+  error?: string;
+}
 export interface ActionResult {
+  /** «Desplegarlo todo»: cómo fue cada paso (los que no llegaron a ejecutarse no aparecen). */
+  steps?: StepResult[];
   url?: string;
   sha?: string;
   error?: string;
@@ -76,6 +87,11 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   // Versión de desarrollo: Metro con la rama principal o con una tarea (featureId).
   if (action.type === "devServe") return devServe(cfg, store, action.featureId);
   if (action.type === "devStop") return devStop(cfg, store);
+  if (action.type === "deployAll") {
+    const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "");
+    await syncLocal(cfg);
+    return done;
+  }
   const done =
     action.type === "build"
       ? await publishBuild(cfg, host, action)
@@ -293,6 +309,37 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
 }
 
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
+const STEP_RE = /^(ota:(production|preview)|deploy:[A-Za-z0-9._/@-]{0,200}#[a-z0-9][a-z0-9-]{0,39})$/;
+
+/**
+ * «Desplegarlo todo»: los pasos pedidos, en el orden del plan (reglas → functions → resto → OTA), cada uno como si se
+ * hubiera pedido suelto (mismos checks y la prueba de arranque de la OTA). Al primer fallo se para: no tiene sentido
+ * publicar la app nueva si sus reglas o sus functions no han salido.
+ */
+async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefined, requested: string[], message: string): Promise<{ ok: boolean; result: ActionResult }> {
+  const wanted = [...new Set(requested)].filter((s) => STEP_RE.test(s)).slice(0, 10);
+  if (!wanted.length) return { ok: false, result: { error: t("plan.noSteps") } };
+  const order = (store.plan?.steps ?? []).map((s) => s.id);
+  const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : 100 + (id.startsWith("ota:") ? 1 : 0));
+  const steps = wanted.sort((a, b) => rank(a) - rank(b));
+  const results: StepResult[] = [];
+  const log: string[] = [];
+  for (const [i, id] of steps.entries()) {
+    const label = `${i + 1}. ${id.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`;
+    console.log(`[action] deployAll ${label}`);
+    const done = id.startsWith("ota:")
+      ? await publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode")
+      : await runDeploy(cfg, host, id.slice("deploy:".length));
+    const { ok, result } = await Promise.resolve(done).catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult }));
+    results.push({ id, ok, ...(result.sha ? { sha: result.sha } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
+    log.push(`${ok ? "✓" : "✗"} ${label}${result.url ? ` · ${result.url}` : ""}`);
+    if (!ok) {
+      const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${s.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`);
+      return { ok: false, result: { steps: results, error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } };
+    }
+  }
+  return { ok: true, result: { steps: results, sha: results.at(-1)?.sha, log: log.join("\n") } };
+}
 
 /** Tras instalar la versión de desarrollo, Metro con la rama principal si no estaba en marcha (para que la app arranque). */
 async function afterDevInstall(cfg: RunnerConfig, store: Store, dev: boolean, deviceId: string): Promise<string> {

@@ -141,7 +141,9 @@ It also handles what an admin asks for from the app, always with your own creden
 publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing, **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
 cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready) — or a
 **development version** that loads the code instantly from your runner's Metro: the main branch, or any task with "Try on my
-phone" on its page — or run a deploy script.
+phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
+the right order (rules → functions → other deploys → OTA), each with its own button plus **Deploy everything**, which stops at the
+first failure.
 
 ## Features
 

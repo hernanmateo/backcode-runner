@@ -29,6 +29,7 @@ import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
+import type { DeployPlan } from "./pending.js";
 import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
@@ -235,6 +236,15 @@ export class Store {
     await setDoc(doc(this.project(), "runners", this.uid, "private", "dev"), { ...(JSON.parse(JSON.stringify(state)) as DevState), updatedAt: serverTimestamp() });
   }
 
+  /** «Pendiente de desplegar» (ver pending.ts): va en el documento del runner, que ven los miembros del proyecto. */
+  plan: DeployPlan | null = null;
+
+  /** Guarda el plan ya (sin esperar a la próxima renovación del lock). */
+  async savePlan(plan: DeployPlan): Promise<void> {
+    this.plan = JSON.parse(JSON.stringify(plan)) as DeployPlan;
+    await updateDoc(doc(this.project(), "runners", this.uid), { plan: this.plan }).catch(() => undefined);
+  }
+
   /** Garantiza un único runner por usuario y proyecto. Devuelve una función para liberar el lock. */
   async acquireLock(): Promise<() => Promise<void>> {
     const ref = doc(this.project(), "runners", this.uid);
@@ -246,7 +256,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(t("store.lockHeld", { holder }));
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities });
+        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities, ...(this.plan ? { plan: this.plan } : {}) });
       });
     await take();
     const timer = setInterval(() => {
@@ -463,6 +473,33 @@ export class Store {
     return snap.docs
       .filter((d) => d.get("merged.sha") && !d.get(`deployed.${channel}`))
       .map((d) => ({ id: d.id, sha: String(d.get("merged.sha")) }));
+  }
+
+  /**
+   * Commit del último despliegue hecho de cada paso (`deploy:<destino>`, `ota:<canal>`), de las acciones terminadas bien
+   * (también los pasos de «Desplegarlo todo»). Para «Pendiente de desplegar».
+   */
+  async lastDeploys(): Promise<Map<string, string>> {
+    const snap = await getDocs(query(collection(this.project(), "actions"), where("status", "==", "done")));
+    const best = new Map<string, { at: number; sha: string }>();
+    const note = (id: string, at: number, sha: unknown) => {
+      if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) return;
+      if ((best.get(id)?.at ?? -1) < at) best.set(id, { at, sha });
+    };
+    for (const d of snap.docs) {
+      const at = (d.get("requestedAt") as Timestamp | undefined)?.toMillis() ?? 0;
+      const type = d.get("type");
+      if (type === "deploy") note(`deploy:${String(d.get("target"))}`, at, d.get("result.sha"));
+      else if (type === "ota") note(`ota:${String(d.get("channel"))}`, at, d.get("result.sha"));
+      else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
+    }
+    return new Map([...best].map(([id, v]) => [id, v.sha]));
+  }
+
+  /** Tareas mergeadas (con el commit del merge y su título). */
+  async mergedFeatures(): Promise<{ id: string; title: string; sha: string }[]> {
+    const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
+    return snap.docs.filter((d) => d.get("merged.sha")).map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
   }
 
   async markDeployed(featureId: string, channel: string, sha: string): Promise<void> {
