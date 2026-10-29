@@ -490,6 +490,11 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const pr = prUrl ?? previousPr;
     return { status: pr ? "done" : "waiting", result: { ...result, prUrl: pr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   }
+  // Pidieron abrirla en la app de Claude mientras terminaba (o justo cuando falló): la petición no se pudo atender en esta
+  // vuelta. Vuelve a la cola y la siguiente empieza abriendo Remote Control, en vez de dejar la app esperando para siempre.
+  if (remoteWanted && !stopping && sessionId) {
+    return { status: "execute", result: { ...result, prUrl: prUrl ?? previousPr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
+  }
   // El resumen de cada vuelta queda en el hilo; si preguntó o propuso un plan, eso ya está publicado.
   if (!question && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
   // Mensajes que llegaron al final y Claude no llegó a leer: vuelve a la cola y la siguiente vuelta empieza por ellos.
