@@ -343,6 +343,15 @@ acepta commits que ya están en la rama base y no espera checks (esa versión ya
 
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
+### PR de fuera de Backcode y descartar PR
+- **PR externos en el tablero**: cada 5 min el runner lista los PR abiertos del repo (con `gh` o el token de Bitbucket) que no
+  vienen de una tarea (ramas que no empiezan por `backcode/`), con el estado de sus checks, y la app los enseña al pie de la
+  columna «PR listo». Si el runner no puede leerlos (gh sin sesión, token caducado), lo dice a los admins.
+- Un admin puede **mergearlos** (checks en verde, squash y borrar la rama) o **descartarlos** (cerrar el PR, conservando o
+  borrando su rama). Lo hace **su** runner, así que solo se ofrece si el suyo está conectado y con GitHub/Bitbucket enlazado;
+  si no, la app dice qué enlazar. El runner solo toca PR que estén abiertos en ese repo.
+- **Descartar una tarea con PR abierto** (ficha o tablero) también cierra el PR y borra su rama y su copia de trabajo.
+
 ### Pendiente de desplegar
 Arriba de la pantalla de publicar, una tarjeta con **lo que hay en la rama principal y aún no ha salido**, en pasos numerados y
 en el orden correcto: primero las reglas (Firestore/Storage), luego las functions, luego el resto de despliegues (web…) y la OTA

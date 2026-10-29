@@ -655,6 +655,21 @@ async function main(): Promise<void> {
   };
   void refreshPlan();
   const planTimer = setInterval(() => void refreshPlan(), 3 * 60_000);
+
+  // PR abiertos creados fuera de Backcode (las ramas de tareas, backcode/…, ya salen como tareas): para el tablero, con
+  // sus checks. Solo si este runner tiene con qué leerlos (gh con sesión o token de Bitbucket); si falla, se dice por qué.
+  const refreshPrs = async () => {
+    if (!prHost) return;
+    try {
+      const open = (await prHost.listOpen()).filter((p) => !p.branch.startsWith("backcode/")).slice(0, 30);
+      const items = await Promise.all(open.map(async (p, i) => ({ ...p, ...(i < 15 ? { checks: (await prHost!.prChecks(p.url).catch(() => null))?.state } : {}) })));
+      await store.savePrs({ items: items.map((x) => JSON.parse(JSON.stringify(x)) as typeof x) });
+    } catch (err) {
+      await store.savePrs({ items: [], error: String((err as Error).message).slice(0, 300) });
+    }
+  };
+  void refreshPrs();
+  const prsTimer = setInterval(() => void refreshPrs(), 5 * 60_000);
   // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
   let devicesKey = "";
   const watchDevices = async () => {
@@ -779,6 +794,7 @@ async function main(): Promise<void> {
           });
         await store.finishAction(id, ok, result as Record<string, unknown>);
         void refreshPlan();
+        if (action.type === "closePr" || action.type === "mergePr" || action.type === "merge") void refreshPrs();
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
       }
     } finally {
@@ -892,6 +908,7 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
@@ -924,6 +941,7 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);

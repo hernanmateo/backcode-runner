@@ -19,7 +19,11 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr";
+  /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
+  prUrl?: string;
+  /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */
+  deleteBranch?: boolean;
   /** «Desplegarlo todo»: pasos (`deploy:<destino>`, `ota:<canal>`) que se ejecutan en el orden del plan, parando al primer fallo. */
   steps?: string[];
   /** «Instalar en mi móvil»: plataforma y dispositivo (UDID de iOS o serie de adb) de los que publica el runner. */
@@ -88,6 +92,12 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   // Versión de desarrollo: Metro con la rama principal o con una tarea (featureId).
   if (action.type === "devServe") return devServe(cfg, store, action.featureId);
   if (action.type === "devStop") return devStop(cfg, store);
+  if (action.type === "closePr") return closePr(cfg, store, host, action);
+  if (action.type === "mergePr") {
+    const done = await mergeExternal(host, action.prUrl ?? "");
+    if (done.ok) await syncLocal(cfg);
+    return done;
+  }
   if (action.type === "deployAll") {
     const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "");
     await syncLocal(cfg);
@@ -120,6 +130,43 @@ async function openPr(cfg: RunnerConfig, store: Store, host: PrHost | undefined,
   const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: f.branch, base: cfg.baseBranch, title: f.title, body });
   await store.setPrUrl(featureId, url);
   return { ok: true, result: { url } };
+}
+
+/** Un PR externo solo se toca si de verdad está abierto en este repo (la URL no se usa tal cual llega de la app). */
+async function openExternal(host: PrHost, prUrl: string) {
+  return (await host.listOpen()).find((p) => p.url === prUrl && !p.branch.startsWith("backcode/"));
+}
+
+/**
+ * Descartar un PR: el de una tarea (featureId; la app ya la ha pasado a rechazada) se cierra y se borra su rama y su copia
+ * de trabajo; uno externo (prUrl) se cierra y, si se pide, se borra su rama.
+ */
+async function closePr(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action) {
+  if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
+  if (action.featureId) {
+    const prUrl = await store.prUrlOf(action.featureId);
+    if (prUrl?.startsWith("https://")) {
+      const pr = await host.prState(prUrl).catch(() => null);
+      if (pr?.state === "open") await host.close(prUrl, true);
+    }
+    await removeWorktree(cfg.repoPath, join(cfg.worktreesDir, action.featureId)).catch(() => undefined);
+    return { ok: true, result: { url: prUrl } };
+  }
+  const pr = await openExternal(host, action.prUrl ?? "");
+  if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
+  await host.close(pr.url, action.deleteBranch === true);
+  return { ok: true, result: { url: pr.url } };
+}
+
+/** Mergear un PR externo: como el de una tarea (checks en verde, squash y borrar la rama). */
+async function mergeExternal(host: PrHost | undefined, prUrl: string) {
+  if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
+  const pr = await openExternal(host, prUrl);
+  if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
+  const blocked = requireGreen(await host.prChecks(pr.url), "PR");
+  if (blocked) return { ok: false, result: blocked };
+  const { sha } = await host.merge(pr.url);
+  return { ok: true, result: { url: pr.url, sha } };
 }
 
 async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
