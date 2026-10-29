@@ -200,7 +200,7 @@ async function testSimulator(): Promise<string> {
 }
 
 /** Config pública de Expo tal como la verá la build. */
-export async function appConfig(dir: string, env: Record<string, string>): Promise<{ name?: string; ios?: { bundleIdentifier?: string; googleServicesFile?: string }; android?: { package?: string; googleServicesFile?: string } } | null> {
+export async function appConfig(dir: string, env: Record<string, string>): Promise<{ name?: string; ios?: { bundleIdentifier?: string; googleServicesFile?: string; appleTeamId?: string }; android?: { package?: string; googleServicesFile?: string } } | null> {
   const outText = await run("npx", ["expo", "config", "--json", "--type", "public"], dir, env).catch(() => "");
   const start = outText.indexOf("{");
   try {

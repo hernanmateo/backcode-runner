@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
@@ -287,6 +287,41 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
 }
 
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
+const TEAM_RE = /^[A-Z0-9]{10}$/;
+
+/**
+ * Equipo de Apple para firmar la build de «Instalar en mi móvil»: el de la config de Expo (ios.appleTeamId); si no, el
+ * de eas.json (submit › ios › appleTeamId); si no, el único equipo de empresa que tenga Xcode (un Personal Team no puede
+ * registrar los bundle ids de la empresa). Sin ninguno claro, undefined: decide Expo.
+ */
+export async function signingTeam(dir: string, fromConfig?: string): Promise<string | undefined> {
+  if (fromConfig && TEAM_RE.test(fromConfig)) return fromConfig;
+  try {
+    const eas = JSON.parse(readFileSync(join(dir, "eas.json"), "utf8")) as { submit?: Record<string, { ios?: { appleTeamId?: string } }> };
+    const team = Object.values(eas.submit ?? {}).map((p) => p.ios?.appleTeamId).find((t): t is string => !!t && TEAM_RE.test(t));
+    if (team) return team;
+  } catch {
+    // sin eas.json o no válido
+  }
+  const teams = await new Promise<string>((resolve) => execFile("defaults", ["read", "com.apple.dt.Xcode", "IDEProvisioningTeamByIdentifier"], { timeout: 10_000 }, (_e, out) => resolve(out ?? "")));
+  const company = new Set<string>();
+  for (const block of teams.split("}")) {
+    const id = /teamID = "?([A-Z0-9]{10})"?;/.exec(block)?.[1];
+    if (id && !/teamType = "?Personal Team"?;/.test(block)) company.add(id);
+  }
+  return company.size === 1 ? [...company][0] : undefined;
+}
+
+/** Fija DEVELOPMENT_TEAM en todas las configuraciones del proyecto de Xcode generado (no en el de Pods). */
+export function setDevelopmentTeam(iosDir: string, team: string): void {
+  const project = readdirSync(iosDir).find((f) => f.endsWith(".xcodeproj") && f !== "Pods.xcodeproj");
+  if (!project) return;
+  const file = join(iosDir, project, "project.pbxproj");
+  const text = readFileSync(file, "utf8")
+    .replace(/^(\s*)DEVELOPMENT_TEAM = [^;]*;\n/gm, "")
+    .replace(/^(\s*)buildSettings = \{\n/gm, (m, indent: string) => `${m}${indent}\tDEVELOPMENT_TEAM = ${team};\n`);
+  writeFileSync(file, text);
+}
 const DEVICE_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
 
 /**
@@ -329,6 +364,10 @@ async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok:
     if (platform === "ios") {
       const failed = await prepareNativeProject(dir, env);
       if (failed) return { ok: false, result: { sha: commit, error: failed.detail } };
+      // Equipo con el que se firma: si no se fija, Expo coge el primero que tenga Xcode (a menudo el Personal Team, que no
+      // puede registrar el bundle id de la empresa: «Failed Registering Bundle Identifier»).
+      const team = await signingTeam(dir, config?.ios?.appleTeamId);
+      if (team) setDevelopmentTeam(join(dir, "ios"), team);
       // --no-install: los pods ya los ha dejado listos prepareNativeProject (como en la prueba de arranque de los OTA).
       const out = await exec(["npx", "expo", "run:ios", "--configuration", "Release", "--device", device.id, "--no-bundler", "--no-install"], dir, { env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
         throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
