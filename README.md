@@ -325,7 +325,8 @@ installs the runner as a login item (a LaunchAgent in <code>~/Library/LaunchAgen
 Dock icon: the runner keeps working in the background (closing the window stops nothing; use <em>On / Off</em> for that). To remove
 it, run <code>backcode service uninstall</code> and delete the app and <code>~/.backcode</code>. If the panel doesn't answer within
 about 30 seconds (the service won't start, another program holds port 47474…), the window says so, with <em>Retry</em> and
-<em>Open log</em> (<code>~/.backcode/logs/service.log</code>), instead of spinning forever.
+<em>Open log</em> (<code>~/.backcode/logs/service.log</code>), instead of spinning forever. If the service is installed but launchd
+hasn't started it (macOS 27 sometimes leaves the launch pending), the app starts it when it opens.
 </details>
 
 <details>

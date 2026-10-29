@@ -7,7 +7,7 @@ import { newer } from "./autoupdate.js";
 import { openBrowser } from "./panel.js";
 import { panelAlive, panelUrl } from "./panel-client.js";
 import { BIN_DIR, readState } from "./paths.js";
-import { installService, serviceInstalled } from "./service.js";
+import { installService, kickService, serviceInstalled } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
 // actualizaciones del runner van a esa copia; la app la sustituye entera mac-app-update.ts), deja el runner como servicio («Arrancar al
@@ -43,6 +43,8 @@ export async function prepareApp(): Promise<string> {
   if (process.env.BACKCODE_APP_NO_SERVICE === "1" || readState().autostartOff) {
     if (!(await panelAlive())) spawn(installed, ["serve"], { detached: true, stdio: "ignore" }).unref();
   } else if (!serviceInstalled()) await installService({ executable: installed });
+  // Instalado pero sin arrancar (launchd puede dejarlo en espera): que arranque ya.
+  else if (!(await panelAlive())) await kickService();
 
   // El servicio tarda unos segundos en abrir el panel la primera vez.
   for (let i = 0; i < 60 && !(await panelAlive()); i++) await new Promise((r) => setTimeout(r, 500));
