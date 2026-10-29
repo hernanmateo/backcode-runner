@@ -366,6 +366,9 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
   `~/.backcode/worktrees/<proyecto>/_dev` (o en la copia de la tarea), sin tocar ficheros versionados (`EXPO_NO_TYPESCRIPT_SETUP`),
   y se apaga solo a las 4 h o al reiniciar el runner. El estado lo guarda en `runners/{uid}/private/dev` (solo lo lees tú).
+  El runner apunta en qué móviles instaló la versión de desarrollo de cada proyecto (`~/.backcode/dev-installs.json`; una
+  normal encima la quita): sin ninguno, «Probar en mi móvil» lo explica y lleva a instalarla. Al instalarla, Expo arranca su
+  propio servidor y no termina: el runner la da por hecha cuando la app ya está abierta en el móvil y arranca el suyo.
 
 ### Builds para testers (TestFlight / Internal Testing)
 En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil

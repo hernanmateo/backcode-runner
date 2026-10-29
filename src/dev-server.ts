@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { copyLocalFiles, installFrozen, profileEnv, type ActionResult } from "./actions.js";
 import type { RunnerConfig } from "./config.js";
+import { HOME_DIR } from "./paths.js";
 import { adbPath, listDevices } from "./devices.js";
 import { findExpoApp, git, remoteHead } from "./git.js";
 import { t } from "./i18n.js";
@@ -35,6 +36,28 @@ export interface DevState {
 
 let metro: ChildProcess | undefined;
 let stopTimer: NodeJS.Timeout | undefined;
+
+/**
+ * En qué móviles está instalada la versión de desarrollo de cada proyecto (la instaló este runner; una normal encima la
+ * quita). Para que la app no ofrezca «Probar en mi móvil» sin tenerla, y lo diga.
+ */
+const DEV_INSTALLS = join(HOME_DIR, "dev-installs.json");
+export function devInstalls(): Record<string, Record<string, boolean>> {
+  try {
+    return JSON.parse(readFileSync(DEV_INSTALLS, "utf8")) as Record<string, Record<string, boolean>>;
+  } catch {
+    return {};
+  }
+}
+export function recordDevInstall(projectId: string, deviceId: string, dev: boolean): void {
+  const all = devInstalls();
+  all[projectId] = { ...all[projectId], [deviceId]: dev };
+  try {
+    writeFileSync(DEV_INSTALLS, JSON.stringify(all, null, 2) + "\n");
+  } catch {
+    // sin permisos en ~/.backcode: no se recuerda
+  }
+}
 
 export const devServerRunning = () => !!metro && metro.exitCode === null;
 

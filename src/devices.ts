@@ -27,6 +27,8 @@ export interface Device {
   os?: string;
   connection?: "wired" | "network";
   state: DeviceState;
+  /** La versión de desarrollo de este proyecto está instalada (la puso este runner). La añade index.ts. */
+  devInstalled?: boolean;
 }
 
 /** Ruta de adb: la del SDK de Android (ANDROID_HOME o la de Android Studio) o la del PATH. */
