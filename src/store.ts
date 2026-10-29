@@ -322,14 +322,18 @@ export class Store {
   }
 
   /**
-   * Defensa en profundidad: la tarea es mía, sigo siendo miembro del grupo, el prompt no cambió
-   * desde que la acepté y la rama tiene el formato que genera acceptFeature.
+   * Defensa en profundidad: la tarea es mía, sigo siendo miembro del grupo (o externo del proyecto con un rol que
+   * ejecuta), el prompt no cambió desde que la acepté y la rama tiene el formato que genera acceptFeature.
    */
   async verifyAcceptance(id: string, feature: Feature): Promise<string | null> {
     if (feature.assignee !== this.uid) return t("store.notAssigned");
     const project = await getDoc(this.project());
-    const group = await getDoc(doc(this.db, "groups", project.get("groupId")));
-    if (!((group.get("members") ?? {}) as Record<string, string>)[this.uid]) return t("store.notMember");
+    const guest = ((project.get("guests") ?? {}) as Record<string, string>)[this.uid];
+    if (guest !== "execute" && guest !== "decree") {
+      // Un externo no puede leer el grupo: sin rol que ejecuta y sin grupo, no es suya.
+      const group = await getDoc(doc(this.db, "groups", project.get("groupId"))).catch(() => null);
+      if (!((group?.get("members") ?? {}) as Record<string, string>)[this.uid]) return t("store.notMember");
+    }
     const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? [], (feature.attachments ?? []).map((a) => a.path));
     if (feature.promptHash !== expected) return t("store.promptChanged");
     if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return t("store.badBranch");
