@@ -70,3 +70,52 @@ export class KeepAwake {
     this.child = null;
   }
 }
+
+/**
+ * «Mantener despierto enchufado» del panel (para todo el ordenador, no por proyecto): mientras está activado y el runner
+ * encendido, el ordenador no entra en reposo por inactividad, así sigue cogiendo tareas cuando no lo usas. En macOS con
+ * `caffeinate -s`, que solo actúa con el cargador puesto (con batería no la gasta); en Linux, systemd-inhibit (siempre).
+ * La pantalla se apaga igual, y cerrar la tapa sin pantalla externa lo duerme igual.
+ */
+export class PluggedAwake {
+  private child: ChildProcess | null = null;
+
+  static supported(): boolean {
+    return process.platform === "darwin" || process.platform === "linux";
+  }
+
+  set(on: boolean): void {
+    if (!on) {
+      this.child?.kill();
+      this.child = null;
+      return;
+    }
+    if (this.child || !PluggedAwake.supported()) return;
+    const pid = String(process.pid);
+    const child =
+      process.platform === "darwin"
+        ? spawn("caffeinate", ["-s", "-w", pid], { stdio: "ignore" })
+        : spawn("systemd-inhibit", ["--what=idle:sleep", "--who=Backcode runner", `--why=${t("awake.why")}`, "--mode=block", "sh", "-c", `while kill -0 ${pid} 2>/dev/null; do sleep 30; done`], { stdio: "ignore" });
+    child.on("error", () => undefined);
+    child.on("exit", () => {
+      if (this.child === child) this.child = null;
+    });
+    this.child = child;
+  }
+
+  get active(): boolean {
+    return !!this.child;
+  }
+}
+
+/** ¿Enchufado? (macOS: pmset). null si no se sabe (Linux u otros). */
+export function onAcPower(): Promise<boolean | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const child = spawn("pmset", ["-g", "batt"], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", () => resolve(null));
+    child.on("close", () => resolve(/AC Power/.test(out) ? true : /Battery Power/.test(out) ? false : null));
+  });
+}

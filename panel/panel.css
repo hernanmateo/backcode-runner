@@ -233,3 +233,8 @@ button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); 
 /* Compacta: sin aire de más abajo (la ventana nativa se ajusta a esta altura) */
 .compact main { padding-bottom: 14px; }
 .compact body, html.compact body { min-height: 0; }
+
+/* Segunda tarjeta de la sección del servicio (Mantener despierto): separada de la de arriba. */
+.card.service + .card.service {
+  margin-top: 10px;
+}

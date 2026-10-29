@@ -153,6 +153,7 @@ function render() {
   renderChecks();
   renderProjects();
   renderService();
+  renderKeepAwake();
   renderDevices();
   renderAssign();
 }
@@ -393,6 +394,33 @@ async function togglePower() {
     button.disabled = false;
     await refresh();
   }
+}
+
+function renderKeepAwake() {
+  const k = state.keepAwake;
+  $("keep-awake-card").hidden = !k?.supported;
+  if (!k?.supported) return;
+  const input = $("keep-awake");
+  input.checked = k.on;
+  input.disabled = !!leaving;
+  const body = [k.on ? s(k.mac ? "keepAwakeBodyMac" : "keepAwakeBodyLinux") : s("keepAwakeBodyOff")];
+  if (k.on && state.off) body.push(s("keepAwakePowerOff"));
+  else if (k.on && k.acPower === false) body.push(s("keepAwakeBattery"));
+  $("keep-awake-body").textContent = body.join(" ");
+}
+
+async function toggleKeepAwake() {
+  const on = $("keep-awake").checked;
+  $("keep-awake").disabled = true;
+  $("keep-awake-error").hidden = true;
+  try {
+    const r = await api("POST", "/api/keep-awake", { on });
+    if (r.error) throw new Error(r.error);
+  } catch (err) {
+    $("keep-awake-error").textContent = err.message;
+    $("keep-awake-error").hidden = false;
+  }
+  await refresh();
 }
 
 function renderService() {
@@ -718,6 +746,7 @@ if (!token) {
   $("connect").addEventListener("click", () => connect(true));
   $("logs-close").addEventListener("click", () => { logsFor = null; $("logs-section").hidden = true; });
   $("service").addEventListener("change", toggleService);
+  $("keep-awake").addEventListener("change", toggleKeepAwake);
   $("power").addEventListener("click", () => void togglePower());
 
   $("compact").addEventListener("click", () => setCompact(!compact));

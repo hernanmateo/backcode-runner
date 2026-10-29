@@ -207,6 +207,14 @@ runner impide el reposo por inactividad (macOS: `caffeinate`; Linux: `systemd-in
 tareas al momento aunque no estés delante); con `off`, nunca lo impide. Con varios proyectos, basta con que uno tenga `always`.
 Cerrar la tapa del portátil sin corriente lo duerme igual.
 
+**Que siga cogiendo tareas cuando no lo usas** (p. ej. fuera de casa). Sin trabajo en marcha, si no lo usas, el ordenador entra
+en reposo y tus runners salen desconectados en la app hasta que vuelves. Para evitarlo, activa en el panel **Mantener el
+ordenador despierto enchufado** (para todo el ordenador, no por proyecto): en macOS el runner mantiene `caffeinate -s`, que solo
+actúa con el cargador puesto (con batería no la gasta y el panel lo dice); en Linux, `systemd-inhibit`, también con batería. La
+pantalla se apaga igual, y con la tapa cerrada sin pantalla externa el Mac se duerme igual. Se suelta al apagar el runner con el
+botón general. Alternativa sin el runner: *Ajustes del Sistema › Batería › Opciones › Evitar el reposo automático con el
+adaptador de corriente cuando la pantalla está apagada*.
+
 **Publicar OTA exige probarlo antes** (botón Publicar de la app, también los rollbacks): el runner compila la app en Release
 con el JS incrustado, en la copia limpia que va a publicar, la abre en un simulador propio («Backcode OTA test», no toca los
 tuyos) y comprueba que sigue viva 15 s. Si se cierra o no compila, no se publica. Un OTA que cierra la app al arrancar no

@@ -330,6 +330,12 @@ No. While a task, an action (merge, OTA, build…) or a refinement is running, t
 on macOS, <code>systemd-inhibit</code> on Linux) and releases it when done. Set <code>BACKCODE_KEEP_AWAKE=always</code> in a project's
 configuration to stay awake while the runner is open, so it picks up tasks right away even when you're away, or <code>off</code> to
 never prevent sleep. Closing a laptop's lid on battery still puts it to sleep.
+
+With nothing running, an idle computer goes to sleep and your runners show as disconnected until you're back. To keep taking
+tasks while you're away, turn on <strong>Keep the computer awake when plugged in</strong> in the panel (for the whole computer):
+on macOS the runner holds <code>caffeinate -s</code>, which only acts on the charger (it never drains the battery, and the panel
+says when you're on battery); on Linux, <code>systemd-inhibit</code>, on battery too. The display still turns off, a Mac with the
+lid closed and no external display still sleeps, and it's released when you switch the runner off.
 </details>
 
 <details>
