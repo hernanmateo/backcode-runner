@@ -894,6 +894,9 @@ async function main(): Promise<void> {
   const stopWorkspace = store.watchWorkspace((w) => {
     workspaceDir = w.projectsDir;
     reportMachine();
+    // «Mantener mis ordenadores despiertos» de la app: lo aplica el panel de este ordenador (lo mira cada minuto).
+    const keepAwake = w.keepAwake ?? "off";
+    if (readState().appKeepAwake !== keepAwake) updateState({ appKeepAwake: keepAwake });
   });
   const machineTimer = setInterval(reportMachine, 60 * 60_000);
 

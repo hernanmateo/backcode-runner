@@ -400,21 +400,28 @@ function renderKeepAwake() {
   const k = state.keepAwake;
   $("keep-awake-card").hidden = !k?.supported;
   if (!k?.supported) return;
-  const input = $("keep-awake");
-  input.checked = k.on;
-  input.disabled = !!leaving;
-  const body = [k.on ? s(k.mac ? "keepAwakeBodyMac" : "keepAwakeBodyLinux") : s("keepAwakeBodyOff")];
-  if (k.on && state.off) body.push(s("keepAwakePowerOff"));
-  else if (k.on && k.acPower === false) body.push(s("keepAwakeBattery"));
+  for (const b of document.querySelectorAll("[data-awake]")) {
+    const selected = b.dataset.awake === k.mode;
+    b.classList.toggle("on", selected);
+    b.setAttribute("aria-checked", String(selected));
+    b.disabled = !!leaving;
+  }
+  const label = { off: s("keepAwakeOff"), plugged: s("keepAwakePlugged"), always: s("keepAwakeAlways") };
+  const body = [s(k.effective === "always" ? "keepAwakeBodyAlways" : k.effective === "plugged" ? "keepAwakeBodyPlugged" : "keepAwakeBodyOff")];
+  if (k.appMode !== "off") body.push(s("keepAwakeFromApp", { mode: label[k.appMode] }));
+  if (k.effective !== "off") {
+    if (state.off) body.push(s("keepAwakePowerOff"));
+    else if (k.effective === "plugged" && k.mac && k.acPower === false) body.push(s("keepAwakeBattery"));
+    if (!k.mac) body.push(s("keepAwakeLinux"));
+    body.push(s("keepAwakeLid"));
+  }
   $("keep-awake-body").textContent = body.join(" ");
 }
 
-async function toggleKeepAwake() {
-  const on = $("keep-awake").checked;
-  $("keep-awake").disabled = true;
+async function setKeepAwake(mode) {
   $("keep-awake-error").hidden = true;
   try {
-    const r = await api("POST", "/api/keep-awake", { on });
+    const r = await api("POST", "/api/keep-awake", { mode });
     if (r.error) throw new Error(r.error);
   } catch (err) {
     $("keep-awake-error").textContent = err.message;
@@ -746,7 +753,7 @@ if (!token) {
   $("connect").addEventListener("click", () => connect(true));
   $("logs-close").addEventListener("click", () => { logsFor = null; $("logs-section").hidden = true; });
   $("service").addEventListener("change", toggleService);
-  $("keep-awake").addEventListener("change", toggleKeepAwake);
+  for (const b of document.querySelectorAll("[data-awake]")) b.addEventListener("click", () => void setKeepAwake(b.dataset.awake));
   $("power").addEventListener("click", () => void togglePower());
 
   $("compact").addEventListener("click", () => setCompact(!compact));

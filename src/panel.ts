@@ -19,7 +19,7 @@ import { disableAutostart, installService, isService, serviceInstalled, serviceS
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
 import { installPlatforms, listDevices, type Device, type DevicePlatform } from "./devices.js";
-import { onAcPower, PluggedAwake } from "./awake.js";
+import { asAwakeMode, MachineAwake, onAcPower, strongerAwake } from "./awake.js";
 
 // El panel: una página pequeña en http://127.0.0.1:47474 que sirve este mismo proceso, para conectar proyectos, ver y
 // controlar sus runners y activar «Arrancar al iniciar sesión» sin usar la terminal. Solo escucha en 127.0.0.1; la API
@@ -76,7 +76,11 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   let leaving: string | null = null;
   let panelDevices: Device[] = [];
   let devicePlatforms: DevicePlatform[] = [];
-  const pluggedAwake = new PluggedAwake();
+  const machineAwake = new MachineAwake();
+  // El modo del panel (con lo de la 1.0.41: interruptor = «plugged»), el de la app y el que se aplica: el más fuerte.
+  const panelAwake = () => asAwakeMode(readState().keepAwake ?? (readState().keepAwakePlugged ? "plugged" : "off"));
+  const appAwake = () => asAwakeMode(readState().appKeepAwake);
+  const applyAwake = () => machineAwake.set(supervisor.off ? "off" : strongerAwake(panelAwake(), appAwake()));
   let acPower: boolean | null = null;
 
   const state = () => {
@@ -101,7 +105,7 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       // Los runners ya usan la versión nueva; el panel, hasta que se reinicie.
       restartNeeded: updateReady || onDisk !== VERSION,
       service: { supported: serviceSupported(), installed: serviceInstalled(), self: service },
-      keepAwake: { supported: PluggedAwake.supported(), mac: process.platform === "darwin", on: !!readState().keepAwakePlugged, active: pluggedAwake.active, acPower },
+      keepAwake: (applyAwake(), { supported: MachineAwake.supported(), mac: process.platform === "darwin", mode: panelAwake(), appMode: appAwake(), effective: strongerAwake(panelAwake(), appAwake()), active: machineAwake.active, acPower }),
       leaving,
       off: supervisor.off,
       // Móviles de este ordenador para «Instalar en mi móvil» (los mismos que ven los runners).
@@ -240,13 +244,13 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       // Sin esperar a que paren (una tarea puede tardar en soltar): el panel muestra cada runner «parando».
       void supervisor.setPower(!!body.on);
       // Apagado, no hace falta que el ordenador siga despierto.
-      pluggedAwake.set(!!body.on && !!readState().keepAwakePlugged);
+      setTimeout(applyAwake, 0);
       return state();
     },
     "POST /api/keep-awake": async (body) => {
-      if (!PluggedAwake.supported()) return { error: t("panel.keepAwakeUnsupported") };
-      updateState({ keepAwakePlugged: !!body.on });
-      pluggedAwake.set(!!body.on && !supervisor.off);
+      if (!MachineAwake.supported()) return { error: t("panel.keepAwakeUnsupported") };
+      updateState({ keepAwake: asAwakeMode(body.mode), keepAwakePlugged: undefined });
+      applyAwake();
       acPower = await onAcPower();
       return state();
     },
@@ -345,8 +349,12 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   supervisor.watchNewProjects();
   // «Mantener despierto enchufado»: desde que arranca, si está activado y el runner encendido; y si está enchufado, para
   // decirlo en el panel (con batería, caffeinate -s no actúa).
-  pluggedAwake.set(!!readState().keepAwakePlugged && !supervisor.off);
-  const lookPower = async () => void (acPower = await onAcPower());
+  applyAwake();
+  // Cada minuto: si está enchufado (para decirlo en el panel) y lo que pide la app (lo apuntan los runners).
+  const lookPower = async () => {
+    acPower = await onAcPower();
+    applyAwake();
+  };
   void lookPower();
   setInterval(() => void lookPower(), 60_000).unref();
   const lookDevices = async () => {

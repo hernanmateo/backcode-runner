@@ -138,15 +138,16 @@
         </label>
         <div id="service-error" class="error" hidden></div>
       </div>
-      <div id="keep-awake-card" class="card service" hidden>
-        <label class="switch">
-          <input id="keep-awake" type="checkbox">
-          <span class="slider" aria-hidden="true"></span>
-          <span class="label">
-            <strong data-s="keepAwakeTitle"></strong>
-            <span id="keep-awake-body" class="muted"></span>
-          </span>
-        </label>
+      <div id="keep-awake-card" class="card service keep-awake" hidden>
+        <div class="keep-awake-head">
+          <strong data-s="keepAwakeTitle"></strong>
+          <div class="seg" role="radiogroup" aria-labelledby="keep-awake-title">
+            <button type="button" data-awake="off" role="radio" data-s="keepAwakeOff"></button>
+            <button type="button" data-awake="plugged" role="radio" data-s="keepAwakePlugged"></button>
+            <button type="button" data-awake="always" role="radio" data-s="keepAwakeAlways"></button>
+          </div>
+        </div>
+        <p id="keep-awake-body" class="muted small"></p>
         <div id="keep-awake-error" class="error" hidden></div>
       </div>
     </section>

@@ -582,10 +582,10 @@ export class Store {
   }
 
   /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
-  watchWorkspace(onChange: (w: { projectsDir?: string }) => void): () => void {
+  watchWorkspace(onChange: (w: { projectsDir?: string; keepAwake?: string }) => void): () => void {
     return onSnapshot(
       doc(this.db, "users", this.uid, "private", "workspace"),
-      (d) => onChange({ projectsDir: typeof d.get("projectsDir") === "string" ? (d.get("projectsDir") as string) : undefined }),
+      (d) => onChange({ projectsDir: typeof d.get("projectsDir") === "string" ? (d.get("projectsDir") as string) : undefined, keepAwake: typeof d.get("keepAwake") === "string" ? (d.get("keepAwake") as string) : undefined }),
       () => undefined,
     );
   }

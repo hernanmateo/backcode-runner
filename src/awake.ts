@@ -71,30 +71,37 @@ export class KeepAwake {
   }
 }
 
+/** Modo de «Mantener el ordenador despierto» (panel y app): nunca, solo enchufado, o siempre (también con batería). */
+export type MachineAwakeMode = "off" | "plugged" | "always";
+export const asAwakeMode = (v: unknown): MachineAwakeMode => (v === "plugged" || v === "always" ? v : "off");
+/** El más fuerte de dos (lo pide el panel de este ordenador o tu perfil en la app). */
+export const strongerAwake = (a: MachineAwakeMode, b: MachineAwakeMode): MachineAwakeMode => (a === "always" || b === "always" ? "always" : a === "plugged" || b === "plugged" ? "plugged" : "off");
+
 /**
- * «Mantener despierto enchufado» del panel (para todo el ordenador, no por proyecto): mientras está activado y el runner
- * encendido, el ordenador no entra en reposo por inactividad, así sigue cogiendo tareas cuando no lo usas. En macOS con
- * `caffeinate -s`, que solo actúa con el cargador puesto (con batería no la gasta); en Linux, systemd-inhibit (siempre).
- * La pantalla se apaga igual, y cerrar la tapa sin pantalla externa lo duerme igual.
+ * «Mantener el ordenador despierto» (para todo el ordenador, no por proyecto): mientras está activado y el runner encendido,
+ * el ordenador no entra en reposo por inactividad, así sigue cogiendo tareas cuando no lo usas. En macOS con caffeinate:
+ * «plugged» con -s, que solo actúa con el cargador puesto (con batería no la gasta); «always» con -i -s, también con
+ * batería. En Linux, systemd-inhibit en los dos. La pantalla se apaga igual, y cerrar la tapa sin pantalla externa lo
+ * duerme igual (eso solo lo cambia macOS con permisos de administrador).
  */
-export class PluggedAwake {
+export class MachineAwake {
   private child: ChildProcess | null = null;
+  private mode: MachineAwakeMode = "off";
 
   static supported(): boolean {
     return process.platform === "darwin" || process.platform === "linux";
   }
 
-  set(on: boolean): void {
-    if (!on) {
-      this.child?.kill();
-      this.child = null;
-      return;
-    }
-    if (this.child || !PluggedAwake.supported()) return;
+  set(mode: MachineAwakeMode): void {
+    if (mode === this.mode && (mode === "off" || this.child)) return;
+    this.child?.kill();
+    this.child = null;
+    this.mode = mode;
+    if (mode === "off" || !MachineAwake.supported()) return;
     const pid = String(process.pid);
     const child =
       process.platform === "darwin"
-        ? spawn("caffeinate", ["-s", "-w", pid], { stdio: "ignore" })
+        ? spawn("caffeinate", [...(mode === "always" ? ["-i"] : []), "-s", "-w", pid], { stdio: "ignore" })
         : spawn("systemd-inhibit", ["--what=idle:sleep", "--who=Backcode runner", `--why=${t("awake.why")}`, "--mode=block", "sh", "-c", `while kill -0 ${pid} 2>/dev/null; do sleep 30; done`], { stdio: "ignore" });
     child.on("error", () => undefined);
     child.on("exit", () => {

@@ -337,10 +337,11 @@ configuration to stay awake while the runner is open, so it picks up tasks right
 never prevent sleep. Closing a laptop's lid on battery still puts it to sleep.
 
 With nothing running, an idle computer goes to sleep and your runners show as disconnected until you're back. To keep taking
-tasks while you're away, turn on <strong>Keep the computer awake when plugged in</strong> in the panel (for the whole computer):
-on macOS the runner holds <code>caffeinate -s</code>, which only acts on the charger (it never drains the battery, and the panel
-says when you're on battery); on Linux, <code>systemd-inhibit</code>, on battery too. The display still turns off, a Mac with the
-lid closed and no external display still sleeps, and it's released when you switch the runner off.
+tasks while you're away, use <strong>Keep the computer awake</strong> (for the whole computer): <em>No</em> (only while working),
+<em>Plugged in</em> (no idle sleep on the charger; macOS <code>caffeinate -s</code>, never drains the battery) or <em>Always</em>
+(on battery too; <code>caffeinate -i -s</code>). On Linux both use <code>systemd-inhibit</code>. Choose it in each computer's
+panel or, for all your computers at once, in the app (<strong>Profile › Your computer</strong>); the stronger one wins. The display
+still turns off, a Mac with the lid closed and no external display still sleeps, and it's released when you switch the runner off.
 </details>
 
 <details>
