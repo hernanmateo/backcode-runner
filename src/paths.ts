@@ -29,6 +29,12 @@ export interface PanelState {
   off?: boolean;
   /** «Decretazos» de tu perfil en la app (lo apuntan los runners): si los admins pueden poner tareas en tu runner. */
   allowAdminAssign?: boolean;
+  /** «Mantener el ordenador despierto» elegido en el panel: off, plugged (solo enchufado) o always (también con batería). */
+  keepAwake?: string;
+  /** Lo mismo desde tu perfil en la app (vale para todos tus ordenadores; lo apuntan los runners). Gana el más fuerte. */
+  appKeepAwake?: string;
+  /** (1.0.41) Antes de los modos: true = «plugged». */
+  keepAwakePlugged?: boolean;
   /** «Arrancar al iniciar sesión» desactivado a mano: la app de Mac ya no lo vuelve a activar al abrirse. */
   autostartOff?: boolean;
   /** Idioma elegido en el panel. */

@@ -94,3 +94,5 @@ If they already used the Mac app, this is done. Then `backcode status`: the proj
 
 Tell the user: in the Backcode app the project should now say **Connected**; accept a small task and it'll come back as a draft
 PR. `backcode` opens the panel (projects on/off, live activity). For problems later: `/backcode:doctor`.
+When they work in this repo with Claude Code directly, `/backcode:feature` does each feature or fix the Backcode way (its own
+worktree and PR, registered on the board); an admin can turn the guidelines on for the project in the app (Edit project).

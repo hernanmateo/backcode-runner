@@ -31,19 +31,51 @@ Todas instalan el mismo runner y abren el mismo panel.
 | **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
 | **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
 | **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
-| **Plugin de Claude Code** | En Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Plugin de Claude Code** | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
 | **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
 
 Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
 (`BACKCODE_NO_OPEN=1`), solo el ejecutable (`backcode-<os>-<arch>` de la Release, con `SHA256SUMS`) o en un servidor sin navegador
 (`backcode connect` + `backcode service install`).
 
-**Plugin de Claude Code.** `/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
+**Plugin de Claude Code.** Cada persona lo instala una vez en su Claude Code:
+
+```text
+/plugin marketplace add hernanmateo/backcode-runner
+/plugin install backcode@backcode
+```
+
+El marketplace se lee del repo público `hernanmateo/backcode-runner`: si ese repo se pone privado, deja de funcionar para quien
+no tenga acceso, y habría que publicar el marketplace (`.claude-plugin/` y `plugins/`) en un repo público, p. ej. el de las
+releases.
+
+`/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
 runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
 clona el repo y lo deja arrancando al iniciar sesión) y `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
+
+**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Pautas de Backcode fuera de
+Backcode**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
+- **Desactivado**: Claude Code trabaja como siempre.
+- **Recordar**: al empezar cada sesión en ese repo (o en un worktree suyo), el plugin le da a Claude las pautas: cada
+  funcionalidad o fix en su worktree y su rama desde la base al día, y a la rama principal solo por PR.
+- **Exigir**: además, un `git commit` en la rama principal o un `git push` que la suba (`main`, `HEAD:main`, `--all`…) pide
+  confirmación antes de ejecutarse. Pregunta en vez de bloquear: hay casos legítimos (p. ej. publicar una release).
+
+Para el trabajo en sí, **`/backcode:feature`**, o a mano:
+- `backcode task start "<título>"`: worktree en `~/.backcode/worktrees/<proyecto>/<id>` con la rama `backcode/<handle>/<id>`
+  desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados.
+- `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
+  la rama, la sube, abre (o actualiza) el PR y lo **registra en el tablero** como tarea tuya en «PR listo» (function
+  `registerLocalWork`). Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
+  sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
+
+El hook no lee la configuración (lleva claves): cada runner deja en `~/.backcode/guard/<proyecto>.json` solo el nombre, la ruta
+del repo, la rama base, el remoto y el modo, y `backcode hook session-start|pre-tool-use` decide con eso. Sin runner (o con uno
+anterior a esto), el plugin no hace nada. El plugin solo actúa dentro de Claude Code: para que a la rama principal solo se llegue
+por PR desde cualquier sitio, activa la protección de rama en GitHub o Bitbucket (la app enlaza los ajustes en modo «Exigir»).
 
 **Desinstalar:** `backcode service uninstall` (para el servicio y lo quita); borra la app y `~/.backcode`;
 quita la línea `# Backcode runner` de tu perfil de shell si usaste `install.sh`; con npm, `npm uninstall -g backcode`.
@@ -185,6 +217,20 @@ runner impide el reposo por inactividad (macOS: `caffeinate`; Linux: `systemd-in
 `BACKCODE_KEEP_AWAKE=always` en el `.env` del proyecto no se duerme mientras el runner esté abierto (útil si quieres que recoja
 tareas al momento aunque no estés delante); con `off`, nunca lo impide. Con varios proyectos, basta con que uno tenga `always`.
 Cerrar la tapa del portátil sin corriente lo duerme igual.
+
+**Que siga cogiendo tareas cuando no lo usas** (p. ej. fuera de casa). Sin trabajo en marcha, si no lo usas, el ordenador entra
+en reposo y tus runners salen desconectados en la app hasta que vuelves. Para evitarlo, **Mantener el ordenador despierto**
+(para todo el ordenador, no por proyecto), con tres opciones:
+- **No**: solo mientras trabaja en algo (lo de siempre).
+- **Enchufado**: con el cargador puesto no entra en reposo por inactividad (macOS: `caffeinate -s`); con batería no actúa (no la
+  gasta, y el panel lo dice).
+- **Siempre**: tampoco con batería (macOS: `caffeinate -i -s`). En Linux las dos usan `systemd-inhibit`, también con batería.
+
+Se elige en el panel de cada ordenador o, para todos tus ordenadores a la vez, en la app (**Perfil › Tu ordenador › Mantener
+tus ordenadores despiertos**; lo recogen tus runners y lo aplica el panel). Si los dos dicen algo distinto, gana el más fuerte.
+La pantalla se apaga igual, y con la tapa cerrada sin pantalla externa el Mac se duerme igual (eso solo se cambia en macOS con
+permisos de administrador). Se suelta al apagar el runner con el botón general. Alternativa sin el runner: *Ajustes del Sistema › Batería › Opciones › Evitar el reposo automático con el
+adaptador de corriente cuando la pantalla está apagada*.
 
 **Publicar OTA exige probarlo antes** (botón Publicar de la app, también los rollbacks): el runner compila la app en Release
 con el JS incrustado, en la copia limpia que va a publicar, la abre en un simulador propio («Backcode OTA test», no toca los

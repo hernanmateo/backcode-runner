@@ -70,3 +70,59 @@ export class KeepAwake {
     this.child = null;
   }
 }
+
+/** Modo de «Mantener el ordenador despierto» (panel y app): nunca, solo enchufado, o siempre (también con batería). */
+export type MachineAwakeMode = "off" | "plugged" | "always";
+export const asAwakeMode = (v: unknown): MachineAwakeMode => (v === "plugged" || v === "always" ? v : "off");
+/** El más fuerte de dos (lo pide el panel de este ordenador o tu perfil en la app). */
+export const strongerAwake = (a: MachineAwakeMode, b: MachineAwakeMode): MachineAwakeMode => (a === "always" || b === "always" ? "always" : a === "plugged" || b === "plugged" ? "plugged" : "off");
+
+/**
+ * «Mantener el ordenador despierto» (para todo el ordenador, no por proyecto): mientras está activado y el runner encendido,
+ * el ordenador no entra en reposo por inactividad, así sigue cogiendo tareas cuando no lo usas. En macOS con caffeinate:
+ * «plugged» con -s, que solo actúa con el cargador puesto (con batería no la gasta); «always» con -i -s, también con
+ * batería. En Linux, systemd-inhibit en los dos. La pantalla se apaga igual, y cerrar la tapa sin pantalla externa lo
+ * duerme igual (eso solo lo cambia macOS con permisos de administrador).
+ */
+export class MachineAwake {
+  private child: ChildProcess | null = null;
+  private mode: MachineAwakeMode = "off";
+
+  static supported(): boolean {
+    return process.platform === "darwin" || process.platform === "linux";
+  }
+
+  set(mode: MachineAwakeMode): void {
+    if (mode === this.mode && (mode === "off" || this.child)) return;
+    this.child?.kill();
+    this.child = null;
+    this.mode = mode;
+    if (mode === "off" || !MachineAwake.supported()) return;
+    const pid = String(process.pid);
+    const child =
+      process.platform === "darwin"
+        ? spawn("caffeinate", [...(mode === "always" ? ["-i"] : []), "-s", "-w", pid], { stdio: "ignore" })
+        : spawn("systemd-inhibit", ["--what=idle:sleep", "--who=Backcode runner", `--why=${t("awake.why")}`, "--mode=block", "sh", "-c", `while kill -0 ${pid} 2>/dev/null; do sleep 30; done`], { stdio: "ignore" });
+    child.on("error", () => undefined);
+    child.on("exit", () => {
+      if (this.child === child) this.child = null;
+    });
+    this.child = child;
+  }
+
+  get active(): boolean {
+    return !!this.child;
+  }
+}
+
+/** ¿Enchufado? (macOS: pmset). null si no se sabe (Linux u otros). */
+export function onAcPower(): Promise<boolean | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const child = spawn("pmset", ["-g", "batt"], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", () => resolve(null));
+    child.on("close", () => resolve(/AC Power/.test(out) ? true : /Battery Power/.test(out) ? false : null));
+  });
+}

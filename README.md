@@ -74,7 +74,7 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 | **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
 | **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
 | **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
-| **🤖 Claude Code plugin** | In Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🤖 Claude Code plugin** | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
 | **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
 <details>
@@ -202,9 +202,14 @@ first failure.
 Prefer to do it from Claude Code? The `backcode` plugin sets everything up with you, conversationally:
 
 ```text
-/plugin install backcode --marketplace hernanmateo/backcode-runner
+/plugin marketplace add hernanmateo/backcode-runner
+/plugin install backcode@backcode
 /backcode:setup
 ```
+
+Everyone installs it once in their own Claude Code. The marketplace is read from the public `hernanmateo/backcode-runner` repo:
+if that repo goes private, it stops working for anyone without access, and the marketplace (`.claude-plugin/` and `plugins/`)
+would have to be published from a public repo, such as the releases one.
 
 - **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
   configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
@@ -212,6 +217,31 @@ Prefer to do it from Claude Code? The `backcode` plugin sets everything up with 
 - **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
+
+### Backcode guidelines outside Backcode
+
+An admin chooses in the app (**Edit project › Backcode guidelines outside Backcode**) how people work on the repo with Claude
+Code directly, through the plugin:
+
+- **Off**: Claude Code works as usual.
+- **Remind**: at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
+  fix in its own worktree and branch from the up-to-date base, and the main branch only through a PR.
+- **Require**: on top of that, a `git commit` on the main branch or a `git push` that updates it (`main`, `HEAD:main`, `--all`…)
+  asks for confirmation first. It asks rather than blocks: some cases are legitimate (publishing a release, for example).
+
+For the work itself, **`/backcode:feature`**, or by hand:
+
+- `backcode task start "<title>"`: a worktree in `~/.backcode/worktrees/<project>/<id>` on `backcode/<handle>/<id>`, from a
+  freshly fetched `<remote>/<base>`, with your local `.env` files copied.
+- `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
+  branch, opens (or updates) the PR and **puts it on the board** as your task in “PR ready”, ready to merge and deploy from the
+  app. The runner doesn't continue it (it doesn't have its session): keep working in the worktree and `backcode task pr` updates
+  the same PR.
+
+The hook never reads your configuration (it holds keys): each runner leaves only the project name, repo path, base branch,
+remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook session-start|pre-tool-use` decides from that. Without a
+runner (or with an older one), the plugin does nothing. It only acts inside Claude Code: to make the main branch reachable only
+through PRs from anywhere, turn on branch protection in GitHub or Bitbucket (the app links to the settings in Require mode).
 
 ## The panel
 
@@ -305,6 +335,13 @@ No. While a task, an action (merge, OTA, build…) or a refinement is running, t
 on macOS, <code>systemd-inhibit</code> on Linux) and releases it when done. Set <code>BACKCODE_KEEP_AWAKE=always</code> in a project's
 configuration to stay awake while the runner is open, so it picks up tasks right away even when you're away, or <code>off</code> to
 never prevent sleep. Closing a laptop's lid on battery still puts it to sleep.
+
+With nothing running, an idle computer goes to sleep and your runners show as disconnected until you're back. To keep taking
+tasks while you're away, use <strong>Keep the computer awake</strong> (for the whole computer): <em>No</em> (only while working),
+<em>Plugged in</em> (no idle sleep on the charger; macOS <code>caffeinate -s</code>, never drains the battery) or <em>Always</em>
+(on battery too; <code>caffeinate -i -s</code>). On Linux both use <code>systemd-inhibit</code>. Choose it in each computer's
+panel or, for all your computers at once, in the app (<strong>Profile › Your computer</strong>); the stronger one wins. The display
+still turns off, a Mac with the lid closed and no external display still sleeps, and it's released when you switch the runner off.
 </details>
 
 <details>
