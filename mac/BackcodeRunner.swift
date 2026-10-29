@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   /** Mínimos: en compacto, unas filas; en completo, lo justo para que el panel no se apriete. */
   static let compactMin = NSSize(width: 340, height: 150)
   static let fullMin = NSSize(width: 560, height: 620)
+  /** Desde cuándo no responde el panel (nil mientras carga bien) y si ya se está avisando. */
+  var failingSince: Date?
+  var alerting = false
+  /** Dirección del panel: si la primera carga falla, reload() no tiene página que recargar. */
+  var panelURL: URL?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     buildMenu()
@@ -70,18 +75,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
       DispatchQueue.main.async {
         // ?native=1: el panel deja sitio a los botones de la ventana (rojo, amarillo y verde).
         if let url = result.flatMap({ URL(string: $0.replacingOccurrences(of: "/#", with: "/?native=1#")) }) {
+          self.panelURL = url
           self.webView.load(URLRequest(url: url))
         } else {
-          self.spinner.stopAnimation(nil)
-          let alert = NSAlert()
-          alert.messageText = "Backcode Runner"
-          alert.informativeText = "The runner didn't start. Log: ~/.backcode/logs/service.log"
-          alert.addButton(withTitle: "Retry")
-          alert.addButton(withTitle: "Quit")
-          if alert.runModal() == .alertFirstButtonReturn { self.spinner.startAnimation(nil); self.start() } else { NSApp.terminate(nil) }
+          self.startFailed("The runner didn't start.")
         }
       }
     }
+  }
+
+  /** El runner no arranca o su panel no responde: se dice, con el registro a mano, en vez de dejar el spinner para siempre. */
+  func startFailed(_ reason: String) {
+    guard !alerting else { return }
+    alerting = true
+    spinner.stopAnimation(nil)
+    let alert = NSAlert()
+    alert.messageText = "Backcode Runner"
+    alert.informativeText = "\(reason)\n\nLog: ~/.backcode/logs/service.log"
+    alert.addButton(withTitle: "Retry")
+    alert.addButton(withTitle: "Open log")
+    alert.addButton(withTitle: "Quit")
+    let answer = alert.runModal()
+    alerting = false
+    if answer == .alertThirdButtonReturn { NSApp.terminate(nil); return }
+    if answer == .alertSecondButtonReturn { NSWorkspace.shared.open(URL(fileURLWithPath: "\(NSHomeDirectory())/.backcode/logs/service.log")) }
+    failingSince = nil
+    spinner.isHidden = false
+    spinner.startAnimation(nil)
+    start()
   }
 
   /** Ejecuta el runner de dentro de la app y devuelve la última línea que imprime (la URL). */
@@ -99,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice
     do { try process.run() } catch { return nil }
+    // Si se cuelga (p. ej. launchctl), no deja la app esperando para siempre: cuenta como que no arrancó.
+    DispatchQueue.global().asyncAfter(deadline: .now() + 120) { if process.isRunning { process.terminate() } }
     let data = out.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { return nil }
@@ -122,13 +145,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    failingSince = nil
     spinner.stopAnimation(nil)
-    spinner.removeFromSuperview()
+    spinner.isHidden = true
   }
 
-  // Si el panel se reinicia (actualización), la página vuelve a cargar sola; si la carga falla, se reintenta.
+  // Si el panel se reinicia (actualización), la página vuelve a cargar sola; si la carga falla, se reintenta. Tras 30 s
+  // sin respuesta (el servicio no arranca, el puerto lo tiene otro programa…) se avisa en vez de seguir con el spinner.
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { webView.reload() }
+    let err = error as NSError
+    if err.domain == NSURLErrorDomain && err.code != NSURLErrorCancelled {
+      let since = failingSince ?? Date()
+      failingSince = since
+      if Date().timeIntervalSince(since) > 30 { return startFailed("The runner's panel isn't responding.") }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+      if webView.url == nil, let url = self.panelURL { webView.load(URLRequest(url: url)) } else { webView.reload() }
+    }
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
