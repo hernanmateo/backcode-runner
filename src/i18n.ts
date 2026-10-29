@@ -314,6 +314,7 @@ const es = {
   "kn.icon": "icono del proyecto subido desde el repo",
   "kn.analyzing": "analizando {ref} ({sha}) para que la IA conozca el proyecto…",
   "kn.empty": "el análisis no devolvió un mapa útil",
+  "kn.tooSoon": "el mapa se actualizó hace menos de 10 minutos; espera un poco",
   "kn.leaked": "descartado: parece contener {list}",
   "kn.updated": "mapa del proyecto actualizado (${cost})",
   // refinado de ideas con Claude Code (actividad que ve quien pide el encargo)
@@ -811,6 +812,7 @@ const en: Record<Key, string> = {
   "kn.icon": "project icon uploaded from the repo",
   "kn.analyzing": "analyzing {ref} ({sha}) so the AI knows the project…",
   "kn.empty": "the analysis didn't return a useful map",
+  "kn.tooSoon": "the map was updated less than 10 minutes ago; wait a bit",
   "kn.leaked": "discarded: it seems to contain {list}",
   "kn.updated": "project map updated (${cost})",
   "rf.start": "refining an idea with Claude Code ({model})…",
@@ -1304,6 +1306,7 @@ const ca: Record<Key, string> = {
   "kn.icon": "icona del projecte pujada des del repo",
   "kn.analyzing": "analitzant {ref} ({sha}) perquè la IA conegui el projecte…",
   "kn.empty": "l'anàlisi no ha retornat un mapa útil",
+  "kn.tooSoon": "el mapa s'ha actualitzat fa menys de 10 minuts; espera una mica",
   "kn.leaked": "descartat: sembla que conté {list}",
   "kn.updated": "mapa del projecte actualitzat (${cost})",
   "rf.start": "refinant una idea amb Claude Code ({model})…",
