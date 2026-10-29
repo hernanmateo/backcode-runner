@@ -59,5 +59,9 @@ with the same or a better title. It updates the same PR and task. A different to
 
 - Never commit or push directly to the main branch for this work. If the project requires it, a direct commit or push
   there asks the user first; don't try to get around it.
+- Every PR targets the main (base) branch, never another feature branch: `backcode task pr` already does it, so don't open
+  PRs by hand with `gh pr create --base <other branch>`. Repos usually delete a PR's branch when it's merged, and GitHub
+  then closes any PR stacked on it. If a change depends on another unmerged PR, put both in the same PR or wait until the
+  first is merged and start the second from the updated main branch.
 - Don't read `~/.backcode/config/` (it holds keys and tokens); `backcode` does everything that needs them.
 - Don't delete the worktree when you finish: the user may need it for changes. The runner cleans old ones up.
