@@ -19,6 +19,7 @@ import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
+import { computePlan } from "./pending.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
 import { machineInfo } from "./machine.js";
@@ -634,6 +635,25 @@ async function main(): Promise<void> {
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
   const releaseLock = await store.acquireLock();
+  // «Pendiente de desplegar»: qué falta por salir (reglas, functions, OTA…) y en qué orden. Al arrancar, cada 3 min y
+  // tras cada acción (un despliegue o un merge lo cambian).
+  let planBusy = false;
+  const refreshPlan = async () => {
+    if (planBusy) return;
+    planBusy = true;
+    try {
+      const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+      const [targets, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => []), findExpoApp(cfg.repoPath, base).catch(() => null)]);
+      if (!targets.length && !app?.ota) return;
+      await store.savePlan(await computePlan(cfg, store, targets, app));
+    } catch (err) {
+      console.warn(`[plan] ${(err as Error).message}`);
+    } finally {
+      planBusy = false;
+    }
+  };
+  void refreshPlan();
+  const planTimer = setInterval(() => void refreshPlan(), 3 * 60_000);
   // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
   let devicesKey = "";
   const watchDevices = async () => {
@@ -745,7 +765,7 @@ async function main(): Promise<void> {
         const id = pendingActions.shift()!;
         const action = await store.claimAction(id);
         if (!action) continue;
-        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
+        console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.steps) ? action.steps.join(" → ") : undefined) ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
         const release = awake.hold();
         const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action)
@@ -755,6 +775,7 @@ async function main(): Promise<void> {
             release();
           });
         await store.finishAction(id, ok, result as Record<string, unknown>);
+        void refreshPlan();
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
       }
     } finally {
@@ -867,6 +888,7 @@ async function main(): Promise<void> {
     refineAbort.abort();
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    clearInterval(planTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
@@ -898,6 +920,7 @@ async function main(): Promise<void> {
     clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    clearInterval(planTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
