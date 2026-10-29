@@ -162,6 +162,8 @@ le das a **Reiniciar el panel**, dice a qué proyecto espera hasta que termine l
 **La app de Mac** (`Backcode Runner.app`, la ventana) también se pone al día: el servicio descarga el `Backcode-Runner.dmg` de
 la última versión, comprueba su SHA-256 y que la app está firmada y notarizada por el mismo equipo que la instalada, y la
 sustituye; la ventana abierta sigue con la suya hasta que la vuelvas a abrir.
+Si al abrirla el panel no responde en unos 30 segundos (el servicio no arranca, otro programa tiene el puerto 47474…), la
+ventana lo dice con **Reintentar** y **Abrir el registro** (`~/.backcode/logs/service.log`) en vez de quedarse cargando.
 Con `npx` sin servicio, el panel y la terminal avisan de la versión nueva y basta con volver a lanzar `npx backcode@latest`.
 
 En una copia de git (desarrollo, o quien venía de `git clone`), cada 2 minutos mira si la rama tiene commits nuevos: si los hay y
