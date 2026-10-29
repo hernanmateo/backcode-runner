@@ -28,6 +28,7 @@ import { connectStorageEmulator, getBytes, getMetadata, getStorage, ref, uploadB
 import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
+import type { DevState } from "./dev-server.js";
 import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
@@ -227,6 +228,11 @@ export class Store {
    */
   async saveDevices(devices: Device[]): Promise<void> {
     await setDoc(doc(this.project(), "runners", this.uid, "private", "devices"), { devices: JSON.parse(JSON.stringify(devices.slice(0, 20))) as Device[], updatedAt: serverTimestamp() });
+  }
+
+  /** Estado del Metro de la versión de desarrollo (projects/{pid}/runners/{uid}/private/dev): solo lo lee su dueño. */
+  async saveDevState(state: DevState): Promise<void> {
+    await setDoc(doc(this.project(), "runners", this.uid, "private", "dev"), { ...(JSON.parse(JSON.stringify(state)) as DevState), updatedAt: serverTimestamp() });
   }
 
   /** Garantiza un único runner por usuario y proyecto. Devuelve una función para liberar el lock. */

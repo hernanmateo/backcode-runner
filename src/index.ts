@@ -16,6 +16,7 @@ import { createGuardHook, protectedMatcher } from "./guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
+import { stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { readQuota } from "./quota.js";
@@ -865,6 +866,7 @@ async function main(): Promise<void> {
     refineAbort.abort();
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     stopQuotaRequests();
@@ -895,6 +897,7 @@ async function main(): Promise<void> {
     clearInterval(machineTimer);
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
+    stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
     clearInterval(updateTimer);

@@ -12,7 +12,7 @@ const run = promisify(execFile);
 // se ejecutaría fuera del sandbox y con tus credenciales.
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
-async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", [...NO_HOOKS, ...args], { cwd, maxBuffer: 50 * 1024 * 1024 });
   return stdout.trim();
 }
