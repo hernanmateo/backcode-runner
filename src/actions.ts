@@ -434,12 +434,13 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
       // --no-install: los pods ya los ha dejado listos prepareNativeProject (como en la prueba de arranque de los OTA).
       // Versión de desarrollo: Debug con el puerto de Metro de este proyecto (React Native lo compila dentro). En Debug, Expo
       // arranca siempre su propio servidor y no termina: se da por hecho cuando la app ya está abierta en el móvil («Logs
-      // for your project…») y se cierra; después arranca el Metro del runner (afterDevInstall) en ese mismo puerto.
+      // for your project…») y ha descargado su código («iOS Bundled…», hasta 2 min) y se cierra; después arranca el Metro del
+      // runner (afterDevInstall) en ese mismo puerto.
       if (dev) stopDevServer();
       const out = await exec(
         ["npx", "expo", "run:ios", "--configuration", dev ? "Debug" : "Release", "--device", device.id, "--no-install", ...(dev ? ["--port", String(port)] : ["--no-bundler"])],
         dir,
-        { env: dev ? { ...env, RCT_METRO_PORT: String(port) } : env, timeoutMs: INSTALL_TIMEOUT_MS, ...(dev ? { doneWhen: /Logs for your project will appear below/ } : {}) },
+        { env: dev ? { ...env, RCT_METRO_PORT: String(port) } : env, timeoutMs: INSTALL_TIMEOUT_MS, ...(dev ? { doneWhen: /Logs for your project will appear below/, settleWhen: /Bundled \d+ms/, settleMs: 120_000 } : {}) },
       ).catch((err: Error) => {
         throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
       });
@@ -656,7 +657,7 @@ function copyLastPublish(fromAppDir: string, toAppDir: string): void {
  * `doneWhen`: el comando no acaba solo (p. ej. `expo run:ios` en Debug se queda con su servidor de desarrollo abierto):
  * en cuanto su salida lo cumple, se da por terminado bien y se cierra (con sus hijos).
  */
-export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number; doneWhen?: RegExp } = {}): Promise<string> {
+export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number; doneWhen?: RegExp; settleWhen?: RegExp; settleMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: !!opts.doneWhen });
     let out = "";
@@ -669,14 +670,24 @@ export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record
         child.kill("SIGTERM");
       }
     };
+    // Tras `doneWhen`, si hay `settleWhen`, se espera a verlo (o a `settleMs`) antes de cerrar: p. ej. que la app ya haya
+    // descargado su código del servidor de Expo, para no dejarla sin él («No script URL provided»).
+    let settling: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      clearTimeout(settling);
+      killGroup();
+      resolve(out);
+    };
     const add = (d: Buffer) => {
       out = (out + d.toString()).slice(-200_000);
-      if (opts.doneWhen && !finished && opts.doneWhen.test(out)) {
-        finished = true;
-        clearTimeout(timer);
-        killGroup();
-        resolve(out);
-      }
+      if (!opts.doneWhen || finished) return;
+      const done = out.search(opts.doneWhen);
+      if (done < 0) return;
+      if (!opts.settleWhen || opts.settleWhen.test(out.slice(done))) return finish();
+      settling ??= setTimeout(finish, opts.settleMs ?? 120_000);
     };
     child.stdout.on("data", add);
     child.stderr.on("data", add);
