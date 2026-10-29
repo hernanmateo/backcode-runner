@@ -382,6 +382,8 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   normal encima la quita): sin ninguno, «Probar en mi móvil» lo explica y lleva a instalarla. Al instalarla, Expo arranca su
   propio servidor y no termina: el runner la da por hecha cuando la app ya está abierta en el móvil y arranca el suyo.
   Si el runner se reinicia (p. ej. al actualizarse), vuelve a arrancar el servidor con lo que servía (`~/.backcode/dev-serving.json`).
+  Sirviendo la rama principal (o la rama subida de una tarea), cada minuto mira si hay commits nuevos y se pone al día solo: un
+  merge llega al móvil sin reinstalar ni pulsar nada (si cambian las dependencias, las instala y reinicia Metro).
 - **Más rápida a partir de la segunda vez**: la instalación usa una sola copia por proyecto que se conserva
   (`~/.backcode/worktrees/<proyecto>/_install`, con sus dependencias, `ios/`/`android/`, Pods y la caché de Xcode): solo se mueve
   al commit nuevo y se compila lo que ha cambiado. No se acumulan copias: hay una por proyecto (y otra, `_dev`, para el servidor

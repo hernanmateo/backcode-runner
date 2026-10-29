@@ -36,6 +36,9 @@ export interface DevState {
 
 let metro: ChildProcess | undefined;
 let stopTimer: NodeJS.Timeout | undefined;
+let followTimer: NodeJS.Timeout | undefined;
+/** Cada cuánto mira si la rama que sirve Metro (principal o de la tarea) tiene commits nuevos. */
+const FOLLOW_MS = 60_000;
 
 /**
  * En qué móviles está instalada la versión de desarrollo de cada proyecto (la instaló este runner; una normal encima la
@@ -99,6 +102,7 @@ export const devServerRunning = () => !!metro && metro.exitCode === null;
 
 export function stopDevServer(): void {
   clearTimeout(stopTimer);
+  clearInterval(followTimer);
   if (metro?.pid) {
     try {
       process.kill(-metro.pid, "SIGTERM"); // todo el grupo (npx → node → expo)
@@ -134,6 +138,8 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
     // Qué código: la copia de trabajo de la tarea en este ordenador (en vivo) o una copia propia (_dev) en el commit pedido.
     let root: string;
     let sha: string;
+    // Rama remota que se sigue (se pone al día sola con cada merge o push); ninguna si es la copia de trabajo de la tarea.
+    let follow: string | undefined;
     if (featureId) {
       if (!/^[A-Za-z0-9]{1,64}$/.test(featureId)) throw new Error(t("git.badFeatureId", { id: featureId }));
       const f = await store.featureInfo(featureId);
@@ -147,11 +153,13 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
         await git(cfg.repoPath, ["fetch", "--quiet", cfg.remote, f.branch]);
         sha = await git(cfg.repoPath, ["rev-parse", "FETCH_HEAD"]);
         root = await devWorktree(cfg, sha);
+        follow = f.branch;
       }
     } else {
       await git(cfg.repoPath, ["fetch", "--quiet", cfg.remote, cfg.baseBranch]);
       sha = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
       root = await devWorktree(cfg, sha);
+      follow = cfg.baseBranch;
     }
     await save({ sha });
     const dir = join(root, app.appDir);
@@ -194,6 +202,39 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
     if (adb) for (const d of (await listDevices().catch(() => [])).filter((x) => x.platform === "android" && x.state === "ready")) await adbReverse(adb, d.id, port);
     stopTimer = setTimeout(() => void devStop(cfg, store), MAX_MS);
     stopTimer.unref();
+    // Un merge (o un push a la rama de la tarea) llega solo: la copia _dev se mueve al commit nuevo y Metro, que vigila
+    // los ficheros, lo manda al móvil. Si cambian las dependencias, se instalan y se reinicia Metro con lo mismo.
+    if (follow) {
+      const branch = follow;
+      let current = sha;
+      let busy = false;
+      followTimer = setInterval(() => {
+        if (busy || metro !== child) return;
+        busy = true;
+        void (async () => {
+          try {
+            await git(cfg.repoPath, ["fetch", "--quiet", cfg.remote, branch]);
+            const next = await git(cfg.repoPath, ["rev-parse", "FETCH_HEAD"]);
+            if (next === current) return;
+            const lockBefore = lock && existsSync(lock) ? readFileSync(lock, "utf8") : "";
+            await git(root, ["checkout", "--detach", "--force", "--quiet", next]);
+            const lockAfter = lock && existsSync(lock) ? readFileSync(lock, "utf8") : "";
+            current = next;
+            console.log(`[dev] ${t("dev.updated", { sha: next.slice(0, 7) })}`);
+            if (lockBefore !== lockAfter) {
+              void devServe(cfg, store, featureId);
+              return;
+            }
+            await save({ sha: next });
+          } catch {
+            // sin red o la rama ya no existe (p. ej. tarea mergeada): se sigue sirviendo lo que había
+          } finally {
+            busy = false;
+          }
+        })();
+      }, FOLLOW_MS);
+      followTimer.unref();
+    }
     await save({ state: "running", error: undefined });
     rememberServe(cfg.projectId, { featureId, since: Date.now() });
     console.log(`[dev] ${t("dev.running", { port, what: featureId ? (state.title ?? featureId) : cfg.baseBranch })}`);
