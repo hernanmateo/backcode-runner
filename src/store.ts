@@ -30,6 +30,10 @@ import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
 import type { DeployPlan } from "./pending.js";
+import type { OpenPr } from "./hosts.js";
+
+/** PR externo para el tablero: el del host más sus checks y si choca con la rama base. */
+export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
 import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
@@ -238,6 +242,13 @@ export class Store {
 
   /** «Pendiente de desplegar» (ver pending.ts): va en el documento del runner, que ven los miembros del proyecto. */
   plan: DeployPlan | null = null;
+  /** PR abiertos creados fuera de Backcode (para el tablero), con el estado de sus checks; null si no se pudieron leer. */
+  prs: { items: ExternalPr[]; error?: string } | null = null;
+
+  async savePrs(prs: { items: ExternalPr[]; error?: string }): Promise<void> {
+    this.prs = JSON.parse(JSON.stringify(prs)) as { items: ExternalPr[]; error?: string };
+    await updateDoc(doc(this.project(), "runners", this.uid), { prs: this.prs }).catch(() => undefined);
+  }
 
   /** Guarda el plan ya (sin esperar a la próxima renovación del lock). */
   async savePlan(plan: DeployPlan): Promise<void> {
@@ -256,7 +267,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(t("store.lockHeld", { holder }));
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities, ...(this.plan ? { plan: this.plan } : {}) });
+        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities, ...(this.plan ? { plan: this.plan } : {}), ...(this.prs ? { prs: this.prs } : {}) });
       });
     await take();
     const timer = setInterval(() => {

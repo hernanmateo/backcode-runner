@@ -24,6 +24,21 @@ export interface PrHost {
   merge(prUrl: string): Promise<{ sha?: string }>;
   /** Estado del PR (p. ej. para enterarse de un merge hecho a mano en GitHub/Bitbucket) y su commit de merge. */
   prState(prUrl: string): Promise<{ state: "open" | "merged" | "closed"; sha?: string }>;
+  /** PR abiertos del repo (también los creados fuera de Backcode), los más recientes primero. */
+  listOpen(): Promise<OpenPr[]>;
+  /** Cierra el PR sin mergear; con `deleteBranch`, borra también su rama del remoto. */
+  close(prUrl: string, deleteBranch: boolean): Promise<void>;
+}
+
+export interface OpenPr {
+  url: string;
+  number: number;
+  title: string;
+  author: string;
+  branch: string;
+  base: string;
+  draft: boolean;
+  updatedAt: string;
 }
 
 const summarize = (items: { name: string; state: "ok" | "pending" | "fail" }[]): Checks => {
@@ -77,6 +92,19 @@ export function githubHost(repoPath: string): PrHost {
     async prState(prUrl) {
       const pr = JSON.parse(await gh(["pr", "view", prUrl, "--json", "state,mergeCommit"])) as { state: string; mergeCommit?: { oid?: string } | null };
       return { state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open", sha: pr.mergeCommit?.oid || undefined };
+    },
+    async listOpen() {
+      const rows = JSON.parse(await gh(["pr", "list", "--state", "open", "--limit", "50", "--json", "url,number,title,author,headRefName,baseRefName,isDraft,updatedAt"])) as {
+        url: string; number: number; title: string; author?: { login?: string }; headRefName: string; baseRefName: string; isDraft: boolean; updatedAt: string;
+      }[];
+      return rows.map((r) => ({ url: r.url, number: r.number, title: r.title, author: r.author?.login ?? "", branch: r.headRefName, base: r.baseRefName, draft: r.isDraft, updatedAt: r.updatedAt }));
+    },
+    async close(prUrl, deleteBranch) {
+      await gh(["pr", "close", prUrl, ...(deleteBranch ? ["--delete-branch"] : [])]).catch(async (e) => {
+        // --delete-branch puede fallar con la rama local en un worktree tras cerrar bien.
+        const state = await gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => "");
+        if (state !== "CLOSED") throw e;
+      });
     },
   };
 }
@@ -137,6 +165,17 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
     async prState(prUrl) {
       const pr = await api<Pr & { state: string }>(`/pullrequests/${await prId(prUrl)}`);
       return { state: pr.state === "MERGED" ? "merged" : pr.state === "OPEN" ? "open" : "closed", sha: pr.merge_commit?.hash };
+    },
+    async listOpen() {
+      type Row = Pr & { title: string; author?: { display_name?: string }; source: { branch: { name: string } }; destination: { branch: { name: string } }; draft?: boolean; updated_on: string };
+      const rows = (await api<{ values: Row[] }>(`/pullrequests?state=OPEN&pagelen=50`)).values;
+      return rows.map((r) => ({ url: r.links.html.href, number: r.id, title: r.title, author: r.author?.display_name ?? "", branch: r.source.branch.name, base: r.destination.branch.name, draft: !!r.draft, updatedAt: r.updated_on }));
+    },
+    async close(prUrl, deleteBranch) {
+      const id = await prId(prUrl);
+      const pr = await api<{ source: { branch: { name: string } } }>(`/pullrequests/${id}`);
+      await api(`/pullrequests/${id}/decline`, { method: "POST" });
+      if (deleteBranch) await api(`/refs/branches/${encodeURIComponent(pr.source.branch.name)}`, { method: "DELETE" }).catch(() => undefined);
     },
   };
 }
