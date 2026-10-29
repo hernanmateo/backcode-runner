@@ -316,7 +316,7 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 | **Abrir PR** | cualquier miembro | Para tareas con solo la rama subida: abre el PR (sin volver a ejecutar a Claude). |
 | **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. Después pone al día tu copia local (ver abajo). |
 | **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
-| **Build para testers** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
+| **Build** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
 | **Instalar en mi móvil** | cualquier miembro | Compila la app en Release con lo último de la rama base y la instala en uno de **tus** móviles emparejados con el ordenador de tu runner, por wifi o por cable (ver abajo). |
 
 ### Tu copia local se pone al día sola
@@ -403,7 +403,7 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   de desarrollo), y el runner borra las que lleven 14 días sin usarse.
 
 ### Builds para testers (TestFlight / Internal Testing)
-En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
+En la misma pantalla de publicar, pestaña **Build** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
 `production`). Es un binario nuevo, no un OTA: el admin elige iOS y/o Android y escribe la **versión** (`1.0.16`) y la
 **runtimeVersion** (por defecto, la misma que la versión). El runner, en una copia limpia de la rama base y con los checks en verde:
 1. Instala dependencias y comprueba con `expo config` que la app aplica la versión pedida: la recibe en `APP_VERSION` y
