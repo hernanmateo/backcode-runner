@@ -31,14 +31,25 @@ Todas instalan el mismo runner y abren el mismo panel.
 | **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
 | **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
 | **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
-| **Plugin de Claude Code** | En Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Plugin de Claude Code** | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
 | **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
 
 Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
 (`BACKCODE_NO_OPEN=1`), solo el ejecutable (`backcode-<os>-<arch>` de la Release, con `SHA256SUMS`) o en un servidor sin navegador
 (`backcode connect` + `backcode service install`).
 
-**Plugin de Claude Code.** `/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
+**Plugin de Claude Code.** Cada persona lo instala una vez en su Claude Code:
+
+```text
+/plugin marketplace add hernanmateo/backcode-runner
+/plugin install backcode@backcode
+```
+
+El marketplace se lee del repo público `hernanmateo/backcode-runner`: si ese repo se pone privado, deja de funcionar para quien
+no tenga acceso, y habría que publicar el marketplace (`.claude-plugin/` y `plugins/`) en un repo público, p. ej. el de las
+releases.
+
+`/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
 runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
 clona el repo y lo deja arrancando al iniciar sesión) y `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo

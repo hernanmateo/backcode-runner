@@ -74,7 +74,7 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 | **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
 | **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
 | **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
-| **🤖 Claude Code plugin** | In Claude Code: `/plugin install backcode --marketplace hernanmateo/backcode-runner`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🤖 Claude Code plugin** | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
 | **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
 <details>
@@ -202,9 +202,14 @@ first failure.
 Prefer to do it from Claude Code? The `backcode` plugin sets everything up with you, conversationally:
 
 ```text
-/plugin install backcode --marketplace hernanmateo/backcode-runner
+/plugin marketplace add hernanmateo/backcode-runner
+/plugin install backcode@backcode
 /backcode:setup
 ```
+
+Everyone installs it once in their own Claude Code. The marketplace is read from the public `hernanmateo/backcode-runner` repo:
+if that repo goes private, it stops working for anyone without access, and the marketplace (`.claude-plugin/` and `plugins/`)
+would have to be published from a public repo, such as the releases one.
 
 - **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
   configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
