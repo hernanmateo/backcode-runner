@@ -1,12 +1,31 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { CONFIG_DIR } from "./paths.js";
 
 // Encontrar el repo de un proyecto en este ordenador sin preguntar la ruta: se miran las carpetas donde se suelen guardar
 // (dos niveles) y se compara el remoto con la URL del proyecto. Así quien ya lo tiene clonado no tiene que hacer nada, y
 // quien no, lo clona con un clic en ~/Backcode/<proyecto>.
 
-export const REPO_ROOTS = ["Projects", "Developer", "Code", "code", "dev", "src", "Sites", "GitHub", "Documents/GitHub", "Documents/Projects", "repos", "workspace", "Backcode"];
+export const REPO_ROOTS = ["Projects", "projects", "Developer", "Code", "code", "dev", "src", "Sites", "apps", "Apps", "GitHub", "Documents/GitHub", "Documents/Projects", "repos", "Repos", "workspace", "Backcode"];
+
+/** Carpetas donde ya tienes otros proyectos conectados (la de cada repo y la de encima): ahí suelen estar los demás. */
+function connectedRoots(): string[] {
+  let files: string[];
+  try {
+    files = readdirSync(CONFIG_DIR).filter((f) => f.endsWith(".env"));
+  } catch {
+    return [];
+  }
+  const repos = files.map((f) => {
+    try {
+      return /^BACKCODE_REPO_PATH=(.+)$/m.exec(readFileSync(join(CONFIG_DIR, f), "utf8"))?.[1]?.trim() ?? "";
+    } catch {
+      return "";
+    }
+  });
+  return repos.filter(Boolean).flatMap((r) => [dirname(r), dirname(dirname(r))]);
+}
 
 /** Carpeta por defecto para clonar un proyecto: ~/Backcode/<nombre-en-minúsculas>. */
 export function defaultClonePath(name: string | undefined, projectId: string): string {
@@ -62,7 +81,19 @@ export function findRepos(home = homedir()): FoundRepo[] {
     }
   };
   for (const root of REPO_ROOTS) visit(join(home, root), 1);
-  const unique = [...new Map(found.map((r) => [r.path, r])).values()];
+  // Fuera de la carpeta personal o de las de siempre (p. ej. ~/apps/…): donde estén los proyectos ya conectados.
+  for (const root of new Set(connectedRoots())) if (root.startsWith(home) && root !== home) visit(root, 1);
+  // En macOS ~/projects y ~/Projects son la misma carpeta: se cuenta una vez (por su ruta real).
+  const real = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      return p;
+    }
+  };
+  const byReal = new Map<string, (typeof found)[number]>();
+  for (const r of found) if (!byReal.has(real(r.path))) byReal.set(real(r.path), r);
+  const unique = [...byReal.values()];
   return unique.sort((a, b) => b.mtime - a.mtime).map(({ path, name, remote }) => ({ path, name, remote }));
 }
 

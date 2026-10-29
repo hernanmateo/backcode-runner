@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { t } from "./i18n.js";
 import { panelCall } from "./panel-client.js";
@@ -102,6 +105,16 @@ for (;;) {
   if (r.need === "clone") {
     const answer = tty ? (await ask(`\n${t("connect.askClone", { path: r.path, url: r.url })} `)).toLowerCase() : "n";
     answers.clone = ["", "s", "si", "sí", "y", "yes"].includes(answer);
+    // Ya lo tienes en otra carpeta: su ruta (hasta que sea un repo; vacío, salir sin guardar).
+    while (!answers.clone && tty) {
+      const path = (await ask(t("connect.askRepoPath"))).replace(/^~(?=\/|$)/, homedir());
+      if (!path) process.exit(1);
+      if (existsSync(join(path, ".git"))) {
+        answers.repoPath = path;
+        break;
+      }
+      console.error(`  ✗ ${t("connect.notGitRepo", { path })}`);
+    }
     continue;
   }
   if (r.need === "repo") {
