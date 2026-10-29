@@ -125,12 +125,14 @@ en el panel (o en `backcode connect`). Se guarda en `~/.backcode/config/<proyect
 **¿Dónde está el repo?** No hace falta decirlo. Al conectar, el runner usa, por orden:
 1. La ruta de la configuración, si la trae y es un repo git (las configuraciones antiguas la llevan).
 2. Un repo de este ordenador cuyo remoto es el del proyecto (`origin`, https o ssh), buscando dos niveles dentro de `~/Projects`,
-   `~/Developer`, `~/Code`, `~/code`, `~/dev`, `~/src`, `~/Sites`, `~/GitHub`, `~/Documents/GitHub`, `~/Documents/Projects`,
-   `~/repos`, `~/workspace` y `~/Backcode`. Lo usa sin preguntar.
+   `~/Developer`, `~/Code`, `~/code`, `~/dev`, `~/src`, `~/Sites`, `~/apps`, `~/GitHub`, `~/Documents/GitHub`,
+   `~/Documents/Projects`, `~/repos`, `~/workspace`, `~/Backcode` y las carpetas donde ya tienes otros proyectos conectados (la
+   del repo y la de encima). Lo usa sin preguntar.
 3. Si no lo encuentra, el panel ofrece **Clonar en `~/Backcode/<proyecto>`** (si el proyecto ya tiene URL: la guarda el runner del
    primero que conecta; solo GitHub o Bitbucket, sin credenciales), **Elegir carpeta…** (selector de macOS) o uno de los repos
    que ha encontrado. Los repos de GitHub se clonan por https con la sesión de **Conectar con GitHub** (sin claves ssh).
-En la terminal (`backcode connect`), si la ruta no existe, pregunta si lo clona ahí. Desde el panel git no puede pedir contraseñas:
+En la terminal (`backcode connect`), si no lo encuentra, pregunta si lo clona; si contestas que no, te pide la ruta del repo
+(o pásala con `--repo <ruta>`). También puedes indicarla en la app al copiar la configuración (**Ruta del repo · indicarla**). Desde el panel git no puede pedir contraseñas:
 con GitHub, conecta antes GitHub en el panel; con Bitbucket, que tu git tenga credenciales (o clónalo tú).
 
 **GitHub sin terminal.** El panel instala GitHub CLI si falta (Homebrew si lo tienes; si no, el binario oficial de
