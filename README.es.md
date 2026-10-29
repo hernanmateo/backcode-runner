@@ -292,6 +292,9 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   Claude Code, fuera del sandbox del runner**. La tarea sigue «Ejecutando» y su actividad se sigue viendo en Backcode. Al
   salir de la sesión o pulsar **Volver a Backcode**, el runner retoma la misma sesión en el sandbox: revisa lo hecho,
   publica los cambios (el mismo PR) o te pregunta.
+  Mientras está abierta allí, la tarjeta del tablero y la ficha dicen **En la app de Claude** (no avanza sola). Si la
+  terminas allí, muévela a mano (p. ej. a «PR listo»): en unos minutos el runner la suelta (sin cerrar tu sesión de Claude) y
+  enlaza el PR abierto de su rama.
 - **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Ahí
   trabajas con tus permisos normales, fuera del sandbox del runner.
 
@@ -316,7 +319,7 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 | **Abrir PR** | cualquier miembro | Para tareas con solo la rama subida: abre el PR (sin volver a ejecutar a Claude). |
 | **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. Después pone al día tu copia local (ver abajo). |
 | **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
-| **Build para testers** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
+| **Build** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
 | **Instalar en mi móvil** | cualquier miembro | Compila la app en Release con lo último de la rama base y la instala en uno de **tus** móviles emparejados con el ordenador de tu runner, por wifi o por cable (ver abajo). |
 
 ### Tu copia local se pone al día sola
@@ -354,6 +357,8 @@ El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de l
 - Un admin puede **mergearlos** (checks en verde, squash y borrar la rama) o **descartarlos** (cerrar el PR, conservando o
   borrando su rama). Lo hace **su** runner, así que solo se ofrece si el suyo está conectado y con GitHub/Bitbucket enlazado;
   si no, la app dice qué enlazar. El runner solo toca PR que estén abiertos en ese repo.
+- **PR de una tarea abierto fuera del runner** (p. ej. por Claude en la app de Claude, en la rama `backcode/…`): si la tarea
+  está en «PR listo» sin PR enlazado, el runner lo enlaza en esa misma pasada.
 - **Descartar una tarea con PR abierto** (ficha o tablero) también cierra el PR y borra su rama y su copia de trabajo.
 
 ### Pendiente de desplegar
@@ -403,7 +408,7 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   de desarrollo), y el runner borra las que lleven 14 días sin usarse.
 
 ### Builds para testers (TestFlight / Internal Testing)
-En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
+En la misma pantalla de publicar, pestaña **Build** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
 `production`). Es un binario nuevo, no un OTA: el admin elige iOS y/o Android y escribe la **versión** (`1.0.16`) y la
 **runtimeVersion** (por defecto, la misma que la versión). El runner, en una copia limpia de la rama base y con los checks en verde:
 1. Instala dependencias y comprueba con `expo config` que la app aplica la versión pedida: la recibe en `APP_VERSION` y

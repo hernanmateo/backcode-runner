@@ -10,6 +10,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   getFirestore,
   onSnapshot,
   increment,
@@ -451,6 +452,18 @@ export class Store {
     const d = await getDoc(this.feature(featureId));
     const result = (d.get("result") as FeatureResult | undefined) ?? {};
     return { title: String(d.get("title") ?? ""), branch: d.get("branch") as string | undefined, prUrl: result.prUrl, summary: result.summary, refinedPrompt: String(d.get("refinedPrompt") ?? "") };
+  }
+
+  async featureStatus(featureId: string): Promise<string | undefined> {
+    return (await getDoc(this.feature(featureId))).get("status") as string | undefined;
+  }
+
+  /** Enlaza un PR abierto a la tarea de su rama si está en «PR listo» sin enlace (lo abrió alguien fuera del runner). */
+  async adoptPr(branch: string, url: string): Promise<void> {
+    const snap = await getDocs(query(collection(this.db, "projects", this.cfg.projectId, "features"), where("branch", "==", branch), limit(1)));
+    const d = snap.docs[0];
+    if (!d || d.get("status") !== "done" || (d.get("result") as FeatureResult | undefined)?.prUrl) return;
+    await this.setPrUrl(d.id, url);
   }
 
   async setPrUrl(featureId: string, url: string): Promise<void> {
