@@ -622,7 +622,8 @@ async function main(): Promise<void> {
     pr: prHost?.kind ?? null,
     expo: !!expoApp,
     deploys,
-    ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota } : null,
+    // Con lo detectado de su configuración (servidor, tipo y script), para que la app lo enseñe tal cual.
+    ota: expoApp?.ota ? { channels: expoApp.channels, via: expoApp.ota, ...(expoApp.otaServer ? { server: expoApp.otaServer } : {}), ...(expoApp.otaProvider ? { provider: expoApp.otaProvider } : {}), ...(expoApp.otaScript ? { script: expoApp.otaScript.slice(0, 200) } : {}) } : null,
     // Builds locales para testers: con perfil `production` en eas.json; iOS solo si el runner corre en un Mac.
     build: expoApp?.buildProfiles.includes("production") ? { platforms: process.platform === "darwin" ? ["ios", "android"] : ["android"] } : null,
     // «Instalar en mi móvil»: app Expo y, en este ordenador, Xcode (iOS) o adb (Android).
