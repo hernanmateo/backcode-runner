@@ -188,6 +188,10 @@ export interface ExpoApp {
   pm: "npm" | "pnpm" | "yarn" | "bun";
   /** Perfiles de `build` de eas.json (las builds para testers usan `production`, la de tienda). */
   buildProfiles: string[];
+  /** Servidor de OTA detectado (origen de `updates.url` de la config de Expo o el del script), para enseñarlo en la app. */
+  otaServer?: string;
+  /** Qué hay detrás: EAS Update, xprem u otro servidor compatible con expo-updates. */
+  otaProvider?: "eas" | "xprem" | "custom";
 }
 
 export async function findExpoApp(repoPath: string, commit: string): Promise<ExpoApp | null> {
@@ -217,7 +221,18 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
     const has = (f: string) => files.includes(`${dir}${f}`) || files.includes(f);
     const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
     const ota = scripts["ota:publish"] ? "script" : /u\.expo\.dev\//.test(config) ? "eas" : null;
-    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, otaScript: scripts["ota:publish"], pm, buildProfiles };
+    // Servidor: el `updates.url` de la config (de donde descarga la app) o, si no, el del script de publicar (SERVER_URL…).
+    const scriptFile = /(?:^|\s)(?:bash\s+|sh\s+)?(\.?\/?[\w./-]+\.sh)\b/.exec(scripts["ota:publish"] ?? "")?.[1]?.replace(/^\.\//, "");
+    const scriptText = scriptFile ? await show(`${dir}${scriptFile}`) : "";
+    const url = /updates[\s\S]{0,400}?url["']?\s*:\s*["'](https?:\/\/[^"']+)["']/.exec(config)?.[1] ?? /(?:SERVER_URL=|--serverUrl\s+)["']?(https?:\/\/[^\s"']+)/.exec(scriptText)?.[1];
+    let otaServer: string | undefined;
+    try {
+      otaServer = url ? new URL(url).origin : undefined;
+    } catch {
+      otaServer = undefined;
+    }
+    const otaProvider = !ota ? undefined : otaServer?.includes("u.expo.dev") || ota === "eas" ? "eas" : /xprem/i.test(`${scriptText}\n${config}\n${scripts["ota:publish"]}`) ? "xprem" : "custom";
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, otaScript: scripts["ota:publish"], pm, buildProfiles, ...(otaServer ? { otaServer } : {}), ...(otaProvider ? { otaProvider } : {}) };
   }
   return null;
 }
