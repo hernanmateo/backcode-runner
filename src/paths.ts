@@ -71,19 +71,40 @@ export const BIN_DIR = join(HOME_DIR, "bin");
   const extra = [BIN_DIR, join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", bun, pnpm, join(homedir(), ".volta", "bin")].filter((d) => !current.includes(d) && existsSync(d));
   // Y el PATH de tu shell de login (rbenv con `pod`, nvm, bun…): lo que funciona en tu terminal funciona en el runner. Se
   // pregunta una vez; los procesos hijos (un runner por proyecto) lo heredan.
-  const shell = process.platform === "win32" || process.env.BACKCODE_SHELL_PATH ? [] : loginShellPath();
+  const login = process.platform === "win32" || process.env.BACKCODE_SHELL_PATH ? null : loginShellEnv();
   process.env.BACKCODE_SHELL_PATH = "1";
+  const shell = login?.PATH?.split(":").filter((d) => isAbsolute(d)) ?? [];
   const merged = [...new Set([...extra, ...current, ...shell.filter((d) => existsSync(d))])];
   if (merged.length !== current.length) process.env.PATH = merged.join(":");
+  // Android: el SDK y el Java de tu shell; si no los define, los habituales. Sin ANDROID_HOME, Gradle falla con «SDK
+  // location not found» (como servicio el runner no hereda tu terminal) y React Native compila con el JDK 17, no con el
+  // que macOS tenga por defecto (p. ej. el 19).
+  for (const key of ["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME"] as const) {
+    if (!process.env[key] && login?.[key] && existsSync(login[key]!)) process.env[key] = login[key];
+  }
+  if (!process.env.ANDROID_HOME) {
+    const sdk = [process.env.ANDROID_SDK_ROOT, join(homedir(), "Library", "Android", "sdk"), join(homedir(), "Android", "Sdk")].find((d): d is string => !!d && existsSync(d));
+    if (sdk) process.env.ANDROID_HOME = sdk;
+  }
+  if (process.env.ANDROID_HOME && !process.env.ANDROID_SDK_ROOT) process.env.ANDROID_SDK_ROOT = process.env.ANDROID_HOME;
+  if (!process.env.JAVA_HOME && process.platform === "darwin") {
+    try {
+      process.env.JAVA_HOME = execFileSync("/usr/libexec/java_home", ["-v", "17"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+    } catch {
+      // sin JDK 17: Gradle usará el que haya (y dirá qué versión le falta)
+    }
+  }
 }
 
-/** Las carpetas del PATH de tu shell de login (zsh -il), o [] si no responde en unos segundos. */
-function loginShellPath(): string[] {
+/** PATH, ANDROID_HOME, ANDROID_SDK_ROOT y JAVA_HOME de tu shell de login (zsh -il), o null si no responde en unos segundos. */
+function loginShellEnv(): Partial<Record<"PATH" | "ANDROID_HOME" | "ANDROID_SDK_ROOT" | "JAVA_HOME", string>> | null {
   try {
-    const out = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", 'printf "\n__BACKCODE_PATH__%s__BACKCODE_PATH__\n" "$PATH"'], { encoding: "utf8", timeout: 8_000, stdio: ["ignore", "pipe", "ignore"] });
-    return out.match(/__BACKCODE_PATH__(.*)__BACKCODE_PATH__/)?.[1]?.split(":").filter((d) => isAbsolute(d)) ?? [];
+    const keys = ["PATH", "ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME"] as const;
+    const script = keys.map((k) => `printf "\n__BACKCODE_${k}__%s__BACKCODE_${k}__\n" "$${k}"`).join("; ");
+    const out = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", script], { encoding: "utf8", timeout: 8_000, stdio: ["ignore", "pipe", "ignore"] });
+    return Object.fromEntries(keys.map((k) => [k, new RegExp(`__BACKCODE_${k}__(.*)__BACKCODE_${k}__`).exec(out)?.[1] || undefined]).filter(([, v]) => v));
   } catch {
-    return [];
+    return null;
   }
 }
 
