@@ -48,6 +48,8 @@ export let latestVersion: string | undefined;
 
 let warned = "";
 let lastNpmCheck = 0;
+/** Versión ya instalada y a la espera de reiniciar: no se vuelve a descargar (ni a reiniciar a nadie) por ella. */
+let installedVersion: string | undefined;
 
 /**
  * Actualiza el runner si hay versión nueva. Devuelve true si está lista (hay que reiniciar para usarla). Si algo no cuadra,
@@ -83,7 +85,7 @@ async function updateFromNpm(): Promise<boolean> {
   const latest = ((await res.json()) as { version?: string }).version;
   if (!latest || !/^\d+\.\d+\.\d+$/.test(latest)) return false;
   latestVersion = latest;
-  if (!newer(latest, VERSION)) return false;
+  if (!newer(latest, installedVersion ?? VERSION)) return false;
   if (UPDATE_MODE === "manual") return warnOnce(`manual-${latest}`, t("update.manual", { version: latest }));
   console.log(`[backcode] ${t("update.npmFound", { version: latest })}`);
   const ok = await run("npm", ["install", "--prefix", APP_DIR, `${PACKAGE_NAME}@${latest}`, "--no-audit", "--no-fund"], APP_DIR).then(() => true, () => false);
@@ -91,6 +93,7 @@ async function updateFromNpm(): Promise<boolean> {
   // La copia nueva tiene que arrancar (y ser la que se pidió) antes de reiniciar con ella.
   const installed = await run(...selfCommand(["--version"]), APP_DIR).then((s) => s.trim(), () => "");
   if (installed !== latest) return warnOnce(`npm-${latest}`, t("update.broken"));
+  installedVersion = latest;
   console.log(`[backcode] ${t("update.ready")}`);
   return true;
 }
@@ -109,7 +112,7 @@ async function updateBinary(): Promise<boolean> {
   const latest = ((await res.json()) as { tag_name?: string }).tag_name?.replace(/^v/, "");
   if (!latest || !/^\d+\.\d+\.\d+$/.test(latest)) return false;
   latestVersion = latest;
-  if (!newer(latest, VERSION)) return false;
+  if (!newer(latest, installedVersion ?? VERSION)) return false;
   console.log(`[backcode] ${t("update.npmFound", { version: latest })}`);
   const base = `https://github.com/${RELEASES_REPO}/releases/download/v${latest}`;
   const fail = () => warnOnce(`bin-${latest}`, t("update.npmFailed", { version: latest }));
@@ -130,6 +133,7 @@ async function updateBinary(): Promise<boolean> {
       return fail();
     }
     renameSync(next, process.execPath);
+    installedVersion = latest;
   } catch {
     return fail();
   }
