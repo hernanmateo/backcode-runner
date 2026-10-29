@@ -87,11 +87,13 @@ export async function smokeTest(appDir: string, env: Record<string, string>, scr
  * con xcodebuild, que muere con «The sandbox is not in sync with the Podfile.lock» y el código 65, sin el motivo real.
  * Devuelve el fallo (con su causa) o undefined si todo está listo.
  */
-export async function prepareNativeProject(appDir: string, env: Record<string, string>): Promise<SmokeResult | undefined> {
+export async function prepareNativeProject(appDir: string, env: Record<string, string>, opts: { refresh?: boolean } = {}): Promise<SmokeResult | undefined> {
   const iosDir = join(appDir, "ios");
   // Copia limpia (el runner) o repo que ignora ios/: se genera desde la config de Expo. Si ya existe (p. ej. el script
   // lanzado a mano en un repo con ios/ versionado), se respeta tal cual, como hace run:ios.
-  if (!existsSync(join(iosDir, "Podfile"))) {
+  // refresh: una copia que se conserva (Instalar en mi móvil) ya tiene ios/, pero de un commit anterior: se vuelve a
+  // aplicar la config de Expo encima (sin --clean, así lo compilado y los Pods se aprovechan).
+  if (opts.refresh || !existsSync(join(iosDir, "Podfile"))) {
     const prebuild = await runLong(["npx", "expo", "prebuild", "--platform", "ios", "--no-install"], appDir, { ...env, CI: "1" }, PREBUILD_MS);
     if (!prebuild.ok) return { ok: false, detail: t("smoke.prebuild", { log: buildErrors(prebuild.out) }) };
     if (!existsSync(join(iosDir, "Podfile"))) return { ok: false, detail: t("smoke.prebuild", { log: buildErrors(prebuild.out) }) };

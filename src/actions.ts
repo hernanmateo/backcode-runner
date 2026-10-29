@@ -1,9 +1,10 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
@@ -412,20 +413,26 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: t("build.notExpo") } };
-  const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  // Copia que se conserva entre instalaciones (dependencias, ios/android, Pods y la caché de Xcode por su ruta): solo se
+  // mueve al commit nuevo, y así la segunda instalación compila lo que ha cambiado y no todo (de ~10 min a 1-2).
+  const wt = await installWorktree(cfg, commit);
   const dir = join(wt, app.appDir);
   // Las variables del perfil de tienda de eas.json (EXPO_PUBLIC_…): la app se comporta como la publicada.
   const env = { ...profileEnv(dir, "production"), CI: "1" };
   const label = `${device.name}${device.model && device.model !== device.name ? ` (${device.model})` : ""}`;
   try {
-    await installFrozen(app, wt, dir);
-    await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
+    await depsIfChanged(app, wt, dir);
+    // Los ficheros locales (ignorados por git) se copian de nuevo cada vez: en la copia que se conserva podrían ser viejos.
+    const locals = [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")];
+    for (const f of locals) rmSync(join(wt, f), { force: true });
+    await copyLocalFiles(cfg.repoPath, wt, locals);
     const config = await appConfig(dir, env);
     const services = [config?.ios?.googleServicesFile, config?.android?.googleServicesFile].filter((f): f is string => typeof f === "string");
     await copyLocalFiles(cfg.repoPath, wt, services.map((f) => join(app.appDir, f)));
 
     if (platform === "ios") {
-      const failed = await prepareNativeProject(dir, env);
+      // refresh: el ios/ que se conserva se pone al día con la config de Expo de este commit (sin --clean: rápido).
+      const failed = await prepareNativeProject(dir, env, { refresh: true });
       if (failed) return { ok: false, result: { sha: commit, error: failed.detail } };
       // Equipo con el que se firma: si no se fija, Expo coge el primero que tenga Xcode (a menudo el Personal Team, que no
       // puede registrar el bundle id de la empresa: «Failed Registering Bundle Identifier»).
@@ -469,10 +476,32 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
     return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev, device.id)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
-  } finally {
-    await removeWorktree(cfg.repoPath, wt);
-    rmSync(wt, { recursive: true, force: true });
   }
+}
+
+/** La copia de «Instalar en mi móvil» (_install): se crea una vez y después solo se mueve al commit pedido. */
+async function installWorktree(cfg: RunnerConfig, commit: string): Promise<string> {
+  const path = join(cfg.worktreesDir, "_install");
+  if (!existsSync(join(path, ".git"))) return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  try {
+    await gitIn(path, ["checkout", "--detach", "--force", "--quiet", commit]);
+    // Fuera lo que no es del repo, salvo lo que se quiere conservar (las carpetas ignoradas, como node_modules, ya se quedan).
+    await gitIn(path, ["clean", "-fdq", "-e", "ios", "-e", "android", "-e", ".expo"]);
+    return path;
+  } catch {
+    return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  }
+}
+
+/** Instala dependencias solo si faltan o cambió el lockfile desde la última vez en esta copia. */
+async function depsIfChanged(app: Pick<ExpoApp, "pm">, wt: string, dir: string): Promise<void> {
+  const lock = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"].flatMap((f) => [join(dir, f), join(wt, f)]).find((f) => existsSync(f));
+  const hash = lock ? createHash("sha256").update(readFileSync(lock)).digest("hex") : "";
+  const stamp = join(wt, "node_modules", ".backcode-lock");
+  if (existsSync(stamp) && readFileSync(stamp, "utf8") === hash && (dir === wt || existsSync(join(dir, "node_modules")) || existsSync(join(wt, "node_modules")))) return;
+  await installFrozen(app, wt, dir);
+  mkdirSync(join(wt, "node_modules"), { recursive: true });
+  writeFileSync(stamp, hash);
 }
 
 /**
