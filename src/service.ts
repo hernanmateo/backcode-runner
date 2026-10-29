@@ -82,6 +82,8 @@ export async function installService(opts: { executable?: string; keepRunning?: 
     await exec("launchctl", ["bootout", `${domain}/${LABEL}`]).catch(() => undefined);
     writeFileSync(PLIST, plist);
     await exec("launchctl", ["bootstrap", domain, PLIST]);
+    // RunAtLoad no basta: macOS 27 puede dejar el arranque en espera («speculative») y no lanzarlo nunca.
+    await kickService();
     return;
   }
   if (process.platform === "linux") {
@@ -109,6 +111,12 @@ WantedBy=default.target
     return;
   }
   throw new Error(`unsupported platform: ${process.platform}`);
+}
+
+/** Arranca el servicio ya instalado si no está en marcha (sin -k: si ya corre, no lo toca). Solo macOS. */
+export async function kickService(): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await exec("launchctl", ["kickstart", `gui/${userInfo().uid}/${LABEL}`]).catch(() => undefined);
 }
 
 /**
