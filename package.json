@@ -1,6 +1,6 @@
 {
   "name": "backcode",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "description": "Runner local de Backcode: escucha las tareas que aceptas en la app y las implementa con Claude Code en una rama propia. Incluye un panel para conectarlo y gestionarlo sin terminal.",
   "license": "Apache-2.0",
   "author": "Brothapps S.L.",
