@@ -57,7 +57,8 @@ export function githubHost(repoPath: string): PrHost {
   return {
     kind: "github",
     async openOrUpdatePr({ cwd, branch, base, title, body }) {
-      const existing = await gh(["pr", "view", branch, "--json", "url,state", "-q", 'select(.state == "OPEN") | .url'], cwd).catch(() => "");
+      // El abierto de la rama, o uno ya mergeado (p. ej. a mano en GitHub): no se crea otro.
+      const existing = await gh(["pr", "view", branch, "--json", "url,state", "-q", 'select(.state == "OPEN" or .state == "MERGED") | .url'], cwd).catch(() => "");
       if (/^https:\/\//.test(existing)) return existing;
       const out = await gh(["pr", "create", "--draft", "--base", base, "--head", branch, "--title", title, "--body", body], cwd);
       const url = out.split("\n").pop() ?? "";
@@ -141,7 +142,8 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
   return {
     kind: "bitbucket",
     async openOrUpdatePr({ branch, base: dest, title, body }) {
-      const q = encodeURIComponent(`source.branch.name="${branch}" AND state="OPEN"`);
+      // El abierto de la rama, o uno ya mergeado (p. ej. a mano en Bitbucket): no se crea otro.
+      const q = encodeURIComponent(`source.branch.name="${branch}" AND (state="OPEN" OR state="MERGED")`);
       const open = await api<{ values: Pr[] }>(`/pullrequests?q=${q}`);
       if (open.values[0]) return open.values[0].links.html.href;
       const payload = { title, description: body, source: { branch: { name: branch } }, destination: { branch: { name: dest } }, close_source_branch: true };
