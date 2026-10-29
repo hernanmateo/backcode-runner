@@ -151,12 +151,15 @@ export class Supervisor {
 
   /** Pide a cada runner que se reinicie al quedar libre (sin interrumpir lo que esté haciendo): versión nueva. */
   restartAllWhenIdle(): void {
+    this.updatedAt = Date.now();
     for (const p of this.projects.values()) {
-      if (!p.child) continue;
+      // Los lanzados después de instalarla ya llevan la versión nueva (y la señal, antes de que la escuchen, los mataría).
+      if (!p.child || (p.startedAt ?? 0) >= this.updatedAt) continue;
       this.pendingRestart.add(p.id);
       p.child.kill("SIGUSR2");
     }
   }
+  private updatedAt = 0;
   /** Runners que aún no se han reiniciado con la versión nueva (están terminando algo). */
   readonly pendingRestart = new Set<string>();
 
@@ -224,7 +227,8 @@ export class Supervisor {
       p.child = undefined;
       p.exitCode = code ?? undefined;
       this.pendingRestart.delete(p.id);
-      if (code === RESTART_CODE && p.state !== "stopping" && !this.draining) return this.launch(p);
+      // SIGUSR2 sin atender (llegó mientras arrancaba o salía): era un reinicio por versión nueva, no una caída.
+      if ((code === RESTART_CODE || (code === null && signal === "SIGUSR2")) && p.state !== "stopping" && !this.draining) return this.launch(p);
       const wasStopping = p.state === "stopping";
       this.log(p, t("all.exited", { code: code ?? signal ?? 0 }));
       if (wasStopping || code === 0 || this.draining) {
