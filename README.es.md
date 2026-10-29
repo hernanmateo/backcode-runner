@@ -359,6 +359,14 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
   CocoaPods y `expo run:ios --configuration Release --device <udid> --no-install` (firma con tu equipo de Xcode, instala y abre). Android: `expo prebuild`, `./gradlew assembleRelease` y `adb install -r` (si la
   instalada es de Google Play, con otra firma, hay que desinstalarla antes). Sin checks: solo llega a tu móvil.
 
+- **Versión de desarrollo** (en **Mi móvil**, «De desarrollo»): instala una build Debug que no lleva el JavaScript dentro,
+  sino que lo carga del **servidor de desarrollo** (Metro) de tu runner, por la wifi y en un puerto propio de cada proyecto. Se
+  instala una vez (y otra si cambia algo nativo). Después eliges qué código sirve: **la rama principal** (desde Mi móvil) o **una
+  tarea** con «Probar en mi móvil» en su ficha (su copia de trabajo si la tiene tu runner, así ves lo que Claude va cambiando; si
+  no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
+  `~/.backcode/worktrees/<proyecto>/_dev` (o en la copia de la tarea), sin tocar ficheros versionados (`EXPO_NO_TYPESCRIPT_SETUP`),
+  y se apaga solo a las 4 h o al reiniciar el runner. El estado lo guarda en `runners/{uid}/private/dev` (solo lo lees tú).
+
 ### Builds para testers (TestFlight / Internal Testing)
 En la misma pantalla de publicar, pestaña **Build para testers** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil
 `production`). Es un binario nuevo, no un OTA: el admin elige iOS y/o Android y escribe la **versión** (`1.0.16`) y la

@@ -139,8 +139,9 @@ For every task you accept, the runner:
 
 It also handles what an admin asks for from the app, always with your own credentials: merge a PR once checks are green,
 publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing, **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
-cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready), or run a
-deploy script.
+cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready) — or a
+**development version** that loads the code instantly from your runner's Metro: the main branch, or any task with "Try on my
+phone" on its page — or run a deploy script.
 
 ## Features
 

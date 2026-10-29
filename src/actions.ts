@@ -7,6 +7,7 @@ import { createDetachedWorktree, DEPLOY_PREFIX, type ExpoApp, findDeployTargets,
 import type { Checks, PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
+import { adbReverse, devPort, devServe, devServerRunning, devStop } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
 import type { Store } from "./store.js";
@@ -17,10 +18,12 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop";
   /** «Instalar en mi móvil»: plataforma y dispositivo (UDID de iOS o serie de adb) de los que publica el runner. */
   platform?: DevicePlatform;
   deviceId?: string;
+  /** release: la app tal cual (JS dentro). dev: build Debug que carga el JS del Metro de tu ordenador (ver dev-server.ts). */
+  variant?: "release" | "dev";
   /** Despliegue: `<carpeta>#<nombre>` de un script `backcode:deploy:<nombre>` detectado en el repo. */
   target?: string;
   featureId?: string;
@@ -69,7 +72,10 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
   // OTA, build y despliegue publican la rama base del remoto (no tu copia local): después, tu copia se pone al día
   // para que lo que ves en local sea lo que se acaba de publicar (p. ej. un merge que hizo otro y aún no tenías).
-  if (action.type === "install") return installOnDevice(cfg, action);
+  if (action.type === "install") return installOnDevice(cfg, store, action);
+  // Versión de desarrollo: Metro con la rama principal o con una tarea (featureId).
+  if (action.type === "devServe") return devServe(cfg, store, action.featureId);
+  if (action.type === "devStop") return devStop(cfg, store);
   const done =
     action.type === "build"
       ? await publishBuild(cfg, host, action)
@@ -287,6 +293,13 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
 }
 
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
+
+/** Tras instalar la versión de desarrollo, Metro con la rama principal si no estaba en marcha (para que la app arranque). */
+async function afterDevInstall(cfg: RunnerConfig, store: Store, dev: boolean): Promise<string> {
+  if (!dev || devServerRunning()) return "";
+  const served = await devServe(cfg, store);
+  return served.ok ? `${served.result.log}\n` : `${served.result.error}\n`;
+}
 const TEAM_RE = /^[A-Z0-9]{10}$/;
 
 /**
@@ -330,8 +343,10 @@ const DEVICE_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
  * TestFlight y sin checks: solo llega a tu móvil. iOS: `expo run:ios` firma con tu equipo de Xcode e instala con
  * devicectl. Android: APK release con Gradle (firma de la plantilla) e `adb install`.
  */
-async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
+async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   const platform = action.platform;
+  const dev = action.variant === "dev";
+  const port = devPort(cfg.projectId);
   const deviceId = action.deviceId ?? "";
   if ((platform !== "ios" && platform !== "android") || !DEVICE_ID_RE.test(deviceId)) return { ok: false, result: { error: t("install.badDevice") } };
   if (platform === "ios" && process.platform !== "darwin") return { ok: false, result: { error: t("build.needMac") } };
@@ -369,10 +384,12 @@ async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok:
       const team = await signingTeam(dir, config?.ios?.appleTeamId);
       if (team) setDevelopmentTeam(join(dir, "ios"), team);
       // --no-install: los pods ya los ha dejado listos prepareNativeProject (como en la prueba de arranque de los OTA).
-      const out = await exec(["npx", "expo", "run:ios", "--configuration", "Release", "--device", device.id, "--no-bundler", "--no-install"], dir, { env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+      // Debug + RCT_METRO_PORT (React Native lo compila dentro): la versión de desarrollo busca Metro en tu ordenador, en el
+      // puerto de este proyecto. Con --no-bundler, Expo no lo pasa por su cuenta a xcodebuild.
+      const out = await exec(["npx", "expo", "run:ios", "--configuration", dev ? "Debug" : "Release", "--device", device.id, "--no-bundler", "--no-install"], dir, { env: dev ? { ...env, RCT_METRO_PORT: String(port) } : env, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
         throw new Error(t("install.iosFailed", { log: buildErrors(err.message) }));
       });
-      return { ok: true, result: { sha: commit, log: `${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
+      return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev)}${t("install.done", { device: label })}\n${out.slice(-1200)}` } };
     }
 
     const adb = adbPath();
@@ -382,18 +399,19 @@ async function installOnDevice(cfg: RunnerConfig, action: Action): Promise<{ ok:
     if (!pkg) return { ok: false, result: { sha: commit, error: t("install.noPackage") } };
     const androidEnv = { ...env, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk };
     let log = await exec(["npx", "expo", "prebuild", "--platform", "android", "--no-install"], dir, { env: androidEnv, timeoutMs: INSTALL_TIMEOUT_MS });
-    log += await exec(["./gradlew", "assembleRelease", "--console=plain"], join(dir, "android"), { env: androidEnv, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
+    log += await exec(["./gradlew", dev ? "assembleDebug" : "assembleRelease", "--console=plain", ...(dev ? [`-PreactNativeDevServerPort=${port}`] : [])], join(dir, "android"), { env: androidEnv, timeoutMs: INSTALL_TIMEOUT_MS }).catch((err: Error) => {
       throw new Error(t("install.androidFailed", { log: buildErrors(err.message) }));
     });
-    const apkDir = join(dir, "android", "app", "build", "outputs", "apk", "release");
+    const apkDir = join(dir, "android", "app", "build", "outputs", "apk", dev ? "debug" : "release");
     const apk = existsSync(apkDir) ? readdirSync(apkDir).find((f) => f.endsWith(".apk")) : undefined;
     if (!apk) return { ok: false, result: { sha: commit, error: t("install.noApk") } };
     // -r: reinstala conservando los datos. Si la instalada es de la tienda (otra firma), Android no deja: se explica.
     await exec([adb, "-s", device.id, "install", "-r", join(apkDir, apk)], dir, { timeoutMs: 10 * 60_000 }).catch((err: Error) => {
       throw new Error(/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(err.message) ? t("install.otherSignature", { pkg }) : err.message);
     });
+    if (dev) await adbReverse(adb, device.id, port);
     await exec([adb, "-s", device.id, "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"], dir).catch(() => undefined);
-    return { ok: true, result: { sha: commit, log: `${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
+    return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -434,7 +452,7 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
 }
 
 /** Variables `env` del perfil de build de eas.json del canal (las que lleva el bundle publicado). */
-function profileEnv(dir: string, channel: string): Record<string, string> {
+export function profileEnv(dir: string, channel: string): Record<string, string> {
   try {
     const eas = JSON.parse(readFileSync(join(dir, "eas.json"), "utf8")) as { build?: Record<string, { env?: Record<string, string>; channel?: string }> };
     const profiles = eas.build ?? {};
@@ -473,7 +491,7 @@ function parseJson(out: string): unknown {
 }
 
 /** Dependencias con el gestor del repo (lockfile en la app o en la raíz del monorepo). */
-async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: string): Promise<void> {
+export async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: string): Promise<void> {
   const has = (f: string) => existsSync(join(dir, f)) || existsSync(join(wt, f));
   const frozen = { pnpm: ["pnpm", "install", "--frozen-lockfile"], yarn: ["yarn", "install", "--frozen-lockfile"], bun: ["bun", "install", "--frozen-lockfile"], npm: ["npm", "ci"] }[app.pm];
   // Donde está el lockfile: la carpeta del paquete o, en un monorepo (workspaces), la raíz.
@@ -485,7 +503,7 @@ async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: string):
 export const otaMissing = () => t("act.otaMissing");
 
 /** Copia ficheros locales ignorados por git (p. ej. .env con el token del servidor de OTA) a la copia limpia. */
-async function copyLocalFiles(repo: string, wt: string, paths: string[]): Promise<void> {
+export async function copyLocalFiles(repo: string, wt: string, paths: string[]): Promise<void> {
   for (const p of paths) {
     const from = join(repo, p);
     if (!existsSync(from) || existsSync(join(wt, p))) continue;
