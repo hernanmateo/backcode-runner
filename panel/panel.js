@@ -167,8 +167,11 @@ function renderAssign() {
   $("assign-body").textContent = s(state.allowAdminAssign ? "assignOn" : "assignOff");
 }
 
+let updatingSince = 0;
+
 function renderBanner() {
   const el = $("banner");
+  if (!state.updateAvailable || state.restartNeeded) updatingSince = 0;
   el.replaceChildren();
   if (state.leaving === "restart") {
     // El panel sigue respondiendo mientras espera a los runners: que se vea a qué espera (antes parecía que no hacía nada).
@@ -179,7 +182,16 @@ function renderBanner() {
     if (state.updateMode === "manual") {
       el.append(h("span", null, s("updateManual", { version: state.latest })), h("div", { class: "cmd" }, h("code", null, "npx backcode@latest"), copyButton("npx backcode@latest")));
     } else {
-      el.append(h("span", null, s("update", { version: state.latest })), h("button", { type: "button", onclick: (e) => { e.target.disabled = true; api("POST", "/api/update").then(apply, () => undefined); } }, s("updateNow")));
+      // El aviso se repinta en cada refresco: «actualizando» se recuerda aquí (hasta que haya que reiniciar o 3 min).
+      const busy = updatingSince && Date.now() - updatingSince < 180_000;
+      el.append(
+        h("span", null, s("update", { version: state.latest })),
+        h("button", { type: "button", class: "primary", disabled: busy, onclick: () => {
+          updatingSince = Date.now();
+          renderBanner();
+          api("POST", "/api/update").then(apply, () => { updatingSince = 0; renderBanner(); });
+        } }, busy ? h("span", { class: "spinner", "aria-hidden": "true" }) : null, busy ? s("updating") : s("updateNow")),
+      );
     }
   }
   el.hidden = !el.childElementCount;
@@ -665,7 +677,13 @@ function showOffline(message) {
 
 // ── Ciclo ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
+let loadedVersion = null;
+
 function apply(next) {
+  // El panel ha vuelto con otra versión (se ha actualizado o reiniciado con la página abierta): la página (HTML, JS, CSS)
+  // aún es la anterior; se recarga para que todo sea de la versión nueva, no solo el número.
+  loadedVersion ??= next.version;
+  if (next.version !== loadedVersion) return location.reload();
   // También si llegan textos que antes no estaban (el panel se ha actualizado con la página abierta).
   const relabel = !state || state.lang !== next.lang || Object.keys(next.strings).length !== Object.keys(S).length;
   state = next;
