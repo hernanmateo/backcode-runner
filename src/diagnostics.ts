@@ -57,6 +57,8 @@ const NOT_OURS = new RegExp(
   [
     "not logged in|log ?in (again|first)|re-?authenticat|unauthori[sz]ed|forbidden|permission denied|access denied|invalid_grant|credentials?|authenticat(e|ion) (failed|required|error)|\\b40[13]\\b|token (has )?expired|expired token|EACCES|EPERM",
     "ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|getaddrinfo|network (error|is unreachable)|offline",
+    // Caídas del servidor remoto (GitHub, la plataforma del despliegue): p. ej. `! [remote rejected] HEAD -> main (Internal Server Error)`.
+    "internal server error|bad gateway|service unavailable|gateway time-?out|\\b50[234]\\b|try again later",
     "rate.?limit|usage limit|quota|\\b429\\b|overloaded|\\b529\\b",
     "ENOSPC|no space left",
     "tests? (failed|failing)|\\d+ failing|test suites?: \\d+ failed|npm ci.*(lockfile|package-lock)|can only install with an existing package-lock|update your lock ?file|missing from lock ?file|are in sync",
