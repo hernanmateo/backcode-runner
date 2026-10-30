@@ -81,3 +81,25 @@ test("en el repo: backcode.toml gana a un backcode:deploy del mismo nombre y car
   assert.equal(api?.auto?.install, false);
   assert.equal(targets.find((d) => d.name === "web")?.source, "script");
 });
+
+test("Firebase detectado en un repo con bun: instala con bun, también la carpeta de las functions", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "bc-bun-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(repo, "functions"));
+  writeFileSync(join(repo, "package.json"), "{}");
+  writeFileSync(join(repo, "bun.lockb"), "");
+  writeFileSync(join(repo, "functions", "package.json"), "{}");
+  writeFileSync(join(repo, "functions", "bun.lockb"), "");
+  writeFileSync(join(repo, "firestore.rules"), "");
+  writeFileSync(join(repo, "firebase.json"), JSON.stringify({ firestore: { rules: "firestore.rules" }, functions: [{ source: "functions" }] }));
+  git("add", ".");
+  git("commit", "-qm", "init");
+  const targets = await findDeployTargets(repo, "HEAD");
+  const rules = targets.find((d) => d.name === "firebase-rules");
+  const fns = targets.find((d) => d.name === "firebase-functions");
+  assert.equal(rules?.pm, "bun");
+  assert.equal(rules?.auto?.deps, undefined);
+  assert.equal(fns?.pm, "bun");
+  assert.deepEqual(fns?.auto?.deps, [{ dir: "functions", pm: "bun" }]);
+});

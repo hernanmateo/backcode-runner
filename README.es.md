@@ -558,7 +558,9 @@ Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detec
 ya tiene un script que hace ese despliegue (p. ej. `"deploy": "npm run build && wrangler deploy"` o `"db:migrate": "wrangler d1
 migrations apply … --remote"`), se ejecuta **ese script**, con sus pasos previos, en vez del comando a secas. Se ejecutan con
 `npx` en tu ordenador, con **tu** sesión de cada herramienta (`wrangler login`, `supabase login` + `supabase link`,
-`firebase login`); la «i» junto a cada despliegue en la app lo explica si falla. De Supabase se copia el enlace local
+`firebase login`); la «i» junto a cada despliegue en la app lo explica si falla. Antes instala las dependencias con el
+gestor del repo según su lockfile (npm, pnpm, yarn o bun), y en `firebase-functions` también las de la carpeta `source` de
+las functions si tiene su propio `package.json`. De Supabase se copia el enlace local
 (`supabase/.temp`), y `db push` necesita `SUPABASE_DB_PASSWORD` en tu shell. En el plan de «Pendiente de desplegar», las
 migraciones y reglas van primero, luego las functions, luego servidores y webs, y la OTA al final.
 

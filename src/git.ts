@@ -188,6 +188,13 @@ export async function findRepoIcon(repoPath: string, commit: string, hint?: stri
  * - `eas`: EAS Update configurado (`updates.url` en u.expo.dev).
  * Sin ninguno de los dos, la app Expo no tiene OTA (`ota: null`) y se dice por qué en `reason`.
  */
+type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+/** Gestor de paquetes según el lockfile versionado (`has`: si está en la carpeta o, en un monorepo, en la raíz). */
+function pmOf(has: (f: string) => boolean): PackageManager {
+  return has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
+}
+
 export interface ExpoApp {
   appDir: string;
   channels: string[];
@@ -229,7 +236,7 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
       // sin package.json propio (monorepo): solo EAS
     }
     const has = (f: string) => files.includes(`${dir}${f}`) || files.includes(f);
-    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
+    const pm = pmOf(has);
     const ota = scripts["ota:publish"] ? "script" : /u\.expo\.dev\//.test(config) ? "eas" : null;
     // Servidor: el `updates.url` de la config (de donde descarga la app) o, si no, el del script de publicar (SERVER_URL…).
     const scriptFile = /(?:^|\s)(?:bash\s+|sh\s+)?(\.?\/?[\w./-]+\.sh)\b/.exec(scripts["ota:publish"] ?? "")?.[1]?.replace(/^\.\//, "");
@@ -275,7 +282,7 @@ export interface DeployTarget {
    * backcode.toml (deploy-config.ts). Su comando, su orden y lo que lo deja pendiente; `install`: instalar antes las
    * dependencias de JS si la carpeta es un paquete (los de backcode.toml nunca: así no hace falta Node).
    */
-  auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[]; install?: boolean };
+  auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[]; install?: boolean; deps?: { dir: string; pm: PackageManager }[] };
   /** De dónde sale: un script `backcode:deploy:*`, backcode.toml/json o detectado solo. */
   source?: "script" | "config" | "detected";
 }
@@ -296,7 +303,7 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
       continue;
     }
     const has = (f: string) => files.includes(dir ? `${dir}/${f}` : f) || files.includes(f);
-    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lock") || has("bun.lockb") ? "bun" : "npm";
+    const pm = pmOf(has);
     const strScripts = Object.fromEntries(Object.entries(scripts).filter((e): e is [string, string] => typeof e[1] === "string"));
     const ctx: DeployEnvContext = {
       scripts: strScripts,
@@ -333,10 +340,12 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
   const declared = new Set(out.map((d) => d.provider).filter((p): p is DeployProvider => !!p));
   for (const d of await detectDeploys(files, show, declared)) {
     if (out.some((o) => o.name === d.name)) continue;
-    const pm = files.includes(d.dir ? `${d.dir}/pnpm-lock.yaml` : "pnpm-lock.yaml") ? "pnpm" : files.includes(d.dir ? `${d.dir}/yarn.lock` : "yarn.lock") ? "yarn" : "npm";
+    const inDir = (dir: string) => (f: string) => files.includes(dir ? `${dir}/${f}` : f) || files.includes(f);
+    const pm = pmOf(inDir(d.dir));
+    const deps = (d.deps ?? []).filter((dir) => dir !== d.dir && files.includes(`${dir}/package.json`)).map((dir) => ({ dir, pm: pmOf(inDir(dir)) }));
     // Si el proyecto ya tiene un script que lo hace, ese (con sus pasos previos); si no, el comando de la plataforma.
     const cmd = d.script ? [pm, "run", d.script] : d.cmd;
-    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, source: "detected", auto: { cmd, rank: d.rank, paths: d.paths, install: true, ...(d.local ? { local: d.local } : {}) } });
+    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, source: "detected", auto: { cmd, rank: d.rank, paths: d.paths, install: true, ...(d.local ? { local: d.local } : {}), ...(deps.length ? { deps } : {}) } });
   }
   return out.slice(0, 20);
 }

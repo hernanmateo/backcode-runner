@@ -25,6 +25,8 @@ export interface AutoDeploy {
   paths: string[];
   /** Ficheros locales ignorados por git que necesita (p. ej. el enlace de Supabase), relativos a `dir`. */
   local?: string[];
+  /** Otras carpetas del repo (con su package.json) cuyas dependencias necesita, p. ej. el `source` de unas functions. */
+  deps?: string[];
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -151,7 +153,7 @@ export async function detectDeploys(files: string[], show: (path: string) => Pro
         const fns = Array.isArray(json.functions) ? (json.functions[0] as { source?: unknown } | undefined) : (json.functions as { source?: unknown });
         const source = typeof fns?.source === "string" ? fns.source : "functions";
         const script = scriptFor(scripts, /\bfirebase(-tools)?\s+deploy\b[^&|;]*--only\s+[\w:,]*functions/, ["deploy:functions", "functions:deploy"]);
-        out.push({ name: "firebase-functions", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", "functions", "--non-interactive"], ...(script ? { script } : {}), rank: 1, paths: [join(dir, source)] });
+        out.push({ name: "firebase-functions", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", "functions", "--non-interactive"], ...(script ? { script } : {}), rank: 1, paths: [join(dir, source)], deps: [join(dir, source)] });
       }
     }
   }
