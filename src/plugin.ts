@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { readState, updateState } from "./paths.js";
 
@@ -29,14 +30,16 @@ export function olderThan(a: string, b: string): boolean {
 export interface PluginInstall {
   version: string;
   scope: string;
+  /** Desactivado con `claude plugin disable` (sigue instalado). */
+  enabled: boolean;
   projectPath?: string;
 }
 
 /** Las instalaciones del plugin según `claude plugin list --json` (una por alcance: user, project, local). */
 export function parsePluginList(json: string): PluginInstall[] {
   try {
-    const list = JSON.parse(json) as { id?: string; version?: string; scope?: string; projectPath?: string }[];
-    return Array.isArray(list) ? list.filter((p) => p.id === PLUGIN_ID && typeof p.version === "string").map((p) => ({ version: p.version!, scope: p.scope ?? "user", ...(p.projectPath ? { projectPath: p.projectPath } : {}) })) : [];
+    const list = JSON.parse(json) as { id?: string; version?: string; scope?: string; enabled?: boolean; projectPath?: string }[];
+    return Array.isArray(list) ? list.filter((p) => p.id === PLUGIN_ID && typeof p.version === "string").map((p) => ({ version: p.version!, scope: p.scope ?? "user", enabled: p.enabled !== false, ...(p.projectPath ? { projectPath: p.projectPath } : {}) })) : [];
   } catch {
     return [];
   }
@@ -52,6 +55,45 @@ function claudeRun(claude: string, args: string[], cwd?: string, timeout = 60_00
 export async function pluginInstalls(claude: string): Promise<PluginInstall[] | null> {
   const r = await claudeRun(claude, ["plugin", "list", "--json"], undefined, 20_000);
   return r.ok ? parsePluginList(r.output) : null;
+}
+
+/** ¿El .claude/settings.json del repo lo activa para todo el equipo? (`projectEnabled` de `claude plugin list` en esa carpeta). */
+export function parseRepoEnabled(json: string): boolean {
+  try {
+    const list = JSON.parse(json) as { id?: string; projectEnabled?: boolean }[];
+    return Array.isArray(list) && list.some((p) => p.id === PLUGIN_ID && p.projectEnabled === true);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * En cada repo: `repo` = activado en el repo para el equipo; `user` = te funciona a ti (instalado para tu usuario o en
+ * ese proyecto) pero el repo no lo activa; `off` = no está activo ahí.
+ */
+export type RepoPlugin = "repo" | "user" | "off";
+
+export function repoPlugin(installs: PluginInstall[], repoPath: string, repoEnabled: boolean): RepoPlugin {
+  if (repoEnabled) return "repo";
+  const mine = installs.some((i) => i.enabled && (i.scope === "user" || i.projectPath === repoPath));
+  return mine ? "user" : "off";
+}
+
+/** El estado del plugin en cada repo conectado (una llamada a `claude plugin list` por repo, en paralelo). */
+export async function pluginInRepos(claude: string, installs: PluginInstall[], repoPaths: string[]): Promise<Record<string, RepoPlugin>> {
+  const entries = await Promise.all(
+    // La clave es la ruta tal como está en la configuración (puede empezar por ~): así la encuentran el panel y status.
+    [...new Set(repoPaths)].map((p) => [p, p.replace(/^~(?=\/|$)/, homedir())] as const).filter(([, dir]) => existsSync(dir)).map(async ([p, dir]) => {
+      const r = await claudeRun(claude, ["plugin", "list", "--json"], dir, 20_000);
+      return [p, repoPlugin(installs, dir, r.ok && parseRepoEnabled(r.output))] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+/** Activa el plugin desactivado (para tu usuario). */
+export function enablePlugin(claude: string): Promise<{ ok: boolean; output: string }> {
+  return claudeRun(claude, ["plugin", "enable", PLUGIN_ID, "--scope", "user"]);
 }
 
 /** Instala el plugin (para tu usuario) o pone al día cada instalación antigua. Lo mismo que los comandos de la guía. */

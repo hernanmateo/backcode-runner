@@ -234,8 +234,11 @@ Claude Code only updates Anthropic's official marketplaces by itself, so the `ba
 installed. The runner knows the latest one (they're released together) and tells you when yours is older:
 
 - **In Claude Code**, at the start of a session (at most once a day): Claude tells you, with the commands.
-- **In the panel** (*This computer › Claude Code plugin*): **Update the plugin** (or **Install the plugin** if you don't have it).
-- **In `backcode status`** and **`/backcode:doctor`**.
+- **In the panel** (*This computer › Claude Code plugin*): the version, where it's installed (for your user, i.e. all your
+  repos, and/or in specific projects) and whether it's enabled, with **Update the plugin**, **Install the plugin** or
+  **Enable the plugin**. Each project card also says whether the plugin is on in its repo for the whole team (the repo's
+  `.claude/settings.json`), only for you, or not active there.
+- **In `backcode status`** (the same, plus the plugin line of each project) and **`/backcode:doctor`**.
 
 To update by hand, then restart Claude Code:
 

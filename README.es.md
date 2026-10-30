@@ -63,8 +63,10 @@ con `claude plugin validate .`.
 **Mantener el plugin al día.** Claude Code solo actualiza solos los marketplaces oficiales de Anthropic, así que el plugin
 `backcode` se queda en la versión que instalaste. El runner sabe cuál es la última (se publican juntos) y avisa si la tuya
 es más antigua: en Claude Code al empezar una sesión (como mucho una vez al día, con los comandos), en el panel (*Este
-ordenador › Plugin de Claude Code*, con el botón **Actualizar el plugin**, o **Instalar el plugin** si no lo tienes), en
-`backcode status` y en `/backcode:doctor`. A mano: `claude plugin marketplace update backcode` y
+ordenador › Plugin de Claude Code*: la versión, dónde está instalado —para tu usuario, es decir en todos tus repos, y/o en
+proyectos concretos— y si está activado, con **Actualizar el plugin**, **Instalar el plugin** o **Activar el plugin**; y
+en cada proyecto, si el plugin está activado en su repo para todo el equipo, solo para ti o no está activo), en
+`backcode status` (lo mismo, con la línea del plugin de cada proyecto) y en `/backcode:doctor`. A mano: `claude plugin marketplace update backcode` y
 `claude plugin update backcode@backcode`, y reinicia Claude Code. Para olvidarte: en Claude Code, `/plugin` › Marketplaces ›
 backcode › activar la actualización automática.
 
