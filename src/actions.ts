@@ -4,8 +4,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSy
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
-import type { Checks, PrHost } from "./hosts.js";
+import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { type Checks, isMergeConflictError, type PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
@@ -184,8 +184,22 @@ async function mergeExternal(host: PrHost | undefined, prUrl: string) {
   if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
   const blocked = requireGreen(await host.prChecks(pr.url), "PR");
   if (blocked) return { ok: false, result: blocked };
-  const { sha } = await host.merge(pr.url);
-  return { ok: true, result: { url: pr.url, sha } };
+  const merged = await mergeUnlessConflict(host, pr.url);
+  if (!merged) return { ok: false, result: { error: t("act.prConflictsExternal", { base: pr.base }), url: pr.url } };
+  return { ok: true, result: { url: pr.url, sha: merged.sha } };
+}
+
+/**
+ * Mergea el PR; si choca con la rama base (alguien mergeó antes algo que toca los mismos ficheros), devuelve null en vez
+ * de lanzar: no es un fallo de Backcode, hay que poner la rama al día y se explica en la app.
+ */
+export async function mergeUnlessConflict(host: PrHost, prUrl: string): Promise<{ sha?: string } | null> {
+  try {
+    return await host.merge(prUrl);
+  } catch (e) {
+    if (isMergeConflictError(e)) return null;
+    throw e;
+  }
 }
 
 async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
@@ -203,7 +217,21 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   }
   const blocked = requireGreen(await host.prChecks(prUrl), "PR");
   if (blocked) return { ok: false, result: blocked };
-  const { sha } = await host.merge(prUrl);
+  const merged = await mergeUnlessConflict(host, prUrl);
+  if (!merged) {
+    // Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca
+    // «Arreglar con Claude».
+    const branch = (await store.featureInfo(featureId).catch(() => null))?.branch;
+    const files = branch
+      ? await fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, branch)
+          .then(() => findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, branch))
+          .catch(() => [] as string[])
+      : [];
+    if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
+    const error = files.length ? t("act.prConflictsFiles", { base: cfg.baseBranch, files: files.join(", ") }) : t("act.prConflicts", { base: cfg.baseBranch });
+    return { ok: false, result: { error, url: prUrl } };
+  }
+  const { sha } = merged;
   await store.markMerged(featureId, sha);
   // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
   await syncLocal(cfg);
