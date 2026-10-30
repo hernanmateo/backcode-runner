@@ -17,6 +17,8 @@ Talk to the user in their language. Be brief: say what you're about to do, do it
 - **Never ask the user to paste the Backcode configuration in the chat**, and never print, `cat` or echo it: it contains their
   personal runner key. It goes from the clipboard straight to the runner (step 4).
 - Never read the files in `~/.backcode/config/` (keys and tokens). `backcode status` tells you everything you need.
+- Never print environment variables that hold secrets (`SUPABASE_DB_PASSWORD`, tokens, keys): only check whether they're set,
+  e.g. `[ -n "$SUPABASE_DB_PASSWORD" ] && echo set || echo missing`.
 - No `sudo`. Ask before installing anything or changing login items, and show the exact command first.
 - Steps that need the user's own interaction (signing in to GitHub in the browser, typing a Bitbucket token) are run by the
   user with the `!` prefix in this session, e.g. `! gh auth login --web`. Tell them exactly what to type.
@@ -90,9 +92,69 @@ backcode service install
 
 If they already used the Mac app, this is done. Then `backcode status`: the project should be listed and **Start at login** on.
 
-## 6. Done
+## 6. Ready to work
 
-Tell the user: in the Backcode app the project should now say **Connected**; accept a small task and it'll come back as a draft
-PR. `backcode` opens the panel (projects on/off, live activity). For problems later: `/backcode:doctor`.
-When they work in this repo with Claude Code directly, `/backcode:feature` does each feature or fix the Backcode way (its own
-worktree and PR, registered on the board); an admin can turn the guidelines on for the project in the app (Edit project).
+Leave the project 100 % ready. Do each step only if it applies, and explain it to the user in one line. Run the commands from
+the repo (the path `backcode connect` reported). These commands need runner 1.0.48 or newer: if one says "Unknown command",
+the runner is older — the service and the Mac app update themselves within the hour; with npm, `npm install -g backcode@latest`.
+Skip that step and mention it in the summary.
+
+### 6.1 Deploy tool sessions
+
+`backcode deploys --json` lists the project's deploys on its main branch: `[{ id, name, dir, provider, source }]` (no secrets).
+If it says the repo isn't connected, the runner hasn't registered the project yet: check `backcode status` and try again.
+For each distinct `provider`, check the session **without changing anything** (run from the deploy's `dir`):
+
+- `wrangler` (Cloudflare): `npx --yes wrangler whoami`.
+- `supabase`: `npx --yes supabase projects list`, and that `supabase/.temp/project-ref` exists in that folder (if not:
+  `npx supabase link --project-ref <ref>`). If there's a `supabase-db` deploy (migrations), check that
+  `SUPABASE_DB_PASSWORD` is set in the shell — only whether it's set, never its value.
+- `firebase`: `npx --yes firebase-tools login:list`.
+
+A missing session is a browser login: don't do it for the user. Tell them the exact command to run with `!`, e.g.
+`! npx wrangler login`, `! npx supabase login`, `! npx firebase-tools login`, and check again afterwards. No deploys, or none
+with a provider: skip this step.
+
+### 6.2 The plugin, on for the whole team
+
+If the repo's `.claude/settings.json` doesn't have `"enabledPlugins": { "backcode@backcode": true }`, offer to add it so
+everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Do it **in a PR, the Backcode way**,
+never with a commit to the main branch:
+
+1. `backcode task start "Activar el plugin de Backcode en el repo"` (in the user's language) → it prints the worktree path.
+2. In that worktree, create or update `.claude/settings.json`: if it already exists, merge the key into it without touching
+   anything else (keep the other keys and any other `enabledPlugins` entries).
+3. Commit it there and run `backcode task pr --title "<same title>" --body "<one line: why>"`.
+
+Tell the user the PR is on the board, ready to review and merge from the app.
+
+### 6.3 Keep this computer awake
+
+Ask: "Do you want this computer to keep picking up tasks while you're not using it? **No** / **Plugged in** (recommended on
+laptops) / **Always**". Apply it with `backcode awake off`, `backcode awake plugged` or `backcode awake always` (`backcode awake`
+alone shows the current mode, from the panel and from the app). Mention the limit: with the lid closed and no external
+display, a Mac sleeps anyway.
+
+### 6.4 Project guidelines
+
+Run `echo '{"cwd":"<repo>"}' | backcode hook session-start`. If it prints JSON with the guidelines (`additionalContext`), the
+project has them on: explain in two lines that every change goes through `/backcode:feature` (its own worktree, and a PR
+registered on the board) and, if the text says "The project requires this", that a direct commit or push to the main branch
+asks for confirmation (`require` mode). Nothing printed: guidelines are off (an admin can turn them on in the app, Edit
+project), or the runner hasn't started for this project yet (it writes them when it starts: check `backcode status`).
+
+## 7. Done
+
+Show a short checklist with ✓ / ✗, and for every ✗ the exact command or step that fixes it:
+
+- Runner installed and starting at login
+- Project connected
+- GitHub / Bitbucket access
+- Deploy tool sessions (one line per provider)
+- Plugin on in the repo (or its PR)
+- Keep awake
+- Guidelines
+
+Then: in the Backcode app the project should now say **Connected**; accept a small task and it'll come back as a draft PR.
+`backcode` opens the panel (projects on/off, live activity). For problems later: `/backcode:doctor`. When they work in this
+repo with Claude Code directly, `/backcode:feature` does each feature or fix the Backcode way.

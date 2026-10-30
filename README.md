@@ -74,7 +74,7 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 | **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
 | **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
 | **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
-| **🤖 Claude Code plugin** | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🤖 Claude Code plugin** · *if you use Claude Code* | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
 | **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
 <details>
@@ -217,7 +217,11 @@ would have to be published from a public repo, such as the releases one.
 
 - **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
   configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
-  running at login.
+  running at login. Then it leaves the project **ready to work**: checks the sessions of the deploy tools the repo uses
+  (wrangler, supabase, firebase; a missing login is a command for you to run with `!`), offers to turn the plugin on for the
+  whole team in the repo's `.claude/settings.json` (in a PR, the Backcode way), asks whether to keep the computer awake
+  (`backcode awake`), explains the project's guidelines and ends with a ✓/✗ checklist. It never reads `~/.backcode/config/`
+  or prints secrets.
 - **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
@@ -277,6 +281,8 @@ Everything in the panel also works from the terminal. `install.sh` puts `backcod
 | `backcode connect` | Connect a project by pasting the configuration from the app. |
 | `backcode start [project…]` | Run all projects (or the given ones) in this terminal, with prefixed logs. |
 | `backcode service install` · `uninstall` · `status` | Start at login, same as the switch in the panel. |
+| `backcode deploys [--json] [--project <id>]` | The project's deploys on its main branch (`id`, `name`, `dir`, `provider`, `source`; no commands or secrets). From the repo or one of its worktrees, or with `--project`. |
+| `backcode awake [off\|plugged\|always]` | Keep the computer awake, same as in the panel (it applies it within a minute). No mode: shows the current one, the app's and the one applied. |
 | `backcode --version` | Print the installed version. |
 
 ## Security

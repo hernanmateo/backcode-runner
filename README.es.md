@@ -31,7 +31,7 @@ Todas instalan el mismo runner y abren el mismo panel.
 | **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
 | **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
 | **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
-| **Plugin de Claude Code** | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Plugin de Claude Code** (lo más fácil si usas Claude Code) | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
 | **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
 
 Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
@@ -51,7 +51,11 @@ releases.
 
 `/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
 runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
-clona el repo y lo deja arrancando al iniciar sesión) y `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
+clona el repo y lo deja arrancando al iniciar sesión) y después deja el proyecto **listo para trabajar**: comprueba las sesiones
+de las herramientas de despliegue que usa el repo (wrangler, supabase, firebase; si falta un login, te da el comando para
+lanzarlo con `!`), ofrece activar el plugin para todo el equipo en el `.claude/settings.json` del repo (en un PR, con el flujo de
+Backcode), pregunta si mantener el ordenador despierto (`backcode awake`), explica las pautas del proyecto y acaba con una lista
+✓/✗. Nunca lee `~/.backcode/config/` ni imprime secretos. `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
@@ -131,6 +135,8 @@ Todo lo del panel se puede hacer también con comandos (`npm i -g backcode` deja
 | `backcode connect` | Conecta un proyecto: pega la configuración de la app (⌘V + Enter). Si el panel está en marcha, lo arranca él; si no, en esta terminal. |
 | `backcode start [proyecto…]` | Arranca en esta terminal todos los proyectos (o los indicados), con los logs juntos (`[proyecto]` delante). |
 | `backcode service install` / `uninstall` / `status` | Arrancar al iniciar sesión (lo mismo que el interruptor del panel). Log en `~/.backcode/logs/service.log`. |
+| `backcode deploys [--json] [--project <id>]` | Despliegues del proyecto en su rama principal (`id`, `name`, `dir`, `provider`, `source`; sin comandos ni secretos). Desde el repo o un worktree suyo, o con `--project`. |
+| `backcode awake [off\|plugged\|always]` | Mantener el ordenador despierto, como en el panel (lo aplica en menos de un minuto). Sin modo: el actual, el de la app y el que se aplica. |
 | `backcode --version` | Versión instalada. |
 
 Si lanzas dos runners tuyos para el mismo proyecto (en dos ordenadores o dos terminales), el segundo se niega a arrancar.

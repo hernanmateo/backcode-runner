@@ -65,6 +65,18 @@ switch (command) {
     process.exit(0);
     break;
   }
+  case "deploys": {
+    // Para la skill /backcode:setup: qué despliegues tiene el proyecto (y así qué sesiones comprobar). Sin secretos.
+    const { deploysMain } = await import("./ready.js");
+    await deploysMain(rest);
+    break;
+  }
+  case "awake": {
+    // «Mantener el ordenador despierto» del panel, desde la terminal (lo usa /backcode:setup).
+    const { awakeMain } = await import("./ready.js");
+    awakeMain(rest);
+    break;
+  }
   case "status":
     await import("./status.js");
     break;
