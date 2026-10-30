@@ -303,7 +303,10 @@ export class Store {
   /** PR abiertos creados fuera de Backcode (para el tablero), con el estado de sus checks; null si no se pudieron leer. */
   prs: { items: ExternalPr[]; error?: string } | null = null;
 
+  // savePrs y savePlan: solo este runner escribe su documento del lock, así que lo que guardó la última vez es lo que hay;
+  // sin cambios no se escribe (cada escritura es una lectura más para cada pantalla de la app que mira el proyecto).
   async savePrs(prs: { items: ExternalPr[]; error?: string }): Promise<void> {
+    if (JSON.stringify(prs) === JSON.stringify(this.prs)) return;
     this.prs = JSON.parse(JSON.stringify(prs)) as { items: ExternalPr[]; error?: string };
     await updateDoc(doc(this.project(), "runners", this.uid), { prs: this.prs }).catch(() => undefined);
   }
@@ -317,6 +320,7 @@ export class Store {
 
   /** Guarda el plan ya (sin esperar a la próxima renovación del lock). */
   async savePlan(plan: DeployPlan): Promise<void> {
+    if (JSON.stringify(plan) === JSON.stringify(this.plan)) return;
     this.plan = JSON.parse(JSON.stringify(plan)) as DeployPlan;
     await updateDoc(doc(this.project(), "runners", this.uid), { plan: this.plan }).catch(() => undefined);
   }
@@ -583,9 +587,9 @@ export class Store {
 
   /** Enlaza un PR abierto a la tarea de su rama si está en «PR listo» sin enlace (lo abrió alguien fuera del runner). */
   async adoptPr(branch: string, url: string): Promise<void> {
-    const snap = await getDocs(query(collection(this.db, "projects", this.cfg.projectId, "features"), where("branch", "==", branch), limit(1)));
-    const d = snap.docs[0];
-    if (!d || d.get("status") !== "done" || (d.get("result") as FeatureResult | undefined)?.prUrl) return;
+    // De las tareas terminadas que ya sigue el listener: cada 5 min y por cada PR abierto, sin consultar a Firestore.
+    const d = (await this.doneFeatures.get()).find((f) => f.get("branch") === branch);
+    if (!d || (d.get("result") as FeatureResult | undefined)?.prUrl) return;
     await this.setPrUrl(d.id, url);
   }
 
