@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { includedTasks, MAX_DEPLOYED_TASKS } from "../src/deploy-tasks.js";
+import { channelOfTarget, includedTasks, MAX_DEPLOYED_TASKS, markDeployedTasks } from "../src/deploy-tasks.js";
 
 // Historia lineal a → b → c → d: un commit es antecesor de otro si va antes (o es el mismo).
 const ORDER = ["a", "b", "c", "d"];
@@ -41,4 +41,46 @@ test("títulos recortados y como mucho MAX_DEPLOYED_TASKS", async () => {
   const out = await includedTasks(many, "d", undefined, isAncestor);
   assert.equal(out.length, MAX_DEPLOYED_TASKS);
   assert.equal(out[0].title.length, 120);
+});
+
+test("canal de un destino por su nombre: staging → preview, production → production, otros → ninguno", () => {
+  assert.equal(channelOfTarget("web#web-staging"), "preview");
+  assert.equal(channelOfTarget("#staging"), "preview");
+  assert.equal(channelOfTarget("apps/web#preview"), "preview");
+  assert.equal(channelOfTarget("web#web-production"), "production");
+  assert.equal(channelOfTarget("#prod"), "production");
+  assert.equal(channelOfTarget("functions#firebase-functions"), null);
+  assert.equal(channelOfTarget("#firebase-rules"), null);
+  // La carpeta no cuenta: solo el nombre.
+  assert.equal(channelOfTarget("staging#web"), null);
+  // Sin palabra, production si en la misma carpeta está su versión de staging.
+  const ids = ["#web", "#web-staging", "#rules", "functions#functions"];
+  assert.equal(channelOfTarget("#web", ids), "production");
+  assert.equal(channelOfTarget("#web-staging", ids), "preview");
+  assert.equal(channelOfTarget("#rules", ids), null);
+  assert.equal(channelOfTarget("other#web", ids), null);
+});
+
+test("deploy correcto: marca desplegadas en el canal las mergeadas que van en el commit y aún no lo estaban", async () => {
+  const marked: string[] = [];
+  const store = {
+    mergedNotDeployed: async (channel: string) => (channel === "preview" ? [...merged, { id: "t5", title: "Sin merge", sha: "" }] : []),
+    markDeployed: async (id: string, channel: string, sha: string) => void marked.push(`${id}:${channel}:${sha}`),
+  };
+  const out = await markDeployedTasks(store, "preview", "c", isAncestor);
+  assert.deepEqual(marked, ["t1:preview:c", "t2:preview:c", "t3:preview:c"]);
+  assert.deepEqual(out.map((f) => f.id), ["t1", "t2", "t3"]);
+  assert.deepEqual(await markDeployedTasks(store, "production", "d", isAncestor), []);
+});
+
+test("si no se puede marcar (no es admin) o falla la lectura, el despliegue sigue", async () => {
+  const failing = {
+    mergedNotDeployed: async () => merged,
+    markDeployed: async () => {
+      throw new Error("permission-denied");
+    },
+  };
+  assert.equal((await markDeployedTasks(failing, "production", "a", isAncestor)).length, 1);
+  const unreadable = { mergedNotDeployed: async () => Promise.reject(new Error("offline")), markDeployed: async () => undefined };
+  assert.deepEqual(await markDeployedTasks(unreadable, "production", "d", isAncestor), []);
 });

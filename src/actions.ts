@@ -11,7 +11,7 @@ import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
-import { type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS } from "./deploy-tasks.js";
+import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
@@ -119,17 +119,26 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
 /**
  * Añade al resultado de un build o despliegue hecho bien las tareas que entraron en él: las mergeadas que van en su
  * commit y no iban en el anterior del mismo destino (`key`, como en lastDeploys). Si falla, el resultado queda igual.
+ * Un despliegue a staging o production (por el nombre del destino: channelOfTarget) además las deja «desplegadas» en
+ * ese canal (staging = preview), como un OTA.
  */
 async function withTasks(cfg: RunnerConfig, store: Store, key: string, done: { ok: boolean; result: ActionResult }): Promise<{ ok: boolean; result: ActionResult }> {
   const sha = done.result.sha;
   if (!done.ok || !sha) return done;
+  const ancestor = (a: string, c: string) => isAncestor(cfg.repoPath, a, c);
+  const channel = key.startsWith("deploy:") ? channelOfTarget(key.slice("deploy:".length), store.capabilities.deploys.map((d) => d.id)) : null;
+  let features: DeployedTask[] | undefined;
   try {
     const previous = (await store.lastDeploys()).get(key);
-    const features = await includedTasks(await store.mergedFeatures(), sha, previous, (a, c) => isAncestor(cfg.repoPath, a, c));
-    return { ...done, result: { ...done.result, features } };
+    features = await includedTasks(await store.mergedFeatures(), sha, previous, ancestor);
   } catch {
-    return done;
+    // sin la lista: el resultado queda igual
   }
+  if (channel) {
+    const marked = await markDeployedTasks(store, channel, sha, ancestor).catch(() => []);
+    features = [...(features ?? []), ...marked.filter((m) => !features?.some((f) => f.id === m.id))].slice(0, MAX_DEPLOYED_TASKS);
+  }
+  return features ? { ...done, result: { ...done.result, features } } : done;
 }
 
 /** Pone al día tu copia local de la rama base (solo si es seguro: ver syncLocalBase) e instala si cambiaron dependencias. */
@@ -314,12 +323,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     }
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
     // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback) y constan en el OTA.
-    const features: DeployedTask[] = [];
-    for (const f of rollbackTo ? [] : await store.mergedNotDeployed(channel).catch(() => [])) {
-      if (!(await isAncestor(cfg.repoPath, f.sha, commit))) continue;
-      await store.markDeployed(f.id, channel, commit).catch(() => undefined);
-      if (features.length < MAX_DEPLOYED_TASKS) features.push({ id: f.id, title: f.title.slice(0, 120) });
-    }
+    const features = rollbackTo ? [] : await markDeployedTasks(store, channel, commit, (a, c) => isAncestor(cfg.repoPath, a, c));
     return { ok: true, result: { url, sha: commit, features, log: `${smoke ? `${smoke.detail}\n` : skipSmoke ? `${t("smoke.skipped")}\n` : ""}${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
