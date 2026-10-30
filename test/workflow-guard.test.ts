@@ -7,7 +7,16 @@ import { test } from "node:test";
 
 // HOME_DIR se lee al importar: la carpeta de pruebas va antes.
 process.env.BACKCODE_HOME = mkdtempSync(join(tmpdir(), "bc-guard-home-"));
-const { guardFor, touchesBase, writeGuard } = await import("../src/workflow-guard.js");
+const { asWorkflow, guardFor, touchesBase, writeGuard } = await import("../src/workflow-guard.js");
+
+test("sin ajuste, el proyecto está en Recordar; solo un «off» explícito apaga las pautas", () => {
+  assert.equal(asWorkflow(undefined), "warn");
+  assert.equal(asWorkflow(null), "warn");
+  assert.equal(asWorkflow("raro"), "warn");
+  assert.equal(asWorkflow("warn"), "warn");
+  assert.equal(asWorkflow("off"), "off");
+  assert.equal(asWorkflow("require"), "require");
+});
 
 test("commit o push a la rama base: lo detecta en comandos compuestos, con -C y con refspecs", () => {
   const on = (branch: string) => () => branch;

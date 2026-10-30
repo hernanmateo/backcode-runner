@@ -255,7 +255,7 @@ An admin chooses in the app (**Edit project › When someone works with Claude C
 Code directly, through the plugin:
 
 - **Free**: Claude Code works as usual.
-- **Remind**: at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
+- **Remind** (the default, also for projects that never chose): at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
   fix in its own worktree and branch from the up-to-date base, and the main branch only through a PR.
 - **Require**: on top of that, a `git commit` on the main branch or a `git push` that updates it (`main`, `HEAD:main`, `--all`…)
   asks for confirmation first. It asks rather than blocks: some cases are legitimate (publishing a release, for example).
