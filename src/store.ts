@@ -126,6 +126,12 @@ export interface RefineJob {
   attachments?: Attachment[];
 }
 
+/** Mensaje de la persona en la conversación con su runner: texto y, como en «Nueva idea», imágenes y un vídeo. */
+export interface ChatUserMessage extends ThreadMessage {
+  attachments?: Attachment[];
+  video?: { path: string; durationMs: number };
+}
+
 /** Conversación libre con mi runner (projects/{pid}/chats/{id}). */
 export interface RunnerChat {
   uid: string;
@@ -526,12 +532,12 @@ export class Store {
   }
 
   /** Mensajes de la persona que Claude aún no ha leído, en orden. */
-  async unreadChatMessages(id: string): Promise<ThreadMessage[]> {
+  async unreadChatMessages(id: string): Promise<ChatUserMessage[]> {
     // Sin orderBy en la consulta (pediría un índice compuesto): se ordena aquí.
     const snap = await getDocs(query(collection(this.project(), "chats", id, "messages"), where("author", "==", "user")));
     return snap.docs
       .filter((d) => !d.get("read"))
-      .map((d) => ({ ...(d.data() as ThreadMessage), id: d.id }))
+      .map((d) => ({ ...(d.data() as ChatUserMessage), id: d.id }))
       .sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
   }
 

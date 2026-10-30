@@ -15,17 +15,20 @@ export interface LocalAttachment {
   contentType: string;
 }
 
-export async function materializeAttachments(store: Store, projectId: string, worktree: string, attachments: Attachment[]): Promise<LocalAttachment[]> {
+/** `sub`: subcarpeta (p. ej. el id del mensaje en la conversación con el runner, donde cada mensaje trae los suyos). */
+export async function materializeAttachments(store: Store, projectId: string, worktree: string, attachments: Attachment[], sub?: string): Promise<LocalAttachment[]> {
   if (!attachments.length) return [];
+  if (sub !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(sub)) throw new Error(t("att.badPath", { path: sub }));
   await excludeFromGit(worktree, `/${ATTACHMENTS_DIR}/`);
-  const dir = join(worktree, ATTACHMENTS_DIR);
+  const base = sub ? `${ATTACHMENTS_DIR}/${sub}` : ATTACHMENTS_DIR;
+  const dir = join(worktree, base);
   mkdirSync(dir, { recursive: true });
   const out: LocalAttachment[] = [];
   for (const [i, a] of attachments.slice(0, 10).entries()) {
     // Mismas restricciones que en las Functions: solo rutas de adjuntos de este proyecto.
     const m = new RegExp(`^projects/${projectId}/attachments/[A-Za-z0-9]+/([A-Za-z0-9._-]{1,120})$`).exec(a.path);
     if (!m) throw new Error(t("att.badPath", { path: a.path }));
-    const file = `${ATTACHMENTS_DIR}/${i + 1}-${m[1].replace(/^\d+-[a-z0-9]+-/, "")}`;
+    const file = `${base}/${i + 1}-${m[1].replace(/^\d+-[a-z0-9]+-/, "")}`;
     const abs = join(worktree, file);
     if (!existsSync(abs)) writeFileSync(abs, await store.download(a.path));
     out.push({ file, name: a.name, contentType: a.contentType });
