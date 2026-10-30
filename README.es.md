@@ -489,6 +489,25 @@ lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 detectan al arrancar: tras añadir uno, reinicia el runner.
 
+**Sin JavaScript: `backcode.toml`** (o `backcode.json`), en la raíz o en cualquier carpeta, para repos de Python, Go, C…
+que no tienen `package.json`. El runner ejecuta el comando tal cual, **sin `npm ci` ni `npm run`**, así que ese ordenador no
+necesita Node:
+
+```toml
+[deploy.db]
+run = "python manage.py migrate"   # con sh -c; o una lista ["make", "deploy"], sin shell
+kind = "migration"                  # migration (primero) · functions · service (por defecto)
+dir = "api"                         # opcional: carpeta, relativa al fichero
+paths = ["api/"]                    # opcional: qué cambios lo dejan pendiente (por defecto, su carpeta)
+
+[deploy.api]
+run = "make deploy"
+dir = "api"
+```
+
+Si un nombre está también en un `package.json` de la misma carpeta, gana `backcode.toml` (y el registro del runner lo avisa).
+Si el fichero tiene algún error, el registro del runner dice qué línea o qué despliegue falla.
+
 **Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:
 
 | Plataforma | Qué lo detecta | Destinos (en este orden) |

@@ -567,8 +567,9 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_deploy", commit);
   const dir = join(wt, target.dir);
   try {
-    // Detectado sin script: dependencias solo si esa carpeta es un paquete (p. ej. un Worker que importa librerías).
-    if (!target.auto || existsSync(join(dir, "package.json"))) await installFrozen(target, wt, dir);
+    // Script de package.json: sus dependencias. Detectado: solo si esa carpeta es un paquete (p. ej. un Worker que importa
+    // librerías). De backcode.toml: nunca (es para repos sin Node).
+    if (!target.auto || (target.auto.install && existsSync(join(dir, "package.json")))) await installFrozen(target, wt, dir);
     const envFiles = [".env", ".env.local", ".env.production", ".env.production.local"];
     await copyLocalFiles(cfg.repoPath, wt, [...envFiles, ...(target.dir ? envFiles.map((f) => join(target.dir, f)) : []), ...(target.auto?.local ?? []).map((f) => join(target.dir, f))]);
     const out = await exec(target.auto ? target.auto.cmd : [target.pm, "run", `${DEPLOY_PREFIX}${target.name}`], dir, { timeoutMs: DEPLOY_TIMEOUT_MS });

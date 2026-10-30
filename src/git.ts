@@ -1,4 +1,13 @@
 import { execFile } from "node:child_process";
+import { readDeployConfig } from "./deploy-config.js";
+
+/** Un aviso del fichero de despliegues, una sola vez por proceso (la lista se vuelve a leer a menudo). */
+const warned = new Set<string>();
+const warnOnce = (msg: string) => {
+  if (warned.has(msg)) return;
+  warned.add(msg);
+  console.warn(`[deploy] ${msg}`);
+};
 import { detectDeploys, providerOfCommand, type DeployProvider } from "./deploy-detect.js";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
@@ -261,8 +270,14 @@ export interface DeployTarget {
   env?: FirebaseDeployEnv;
   /** Plataforma (por el comando): la app enseña qué revisar si falla (sesión de wrangler, supabase, firebase…). */
   provider?: DeployProvider;
-  /** Detectado sin script (deploy-detect.ts): el comando estándar de la plataforma, su orden y lo que lo deja pendiente. */
-  auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[] };
+  /**
+   * Sin script de package.json: detectado (deploy-detect.ts, el comando estándar de la plataforma) o declarado en
+   * backcode.toml (deploy-config.ts). Su comando, su orden y lo que lo deja pendiente; `install`: instalar antes las
+   * dependencias de JS si la carpeta es un paquete (los de backcode.toml nunca: así no hace falta Node).
+   */
+  auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[]; install?: boolean };
+  /** De dónde sale: un script `backcode:deploy:*`, backcode.toml/json o detectado solo. */
+  source?: "script" | "config" | "detected";
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
@@ -297,7 +312,21 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
       if (!DEPLOY_NAME_RE.test(name)) continue;
       const env = await firebaseDeployEnv(strScripts[key], ctx).catch(() => null);
       const provider = providerOfCommand(strScripts[key]);
-      out.push({ id: `${dir}#${name}`, name, dir, pm, ...(env ? { env } : {}), ...(provider ? { provider } : {}) });
+      out.push({ id: `${dir}#${name}`, name, dir, pm, source: "script", ...(env ? { env } : {}), ...(provider ? { provider } : {}) });
+    }
+  }
+  // backcode.toml / backcode.json: sin Node. Un nombre que también esté en un package.json de la misma carpeta, gana este.
+  for (const file of files.filter((f) => /(^|\/)backcode\.(toml|json)$/.test(f)).slice(0, 10)) {
+    const fileDir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
+    const config = readDeployConfig(fileDir, file, await show(file).catch(() => ""));
+    for (const e of config.errors) warnOnce(`${file}: ${e}`);
+    for (const d of config.deploys) {
+      const i = out.findIndex((o) => o.name === d.name && o.dir === d.dir);
+      if (i >= 0) {
+        warnOnce(t("deploy.configWins", { name: d.name, file }));
+        out.splice(i, 1);
+      }
+      out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm: "npm", source: "config", auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, install: false } });
     }
   }
   // Lo que se reconoce solo (Cloudflare Workers, Supabase, Firebase), salvo plataformas que el repo ya declara.
@@ -305,7 +334,7 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
   for (const d of await detectDeploys(files, show, declared)) {
     if (out.some((o) => o.name === d.name)) continue;
     const pm = files.includes(d.dir ? `${d.dir}/pnpm-lock.yaml` : "pnpm-lock.yaml") ? "pnpm" : files.includes(d.dir ? `${d.dir}/yarn.lock` : "yarn.lock") ? "yarn" : "npm";
-    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, ...(d.local ? { local: d.local } : {}) } });
+    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, source: "detected", auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, install: true, ...(d.local ? { local: d.local } : {}) } });
   }
   return out.slice(0, 20);
 }
