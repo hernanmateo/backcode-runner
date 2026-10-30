@@ -246,3 +246,8 @@ button.repo { display: grid; gap: 2px; text-align: left; background: var(--bg); 
 .seg button.on { background: var(--primary); color: var(--primary-text); }
 .seg button:disabled { opacity: 0.5; cursor: default; }
 .keep-awake p { margin: 8px 0 0; }
+
+/* «Actividad» se abre con scroll hasta su título: que no quede pegado arriba ni, en la app de Mac (la página llega hasta
+   arriba, sin barra de título), debajo de los botones de la ventana. */
+#logs-section { scroll-margin-top: 16px; }
+.native #logs-section { scroll-margin-top: 44px; }
