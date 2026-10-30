@@ -302,6 +302,14 @@ Task briefs are written by other members of your group, so the runner treats the
 | **Panel** | Listens on `127.0.0.1` only, requires a per-user token and rejects foreign `Host`/`Origin` headers, so other users and websites can't use it. It never returns keys or tokens. |
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.
+
+**Diagnostics (opt-in).** With **Profile › Send diagnostics to Backcode** turned on in the app (off by default), when
+something fails **because of Backcode** (a runner exception, or a deploy whose command Backcode chose — detected or from
+`backcode.toml`), the runner sends a cleaned report: runner version, OS, action type, deploy source and platform, the error
+and the log tail (3000 chars max) and a fingerprint. Personal paths, worktrees, the repo name and remote, and emails are
+replaced before it leaves your computer, and if anything still looks like a secret the whole report is dropped. Your code,
+files and `.env` are never sent, and failures of your own project (tests, tool sessions, permissions, network) aren't
+either. At most one report per failure per hour; see `src/diagnostics.ts`.
 Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 ## Where things live

@@ -592,6 +592,23 @@ El texto de las tareas lo escriben otros miembros del grupo: se trata como **dat
 
 Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa cada PR como si viniera de un desconocido.
 
+## Diagnósticos de Backcode
+Si activas **Perfil › Enviar diagnósticos a Backcode** en la app (desactivado por defecto), cuando algo falla **por
+Backcode** tu runner manda un informe para que se arregle (`src/diagnostics.ts`). Solo cuenta como de Backcode una
+excepción del propio runner (no la salida de un comando del proyecto) o un despliegue cuyo comando eligió Backcode
+(detectado o de `backcode.toml`) y que falla; los fallos de tu proyecto o de tu ordenador (tests, sesión de una
+herramienta, permisos, red, cuota, lockfile) **no** se envían.
+
+- Se envía: versión del runner, sistema (`darwin-arm64`…), tipo de acción, origen y plataforma del despliegue, el error y
+  la cola del registro (máx. 3000 caracteres) y una huella del fallo (hash del mensaje sin rutas, números ni hashes).
+- Antes de salir del ordenador se limpia: worktrees → `<worktree>/…`, el repo → `<repo>/…`, rutas con tu usuario →
+  `~/…`, el remoto y el nombre del repo → `<remote>` / `<repo>`, correos → `<email>`. Si queda **algo que parezca un
+  secreto** (tokens, claves, `clave=valor`, URLs con contraseña, JWT…), el informe se descarta entero.
+- Nunca: tu código, ficheros, `.env`, el nombre del repo ni su URL.
+- Como mucho uno por fallo y hora. Las reglas solo dejan escribirlo a tu runner y con el interruptor activado; nadie lo
+  lee desde la app. En Backcode, cada fallo distinto es una tarea del backlog (con cuántas veces y en cuántos
+  ordenadores ha pasado), que alguien arregla con un PR.
+
 ## Personalizar las instrucciones
 Edita [`instructions/AGENT.md`](instructions/AGENT.md) (en una copia de git: con npm, la versión nueva lo sobrescribe). Admite estos marcadores: `{{projectName}}`, `{{worktree}}`, `{{branch}}`,
 `{{baseBranch}}`, `{{remote}}`, `{{projectContext}}`, `{{claudeMd}}` y `{{language}}` (idioma de tu perfil, p. ej. `Spanish`). Si quitas reglas de seguridad no se desactivan las barreras
