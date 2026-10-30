@@ -448,6 +448,8 @@ en el orden correcto: primero las reglas (Firestore/Storage), luego las function
 al final, para que la app nueva no llegue antes que lo que necesita en el servidor. El runner lo calcula al arrancar, cada 3 min
 y tras cada acción: compara la rama principal con el commit del último despliegue hecho desde Backcode de cada paso (qué ficheros
 cubre cada uno lo saca del `--only` de Firebase del script o de su carpeta) y dice qué tareas mergeadas traen cada cambio.
+Las tareas terminadas, las acciones y el registro de despliegues los sigue con un listener de Firestore: cada documento se lee
+una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los lee como antes).
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
   para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
 - Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
