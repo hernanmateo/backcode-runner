@@ -75,15 +75,40 @@ export function newer(a: string, b: string): boolean {
   return false;
 }
 
+const SEMVER = /^\d+\.\d+\.\d+$/;
+
+/** Última versión en npm (undefined si no se pudo saber). */
+async function npmLatest(): Promise<string | undefined> {
+  const res = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME.replace("/", "%2f")}/latest`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) return undefined;
+  const latest = ((await res.json()) as { version?: string }).version;
+  return latest && SEMVER.test(latest) ? latest : undefined;
+}
+
+/** Última Release de GitHub del ejecutable sin Node (undefined si no se pudo saber). */
+async function releaseLatest(): Promise<string | undefined> {
+  const res = await fetch(`https://api.github.com/repos/${RELEASES_REPO}/releases/latest`, { headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) return undefined;
+  const latest = ((await res.json()) as { tag_name?: string }).tag_name?.replace(/^v/, "");
+  return latest && SEMVER.test(latest) ? latest : undefined;
+}
+
+/**
+ * Última versión publicada para esta copia, sin instalar nada (para avisar al móvil: update-notice.ts). Una copia de git
+ * no tiene versión publicada que seguir.
+ */
+export async function latestPublished(): Promise<string | undefined> {
+  if (UPDATE_MODE === "git") return undefined;
+  return (UPDATE_MODE === "binary" ? releaseLatest() : npmLatest()).catch(() => undefined);
+}
+
 /**
  * npm: consulta la última versión en el registro. En la instalación propia (~/.backcode/app) la instala ahí (sin permisos
  * de administrador) y comprueba que arranca; con npx o una instalación global solo avisa de cómo actualizar.
  */
 async function updateFromNpm(): Promise<boolean> {
-  const res = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME.replace("/", "%2f")}/latest`, { signal: AbortSignal.timeout(15_000) });
-  if (!res.ok) return false;
-  const latest = ((await res.json()) as { version?: string }).version;
-  if (!latest || !/^\d+\.\d+\.\d+$/.test(latest)) return false;
+  const latest = await npmLatest();
+  if (!latest) return false;
   latestVersion = latest;
   if (!newer(latest, installedVersion ?? VERSION)) return false;
   if (UPDATE_MODE === "manual") return warnOnce(`manual-${latest}`, t("update.manual", { version: latest }));
@@ -107,10 +132,8 @@ export const binaryAsset = () => `backcode-${process.platform}-${process.arch}`;
  * con el suyo hasta reiniciarse).
  */
 async function updateBinary(): Promise<boolean> {
-  const res = await fetch(`https://api.github.com/repos/${RELEASES_REPO}/releases/latest`, { headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15_000) });
-  if (!res.ok) return false;
-  const latest = ((await res.json()) as { tag_name?: string }).tag_name?.replace(/^v/, "");
-  if (!latest || !/^\d+\.\d+\.\d+$/.test(latest)) return false;
+  const latest = await releaseLatest();
+  if (!latest) return false;
   latestVersion = latest;
   if (!newer(latest, installedVersion ?? VERSION)) return false;
   console.log(`[backcode] ${t("update.npmFound", { version: latest })}`);

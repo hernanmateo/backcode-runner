@@ -252,6 +252,8 @@ claude plugin update backcode@backcode
 
 To never think about it again: in Claude Code, `/plugin` › Marketplaces › backcode › enable auto-update.
 
+The runner also sends you a push notification (phone and web) when a new runner version is out or your plugin is older than the one it ships, once per version.
+
 ### Backcode guidelines outside Backcode
 
 An admin chooses in the app (**Edit project › When someone works with Claude Code on their own**) how people work on the repo with Claude

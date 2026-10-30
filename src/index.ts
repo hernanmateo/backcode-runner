@@ -11,6 +11,7 @@ import { KIT_DIR, loadConfig } from "./config.js";
 import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
+import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
@@ -667,7 +668,7 @@ function modelFor(feature: Feature, fallback?: string): string | undefined {
 async function main(): Promise<void> {
   // Sin el Claude Code del SDK no se puede ejecutar nada; Node antiguo, tampoco.
   if (!(await checkMachine({ verbose: false }))) process.exit(1);
-  const { db, storage, uid } = await connect(cfg);
+  const { db, storage, uid, fns } = await connect(cfg);
   store = new Store(db, storage, cfg, uid);
   // Desde aquí, el idioma del perfil del usuario en la app (y en vivo si lo cambia).
   const stopLang = await store.watchLang();
@@ -1024,6 +1025,11 @@ async function main(): Promise<void> {
   });
   const machineTimer = setInterval(reportMachine, 60 * 60_000);
 
+  // Versión nueva del runner o plugin de Claude Code antiguo: push al móvil y a la web (update-notice.ts). Un rato después
+  // de arrancar (para no sumarse a todo lo del arranque) y cada media hora.
+  const updateNoticeStart = setTimeout(() => void reportUpdates(fns, cfg.projectId), 2 * 60_000);
+  const updateNoticeTimer = setInterval(() => void reportUpdates(fns, cfg.projectId), UPDATE_NOTICE_EVERY_MS);
+
   // Proyectos nuevos que pido desde la app: los escuchan todos mis runners y lo crea el que lo reclama primero.
   await store.recoverScaffolds().catch(() => undefined);
   let scaffoldBusy = false;
@@ -1082,6 +1088,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     clearInterval(machineTimer);
+    clearTimeout(updateNoticeStart);
+    clearInterval(updateNoticeTimer);
     refineAbort.abort();
     chatAbort.abort();
     clearInterval(knowledgeTimer);
@@ -1122,6 +1130,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     clearInterval(machineTimer);
+    clearTimeout(updateNoticeStart);
+    clearInterval(updateNoticeTimer);
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
