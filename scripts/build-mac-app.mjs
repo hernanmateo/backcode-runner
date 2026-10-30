@@ -45,7 +45,7 @@ for (const arch of ["arm64", "x86_64"]) {
 run("lipo", ["-create", join(swiftOut, "arm64"), join(swiftOut, "x86_64"), "-output", join(app, "Contents", "MacOS", "Backcode Runner")]);
 rmSync(swiftOut, { recursive: true, force: true });
 
-// Icono: el de la app de Backcode en todos los tamaños de un .icns.
+// Icono: el del runner (mac/icon.svg → icon-1024.png) en todos los tamaños de un .icns.
 const iconset = join(out, "Backcode.iconset");
 rmSync(iconset, { recursive: true, force: true });
 mkdirSync(iconset);
