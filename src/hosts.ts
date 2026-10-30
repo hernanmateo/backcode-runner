@@ -58,6 +58,12 @@ export function isTransientGhError(e: unknown): boolean {
   return /something went wrong|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|try again later/i.test(text);
 }
 
+/** El PR choca con la rama base (GitHub: "not mergeable: the merge commit cannot be cleanly created"; Bitbucket: "merge conflicts"). */
+export function isMergeConflictError(e: unknown): boolean {
+  const text = `${(e as { stderr?: unknown })?.stderr ?? ""}\n${(e as Error)?.message ?? e}`;
+  return /not mergeable|cannot be cleanly created|merge conflicts?|conflicts? (with|in) the (base|destination)/i.test(text);
+}
+
 /**
  * Mergea reintentando los fallos transitorios de GitHub. Si el merge falla pero el PR ya consta como mergeado
  * (--delete-branch no puede borrar la rama local de un worktree, o GitHub mergeó pese al error), se da por bueno.

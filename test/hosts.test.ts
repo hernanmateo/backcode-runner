@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isTransientGhError, mergeWithRetry } from "../src/hosts.js";
+import { isMergeConflictError, isTransientGhError, mergeWithRetry, type PrHost } from "../src/hosts.js";
+import { mergeUnlessConflict } from "../src/actions.js";
 
 const ghError = (stderr: string) => Object.assign(new Error("Command failed: gh pr merge https://github.com/o/r/pull/1 --squash --delete-branch"), { stderr });
 const graphql = ghError("GraphQL: Something went wrong while executing your query on 2026-10-30T14:25:58Z. Please include `153F:2A244A` when reporting this issue.");
@@ -32,4 +33,22 @@ test("mergeWithRetry: no reintenta los errores del PR y se rinde tras los reinte
   calls = 0;
   await assert.rejects(mergeWithRetry(async () => { calls++; throw graphql; }, async () => "OPEN", [0, 0]), graphql);
   assert.equal(calls, 3);
+});
+
+const notMergeable = ghError(
+  "X Pull request o/r#144 is not mergeable: the merge commit cannot be cleanly created.\nTo have the pull request merged after all the requirements have been met, add the `--auto` flag.",
+);
+
+test("isMergeConflictError: reconoce los conflictos de GitHub y Bitbucket y no otros fallos", () => {
+  assert.equal(isMergeConflictError(notMergeable), true);
+  assert.equal(isMergeConflictError(new Error('Bitbucket 400: {"error": {"message": "You can\'t merge until you resolve all merge conflicts."}}')), true);
+  assert.equal(isMergeConflictError(graphql), false);
+  assert.equal(isMergeConflictError(ghError("GraphQL: Required status check \"ci\" is expected.")), false);
+});
+
+test("mergeUnlessConflict: un PR con conflictos devuelve null (no lanza) y el resto de errores se propagan", async () => {
+  const host = (merge: PrHost["merge"]) => ({ merge }) as PrHost;
+  assert.equal(await mergeUnlessConflict(host(async () => { throw notMergeable; }), "https://github.com/o/r/pull/1"), null);
+  assert.deepEqual(await mergeUnlessConflict(host(async () => ({ sha: "abc" })), "https://github.com/o/r/pull/1"), { sha: "abc" });
+  await assert.rejects(mergeUnlessConflict(host(async () => { throw graphql; }), "https://github.com/o/r/pull/1"), graphql);
 });

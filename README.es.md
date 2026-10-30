@@ -400,6 +400,10 @@ ejecuta, un admin tiene **Arreglar con Claude** en esa misma tarjeta: su runner 
 rama del PR, Claude resuelve los conflictos editando solo esos ficheros (sin Bash ni red), y el runner comprueba que no quedan
 marcas ni secretos, commitea el merge y lo sube sin forzar (si la rama avanzó mientras tanto, falla sin pisar nada).
 
+Si pulsas Mergear y GitHub/Bitbucket rechaza el PR por conflictos con la rama principal (p. ej. se acaba de mergear otro que
+toca lo mismo), el runner no lo da por fallo de Backcode: marca en la tarea los ficheros en conflicto al momento (sin esperar a
+la comprobación periódica) y la app explica que hay que pulsar **Arreglar con Claude** y volver a mergear.
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.
