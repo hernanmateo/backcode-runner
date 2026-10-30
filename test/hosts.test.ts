@@ -41,6 +41,8 @@ const notMergeable = ghError(
 
 test("isMergeConflictError: reconoce los conflictos de GitHub y Bitbucket y no otros fallos", () => {
   assert.equal(isMergeConflictError(notMergeable), true);
+  // Lo que devuelve gh cuando GitHub ya sabe que el PR choca (informe de diagnóstico del runner 1.0.58).
+  assert.equal(isMergeConflictError(ghError("GraphQL: Pull Request has merge conflicts (mergePullRequest)")), true);
   assert.equal(isMergeConflictError(new Error('Bitbucket 400: {"error": {"message": "You can\'t merge until you resolve all merge conflicts."}}')), true);
   assert.equal(isMergeConflictError(graphql), false);
   assert.equal(isMergeConflictError(ghError("GraphQL: Required status check \"ci\" is expected.")), false);
@@ -49,6 +51,7 @@ test("isMergeConflictError: reconoce los conflictos de GitHub y Bitbucket y no o
 test("mergeUnlessConflict: un PR con conflictos devuelve null (no lanza) y el resto de errores se propagan", async () => {
   const host = (merge: PrHost["merge"]) => ({ merge }) as PrHost;
   assert.equal(await mergeUnlessConflict(host(async () => { throw notMergeable; }), "https://github.com/o/r/pull/1"), null);
+  assert.equal(await mergeUnlessConflict(host(async () => { throw ghError("GraphQL: Pull Request has merge conflicts (mergePullRequest)"); }), "https://github.com/o/r/pull/1"), null);
   assert.deepEqual(await mergeUnlessConflict(host(async () => ({ sha: "abc" })), "https://github.com/o/r/pull/1"), { sha: "abc" });
   await assert.rejects(mergeUnlessConflict(host(async () => { throw graphql; }), "https://github.com/o/r/pull/1"), graphql);
 });
