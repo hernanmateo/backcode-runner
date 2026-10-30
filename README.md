@@ -177,7 +177,7 @@ check if it fails (signing in to wrangler, supabase, firebase…).
   <tr>
     <td valign="top">
       <h4>GitHub and Bitbucket</h4>
-      Draft PRs with <code>gh</code> or a Bitbucket API token, or just push the branch. Detects merges and conflicts with main.
+      Draft PRs with <code>gh</code> or a Bitbucket API token, or just push the branch. Detects merges and conflicts with main, and an admin can have Claude fix the conflicts from the app.
     </td>
     <td valign="top">
       <h4>New projects from an idea</h4>

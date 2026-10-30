@@ -394,6 +394,11 @@ la rama de la tarea; si no hay conflictos lo sube ya, y si los hay Claude los re
 el mismo PR se actualiza. Las rutas protegidas y los secretos se revisan solo sobre lo que cambia la tarea, no sobre lo que entró en
 la rama principal. Esto pasa siempre que se retoma una tarea (también al responder en el hilo).
 
+Si la tarea no tiene una sesión de Claude que retomar (p. ej. hecha con Claude Code fuera de Backcode) o no eres quien la
+ejecuta, un admin tiene **Arreglar con Claude** en esa misma tarjeta: su runner mezcla la rama principal en una copia aparte de la
+rama del PR, Claude resuelve los conflictos editando solo esos ficheros (sin Bash ni red), y el runner comprueba que no quedan
+marcas ni secretos, commitea el merge y lo sube sin forzar (si la rama avanzó mientras tanto, falla sin pisar nada).
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.
