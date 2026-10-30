@@ -334,7 +334,9 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
   for (const d of await detectDeploys(files, show, declared)) {
     if (out.some((o) => o.name === d.name)) continue;
     const pm = files.includes(d.dir ? `${d.dir}/pnpm-lock.yaml` : "pnpm-lock.yaml") ? "pnpm" : files.includes(d.dir ? `${d.dir}/yarn.lock` : "yarn.lock") ? "yarn" : "npm";
-    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, source: "detected", auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, install: true, ...(d.local ? { local: d.local } : {}) } });
+    // Si el proyecto ya tiene un script que lo hace, ese (con sus pasos previos); si no, el comando de la plataforma.
+    const cmd = d.script ? [pm, "run", d.script] : d.cmd;
+    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, source: "detected", auto: { cmd, rank: d.rank, paths: d.paths, install: true, ...(d.local ? { local: d.local } : {}) } });
   }
   return out.slice(0, 20);
 }

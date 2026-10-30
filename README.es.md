@@ -522,7 +522,9 @@ Si el fichero tiene algún error, el registro del runner dice qué línea o qué
 | Supabase | `supabase/config.toml` | `supabase-db` (`supabase db push --linked`, si hay `supabase/migrations/*.sql`) y `supabase-functions` (`supabase functions deploy`) |
 | Firebase | `firebase.json` | `firebase-rules` (Firestore/Storage) y `firebase-functions` |
 
-Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detecta (no salen dos botones). Se ejecutan con
+Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detecta (no salen dos botones). Y si el `package.json` de esa carpeta
+ya tiene un script que hace ese despliegue (p. ej. `"deploy": "npm run build && wrangler deploy"` o `"db:migrate": "wrangler d1
+migrations apply … --remote"`), se ejecuta **ese script**, con sus pasos previos, en vez del comando a secas. Se ejecutan con
 `npx` en tu ordenador, con **tu** sesión de cada herramienta (`wrangler login`, `supabase login` + `supabase link`,
 `firebase login`); la «i» junto a cada despliegue en la app lo explica si falla. De Supabase se copia el enlace local
 (`supabase/.temp`), y `db push` necesita `SUPABASE_DB_PASSWORD` en tu shell. En el plan de «Pendiente de desplegar», las
