@@ -104,6 +104,8 @@ code, pre, textarea { font-family: Menlo, ui-monospace, SFMono-Regular, monospac
 .projects { display: grid; gap: 10px; }
 .project { display: grid; gap: 4px; }
 .project .head { display: flex; align-items: center; gap: 10px; }
+/* La cabecera ya centra en vertical: sin el margen que alinea el punto con la primera línea en las listas. */
+.project .head .dot { margin-top: 0; }
 .project .name { font-size: 17px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project .state { font-size: 13px; color: var(--muted); white-space: nowrap; }
 .project .meta { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
