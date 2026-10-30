@@ -6,6 +6,8 @@
 // - Firebase: firebase.json → «firebase-rules» (reglas e índices de Firestore y Storage) y «firebase-functions».
 // Solo se mira lo versionado en git (no se ejecuta nada al detectar), y una plataforma no se detecta si el repo ya
 // declara algún `backcode:deploy:*` que la use (así no salen dos botones para lo mismo).
+// Si el package.json de esa carpeta ya tiene un script que hace ese despliegue (p. ej. "deploy": "npm run build &&
+// wrangler deploy"), se ejecuta ese script y no el comando a secas: suele preparar algo antes (PokéScan genera su catálogo).
 
 export type DeployProvider = "wrangler" | "supabase" | "firebase";
 
@@ -15,6 +17,8 @@ export interface AutoDeploy {
   provider: DeployProvider;
   /** Comando, sin shell (se ejecuta en la carpeta `dir` de una copia limpia de la rama principal). */
   cmd: string[];
+  /** El script del package.json de esa carpeta que ya hace este despliegue: se ejecuta ese (`<pm> run <script>`). */
+  script?: string;
   /** Orden en el plan: 0 bases de datos y reglas, 1 functions, 2 servidores/webs. */
   rank: number;
   /** Rutas (prefijos, relativas al repo) cuyos cambios lo dejan pendiente de desplegar. */
@@ -76,6 +80,24 @@ function d1Of(config: string, file: string): { name: string; migrations: string 
   return typeof db?.database_name === "string" ? { name: db.database_name, migrations: typeof db.migrations_dir === "string" ? db.migrations_dir : "migrations" } : null;
 }
 
+/** Los scripts del package.json de una carpeta (si lo hay). */
+async function scriptsIn(dir: string, files: string[], show: (path: string) => Promise<string>): Promise<Record<string, string>> {
+  const pkg = join(dir, "package.json");
+  if (!files.includes(pkg)) return {};
+  try {
+    const scripts = (JSON.parse(await show(pkg)) as { scripts?: Record<string, unknown> }).scripts ?? {};
+    return Object.fromEntries(Object.entries(scripts).filter((e): e is [string, string] => typeof e[1] === "string"));
+  } catch {
+    return {};
+  }
+}
+
+/** El script que ya hace ese despliegue: el que se llama como el preferido, o el primero cuyo comando encaja. */
+function scriptFor(scripts: Record<string, string>, re: RegExp, preferred: string[]): string | undefined {
+  const matches = Object.keys(scripts).filter((k) => !k.startsWith("backcode:") && re.test(scripts[k]));
+  return preferred.find((p) => matches.includes(p)) ?? matches[0];
+}
+
 export async function detectDeploys(files: string[], show: (path: string) => Promise<string>, declared: Set<DeployProvider>): Promise<AutoDeploy[]> {
   const out: AutoDeploy[] = [];
   const dirOf = (f: string) => (f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "");
@@ -87,11 +109,14 @@ export async function detectDeploys(files: string[], show: (path: string) => Pro
       const dir = dirOf(file);
       const base = slug(dir.split("/").pop() || "worker") || "worker";
       const config = await show(file).catch(() => "");
+      const scripts = await scriptsIn(dir, files, show);
       const d1 = d1Of(config, file);
       if (d1 && /^[\w.-]{1,100}$/.test(d1.name) && hasUnder(join(dir, d1.migrations), /\.sql$/)) {
-        out.push({ name: `${base}-db`, dir, provider: "wrangler", cmd: ["npx", "--yes", "wrangler", "d1", "migrations", "apply", d1.name, "--remote"], rank: 0, paths: [join(dir, d1.migrations)] });
+        const script = scriptFor(scripts, /\bwrangler\s+d1\s+migrations\s+apply\b[^&|;]*--remote\b/, ["db:migrate", "migrate"]);
+        out.push({ name: `${base}-db`, dir, provider: "wrangler", cmd: ["npx", "--yes", "wrangler", "d1", "migrations", "apply", d1.name, "--remote"], ...(script ? { script } : {}), rank: 0, paths: [join(dir, d1.migrations)] });
       }
-      out.push({ name: base, dir, provider: "wrangler", cmd: ["npx", "--yes", "wrangler", "deploy"], rank: 2, paths: [dir] });
+      const script = scriptFor(scripts, /\bwrangler\s+deploy\b/, ["deploy"]);
+      out.push({ name: base, dir, provider: "wrangler", cmd: ["npx", "--yes", "wrangler", "deploy"], ...(script ? { script } : {}), rank: 2, paths: [dir] });
     }
   }
 
@@ -102,8 +127,11 @@ export async function detectDeploys(files: string[], show: (path: string) => Pro
       const sb = join(dir, "supabase");
       // El enlace al proyecto (`supabase link`) vive en supabase/.temp, ignorado por git: se copia de tu repo.
       const local = ["supabase/.temp/project-ref", "supabase/.temp/pooler-url", "supabase/.temp/postgres-version"];
-      if (hasUnder(`${sb}/migrations`, /\.sql$/)) out.push({ name: "supabase-db", dir, provider: "supabase", cmd: ["npx", "--yes", "supabase", "db", "push", "--linked", "--yes"], rank: 0, paths: [`${sb}/migrations`], local });
-      if (hasUnder(`${sb}/functions`, /\.(ts|js|tsx|mjs)$/)) out.push({ name: "supabase-functions", dir, provider: "supabase", cmd: ["npx", "--yes", "supabase", "functions", "deploy", "--yes"], rank: 1, paths: [`${sb}/functions`], local });
+      const scripts = await scriptsIn(dir, files, show);
+      const dbScript = scriptFor(scripts, /\bsupabase\s+db\s+push\b/, ["db:push", "migrate"]);
+      const fnScript = scriptFor(scripts, /\bsupabase\s+functions\s+deploy\b/, ["functions:deploy", "deploy:functions"]);
+      if (hasUnder(`${sb}/migrations`, /\.sql$/)) out.push({ name: "supabase-db", dir, provider: "supabase", cmd: ["npx", "--yes", "supabase", "db", "push", "--linked", "--yes"], ...(dbScript ? { script: dbScript } : {}), rank: 0, paths: [`${sb}/migrations`], local });
+      if (hasUnder(`${sb}/functions`, /\.(ts|js|tsx|mjs)$/)) out.push({ name: "supabase-functions", dir, provider: "supabase", cmd: ["npx", "--yes", "supabase", "functions", "deploy", "--yes"], ...(fnScript ? { script: fnScript } : {}), rank: 1, paths: [`${sb}/functions`], local });
     }
   }
 
@@ -112,15 +140,18 @@ export async function detectDeploys(files: string[], show: (path: string) => Pro
     if (config) {
       const dir = dirOf(config);
       const json = parseJsonc(await show(config).catch(() => "")) ?? {};
+      const scripts = await scriptsIn(dir, files, show);
       const rules = [json.firestore ? "firestore" : "", json.storage ? "storage" : ""].filter(Boolean);
       if (rules.length) {
         const paths = files.filter((f) => /(^|\/)(firestore\.rules|firestore\.indexes\.json|storage\.rules)$/.test(f) && f.startsWith(dir));
-        out.push({ name: "firebase-rules", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", rules.join(","), "--non-interactive"], rank: 0, paths: paths.length ? paths : [join(dir, "firestore.rules")] });
+        const script = scriptFor(scripts, /\bfirebase(-tools)?\s+deploy\b[^&|;]*--only\s+[\w:,]*(firestore|storage)/, ["deploy:rules", "rules"]);
+        out.push({ name: "firebase-rules", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", rules.join(","), "--non-interactive"], ...(script ? { script } : {}), rank: 0, paths: paths.length ? paths : [join(dir, "firestore.rules")] });
       }
       if (json.functions) {
         const fns = Array.isArray(json.functions) ? (json.functions[0] as { source?: unknown } | undefined) : (json.functions as { source?: unknown });
         const source = typeof fns?.source === "string" ? fns.source : "functions";
-        out.push({ name: "firebase-functions", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", "functions", "--non-interactive"], rank: 1, paths: [join(dir, source)] });
+        const script = scriptFor(scripts, /\bfirebase(-tools)?\s+deploy\b[^&|;]*--only\s+[\w:,]*functions/, ["deploy:functions", "functions:deploy"]);
+        out.push({ name: "firebase-functions", dir, provider: "firebase", cmd: ["npx", "--yes", "firebase-tools", "deploy", "--only", "functions", "--non-interactive"], ...(script ? { script } : {}), rank: 1, paths: [join(dir, source)] });
       }
     }
   }

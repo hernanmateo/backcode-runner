@@ -32,6 +32,7 @@ import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
 import type { DeployPlan } from "./pending.js";
 import type { OpenPr } from "./hosts.js";
+import type { DiagnosticPayload } from "./diagnostics.js";
 
 /** PR externo para el tablero: el del host más sus checks y si choca con la rama base. */
 export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
@@ -175,6 +176,8 @@ export class Store {
 
   /** Avisos sobre la configuración (rama base, alojamiento…) que la app muestra junto al estado del runner. */
   warnings: RepoWarning[] = [];
+  /** «Enviar diagnósticos a Backcode» del perfil (desactivado por defecto); lo sigue watchLang. Ver diagnostics.ts. */
+  shareDiagnostics = false;
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   // expo: el repo es una app Expo (la app ofrece la guía de OTA aunque aún no tenga).
   // knowledge: atiende «Actualizar ahora» del mapa del código (acción knowledge).
@@ -205,11 +208,17 @@ export class Store {
           // «Decretazos» del perfil, para que el panel lo muestre (sin valor = activado, como en la app). Solo se cambia en la app.
           const allow = d.get("allowAdminAssign") !== false;
           if (readState().allowAdminAssign !== allow) updateState({ allowAdminAssign: allow });
+          this.shareDiagnostics = d.get("shareDiagnostics") === true;
           done();
         },
         done,
       );
     });
+  }
+
+  /** Informe de un fallo de Backcode, ya limpio (diagnostics.ts). Las reglas solo lo dejan con shareDiagnostics activado. */
+  async sendDiagnostic(data: DiagnosticPayload): Promise<void> {
+    await addDoc(collection(this.db, "diagnostics"), { ...data, uid: this.uid, createdAt: serverTimestamp() });
   }
 
   /** Descarga un adjunto de la tarea (Storage Rules: solo miembros del grupo). */
@@ -499,16 +508,17 @@ export class Store {
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
-  async mergedNotDeployed(channel: string): Promise<{ id: string; sha: string }[]> {
+  async mergedNotDeployed(channel: string): Promise<{ id: string; title: string; sha: string }[]> {
     const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
     return snap.docs
       .filter((d) => d.get("merged.sha") && !d.get(`deployed.${channel}`))
-      .map((d) => ({ id: d.id, sha: String(d.get("merged.sha")) }));
+      .map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
   }
 
   /**
    * Commit del último despliegue hecho de cada paso (`deploy:<destino>`, `ota:<canal>`), de las acciones terminadas bien
-   * (también los pasos de «Desplegarlo todo»). Para «Pendiente de desplegar».
+   * (también los pasos de «Desplegarlo todo») y `build` (builds para testers). Para «Pendiente de desplegar» y para saber
+   * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
     const snap = await getDocs(query(collection(this.project(), "actions"), where("status", "==", "done")));
@@ -522,6 +532,7 @@ export class Store {
       const type = d.get("type");
       if (type === "deploy") note(`deploy:${String(d.get("target"))}`, at, d.get("result.sha"));
       else if (type === "ota") note(`ota:${String(d.get("channel"))}`, at, d.get("result.sha"));
+      else if (type === "build") note("build", at, d.get("result.sha"));
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
     return new Map([...best].map(([id, v]) => [id, v.sha]));

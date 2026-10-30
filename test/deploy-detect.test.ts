@@ -44,3 +44,18 @@ test("Firebase: reglas y functions; y nada de una plataforma que el repo ya decl
   assert.equal(providerOfCommand("supabase db push"), "supabase");
   assert.equal(providerOfCommand("./scripts/deploy-web.sh"), null);
 });
+
+test("si el proyecto ya tiene su script de despliegue (con pasos previos), se usa ese y no el comando a secas", async () => {
+  const r = repo({
+    "server/wrangler.jsonc": '{ "name": "api", "d1_databases": [{ "database_name": "pokescan" }] }',
+    "server/migrations/0001.sql": "",
+    "server/package.json": JSON.stringify({ scripts: { deploy: "npm run export:catalogue && wrangler deploy", "export:catalogue": "node x.mjs", "db:migrate": "wrangler d1 migrations apply pokescan --remote", "db:migrate:local": "wrangler d1 migrations apply pokescan --local" } }),
+  });
+  const found = await detectDeploys(r.files, r.show, new Set());
+  assert.deepEqual(found.map((d) => [d.name, d.script]), [["server-db", "db:migrate"], ["server", "deploy"]]);
+  // Sin package.json (o sin script que lo haga), el comando de la plataforma.
+  const bare = repo({ "wrangler.toml": 'name = "w"' });
+  assert.equal((await detectDeploys(bare.files, bare.show, new Set()))[0].script, undefined);
+  const sb = repo({ "supabase/config.toml": "", "supabase/migrations/1.sql": "", "package.json": JSON.stringify({ scripts: { "db:push": "supabase db push --linked" } }) });
+  assert.equal((await detectDeploys(sb.files, sb.show, new Set()))[0].script, "db:push");
+});

@@ -51,6 +51,11 @@ function readGuards(): GuardInfo[] {
   });
 }
 
+/** El proyecto conectado con este id (para `backcode deploys --project <id>`). */
+export function guardById(projectId: string): GuardInfo | null {
+  return readGuards().find((g) => g.projectId === projectId) ?? null;
+}
+
 const gitIn = (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim();
 const real = (p: string) => {
   try {

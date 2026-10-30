@@ -31,7 +31,7 @@ Todas instalan el mismo runner y abren el mismo panel.
 | **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
 | **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
 | **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
-| **Plugin de Claude Code** | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Plugin de Claude Code** (lo más fácil si usas Claude Code) | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
 | **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
 
 Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
@@ -51,14 +51,18 @@ releases.
 
 `/backcode:setup` hace la puesta en marcha conversando contigo (comprueba el ordenador, instala el
 runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
-clona el repo y lo deja arrancando al iniciar sesión) y `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
+clona el repo y lo deja arrancando al iniciar sesión) y después deja el proyecto **listo para trabajar**: comprueba las sesiones
+de las herramientas de despliegue que usa el repo (wrangler, supabase, firebase; si falta un login, te da el comando para
+lanzarlo con `!`), ofrece activar el plugin para todo el equipo en el `.claude/settings.json` del repo (en un PR, con el flujo de
+Backcode), pregunta si mantener el ordenador despierto (`backcode awake`), explica las pautas del proyecto y acaba con una lista
+✓/✗. Nunca lee `~/.backcode/config/` ni imprime secretos. `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
-**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Pautas de Backcode fuera de
-Backcode**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
-- **Desactivado**: Claude Code trabaja como siempre.
+**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Cuando alguien trabaja con
+Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
+- **Libre**: Claude Code trabaja como siempre.
 - **Recordar**: al empezar cada sesión en ese repo (o en un worktree suyo), el plugin le da a Claude las pautas: cada
   funcionalidad o fix en su worktree y su rama desde la base al día, y a la rama principal solo por PR.
 - **Exigir**: además, un `git commit` en la rama principal o un `git push` que la suba (`main`, `HEAD:main`, `--all`…) pide
@@ -131,6 +135,8 @@ Todo lo del panel se puede hacer también con comandos (`npm i -g backcode` deja
 | `backcode connect` | Conecta un proyecto: pega la configuración de la app (⌘V + Enter). Si el panel está en marcha, lo arranca él; si no, en esta terminal. |
 | `backcode start [proyecto…]` | Arranca en esta terminal todos los proyectos (o los indicados), con los logs juntos (`[proyecto]` delante). |
 | `backcode service install` / `uninstall` / `status` | Arrancar al iniciar sesión (lo mismo que el interruptor del panel). Log en `~/.backcode/logs/service.log`. |
+| `backcode deploys [--json] [--project <id>]` | Despliegues del proyecto en su rama principal (`id`, `name`, `dir`, `provider`, `source`; sin comandos ni secretos). Desde el repo o un worktree suyo, o con `--project`. |
+| `backcode awake [off\|plugged\|always]` | Mantener el ordenador despierto, como en el panel (lo aplica en menos de un minuto). Sin modo: el actual, el de la app y el que se aplica. |
 | `backcode --version` | Versión instalada. |
 
 Si lanzas dos runners tuyos para el mismo proyecto (en dos ordenadores o dos terminales), el segundo se niega a arrancar.
@@ -516,7 +522,9 @@ Si el fichero tiene algún error, el registro del runner dice qué línea o qué
 | Supabase | `supabase/config.toml` | `supabase-db` (`supabase db push --linked`, si hay `supabase/migrations/*.sql`) y `supabase-functions` (`supabase functions deploy`) |
 | Firebase | `firebase.json` | `firebase-rules` (Firestore/Storage) y `firebase-functions` |
 
-Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detecta (no salen dos botones). Se ejecutan con
+Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detecta (no salen dos botones). Y si el `package.json` de esa carpeta
+ya tiene un script que hace ese despliegue (p. ej. `"deploy": "npm run build && wrangler deploy"` o `"db:migrate": "wrangler d1
+migrations apply … --remote"`), se ejecuta **ese script**, con sus pasos previos, en vez del comando a secas. Se ejecutan con
 `npx` en tu ordenador, con **tu** sesión de cada herramienta (`wrangler login`, `supabase login` + `supabase link`,
 `firebase login`); la «i» junto a cada despliegue en la app lo explica si falla. De Supabase se copia el enlace local
 (`supabase/.temp`), y `db push` necesita `SUPABASE_DB_PASSWORD` en tu shell. En el plan de «Pendiente de desplegar», las
@@ -583,6 +591,23 @@ El texto de las tareas lo escriben otros miembros del grupo: se trata como **dat
 | Publicación | El push y el PR los hace el runner, sin hooks de git, y el PR siempre en **borrador**. El merge y el OTA solo ocurren si un admin los pide desde la app y los checks están en verde. |
 
 Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa cada PR como si viniera de un desconocido.
+
+## Diagnósticos de Backcode
+Si activas **Perfil › Enviar diagnósticos a Backcode** en la app (desactivado por defecto), cuando algo falla **por
+Backcode** tu runner manda un informe para que se arregle (`src/diagnostics.ts`). Solo cuenta como de Backcode una
+excepción del propio runner (no la salida de un comando del proyecto) o un despliegue cuyo comando eligió Backcode
+(detectado o de `backcode.toml`) y que falla; los fallos de tu proyecto o de tu ordenador (tests, sesión de una
+herramienta, permisos, red, cuota, lockfile) **no** se envían.
+
+- Se envía: versión del runner, sistema (`darwin-arm64`…), tipo de acción, origen y plataforma del despliegue, el error y
+  la cola del registro (máx. 3000 caracteres) y una huella del fallo (hash del mensaje sin rutas, números ni hashes).
+- Antes de salir del ordenador se limpia: worktrees → `<worktree>/…`, el repo → `<repo>/…`, rutas con tu usuario →
+  `~/…`, el remoto y el nombre del repo → `<remote>` / `<repo>`, correos → `<email>`. Si queda **algo que parezca un
+  secreto** (tokens, claves, `clave=valor`, URLs con contraseña, JWT…), el informe se descarta entero.
+- Nunca: tu código, ficheros, `.env`, el nombre del repo ni su URL.
+- Como mucho uno por fallo y hora. Las reglas solo dejan escribirlo a tu runner y con el interruptor activado; nadie lo
+  lee desde la app. En Backcode, cada fallo distinto es una tarea del backlog (con cuántas veces y en cuántos
+  ordenadores ha pasado), que alguien arregla con un PR.
 
 ## Personalizar las instrucciones
 Edita [`instructions/AGENT.md`](instructions/AGENT.md) (en una copia de git: con npm, la versión nueva lo sobrescribe). Admite estos marcadores: `{{projectName}}`, `{{worktree}}`, `{{branch}}`,

@@ -28,6 +28,7 @@ import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildReport, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
@@ -45,6 +46,8 @@ const cfg = (() => {
   }
 })();
 let store: Store;
+/** Lo que diagnostics.ts quita de los informes (el repo, sus worktrees y su remoto). */
+const diagCtx: SanitizeContext = { repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir };
 const awake = new KeepAwake(cfg.keepAwake);
 const isProtected = protectedMatcher(cfg.protectedPaths);
 
@@ -79,6 +82,19 @@ let stopping = false;
 
 // "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
 type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
+
+/**
+ * Informe para Backcode de una acción fallida (diagnostics.ts decide si es de Backcode y lo limpia). En un despliegue
+ * importa de dónde salió el comando: detectado o de backcode.toml lo eligió Backcode; un script, el proyecto.
+ */
+function diagnosticFor(action: Action, result: ActionResult, thrown: Error | undefined) {
+  const failedStep = action.type === "deployAll" ? result.steps?.find((s) => !s.ok) : undefined;
+  const target = action.type === "deploy" ? action.target : failedStep?.id.startsWith("deploy:") ? failedStep.id.slice("deploy:".length) : undefined;
+  const deploy = target ? store.capabilities.deploys.find((d) => d.id === target) : undefined;
+  const source: DeploySource | undefined = deploy ? (deploy.config ? "config" : deploy.detected ? "detected" : "script") : undefined;
+  const error = thrown ? String(thrown) : String(failedStep?.error ?? result.error ?? "");
+  return buildReport({ action: action.type, error, log: thrown?.stack ?? result.log, provider: deploy?.provider, source, thrown: !!thrown }, diagCtx);
+}
 
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Hecha fuera de Backcode: el runner no tiene su sesión ni su encargo, y empezar de cero pisaría la rama del PR. Vuelve a
@@ -496,6 +512,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     }
   } catch (err) {
     result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
+    // Un error interno del runner (no parar ni agotar el tiempo): a Backcode, si quien lo usa lo permite.
+    if (!abort.signal.aborted) void report(store, buildReport({ action: "feature", error: String(err), log: (err as Error)?.stack, thrown: true }, diagCtx));
   } finally {
     clearTimeout(timeout);
     clearInterval(lease);
@@ -649,6 +667,7 @@ async function main(): Promise<void> {
   const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest, !!cfg.bitbucket);
   cfg.baseBranch = repo.baseBranch;
   cfg.pullRequest = repo.pullRequest;
+  diagCtx.remoteUrl = repo.remoteUrl || undefined;
   const repoUrl = publicRepoUrl(repo.remoteUrl);
   if (repoUrl) await store.saveRepoUrl(repoUrl).catch(() => undefined);
   prHost = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" ? bitbucketHost(repo.remoteUrl, cfg.bitbucket!.email, cfg.bitbucket!.token) : undefined;
@@ -861,13 +880,18 @@ async function main(): Promise<void> {
           action.type === "knowledge"
             ? refreshKnowledge(cfg, store, agentEnv(), knowledgeAbort.signal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
             : runAction(cfg, store, prHost, action as unknown as Action);
+        let thrown: Error | undefined;
         const { ok, result } = await work
-          .catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }))
+          .catch((err): { ok: boolean; result: ActionResult } => {
+            thrown = err as Error;
+            return { ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } };
+          })
           .finally(() => {
             clearInterval(actionLease);
             release();
           });
         await store.finishAction(id, ok, result as Record<string, unknown>);
+        if (!ok) void report(store, diagnosticFor(action as unknown as Action, result, thrown));
         void refreshPlan();
         if (action.type === "closePr" || action.type === "mergePr" || action.type === "merge") void refreshPrs();
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);

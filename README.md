@@ -74,7 +74,7 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 | **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
 | **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
 | **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
-| **🤖 Claude Code plugin** | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🤖 Claude Code plugin** · *if you use Claude Code* | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
 | **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
 <details>
@@ -217,17 +217,21 @@ would have to be published from a public repo, such as the releases one.
 
 - **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
   configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
-  running at login.
+  running at login. Then it leaves the project **ready to work**: checks the sessions of the deploy tools the repo uses
+  (wrangler, supabase, firebase; a missing login is a command for you to run with `!`), offers to turn the plugin on for the
+  whole team in the repo's `.claude/settings.json` (in a PR, the Backcode way), asks whether to keep the computer awake
+  (`backcode awake`), explains the project's guidelines and ends with a ✓/✗ checklist. It never reads `~/.backcode/config/`
+  or prints secrets.
 - **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
 ### Backcode guidelines outside Backcode
 
-An admin chooses in the app (**Edit project › Backcode guidelines outside Backcode**) how people work on the repo with Claude
+An admin chooses in the app (**Edit project › When someone works with Claude Code on their own**) how people work on the repo with Claude
 Code directly, through the plugin:
 
-- **Off**: Claude Code works as usual.
+- **Free**: Claude Code works as usual.
 - **Remind**: at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
   fix in its own worktree and branch from the up-to-date base, and the main branch only through a PR.
 - **Require**: on top of that, a `git commit` on the main branch or a `git push` that updates it (`main`, `HEAD:main`, `--all`…)
@@ -277,6 +281,8 @@ Everything in the panel also works from the terminal. `install.sh` puts `backcod
 | `backcode connect` | Connect a project by pasting the configuration from the app. |
 | `backcode start [project…]` | Run all projects (or the given ones) in this terminal, with prefixed logs. |
 | `backcode service install` · `uninstall` · `status` | Start at login, same as the switch in the panel. |
+| `backcode deploys [--json] [--project <id>]` | The project's deploys on its main branch (`id`, `name`, `dir`, `provider`, `source`; no commands or secrets). From the repo or one of its worktrees, or with `--project`. |
+| `backcode awake [off\|plugged\|always]` | Keep the computer awake, same as in the panel (it applies it within a minute). No mode: shows the current one, the app's and the one applied. |
 | `backcode --version` | Print the installed version. |
 
 ## Security
@@ -296,6 +302,14 @@ Task briefs are written by other members of your group, so the runner treats the
 | **Panel** | Listens on `127.0.0.1` only, requires a per-user token and rejects foreign `Host`/`Origin` headers, so other users and websites can't use it. It never returns keys or tokens. |
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.
+
+**Diagnostics (opt-in).** With **Profile › Send diagnostics to Backcode** turned on in the app (off by default), when
+something fails **because of Backcode** (a runner exception, or a deploy whose command Backcode chose — detected or from
+`backcode.toml`), the runner sends a cleaned report: runner version, OS, action type, deploy source and platform, the error
+and the log tail (3000 chars max) and a fingerprint. Personal paths, worktrees, the repo name and remote, and emails are
+replaced before it leaves your computer, and if anything still looks like a secret the whole report is dropped. Your code,
+files and `.env` are never sent, and failures of your own project (tests, tool sessions, permissions, network) aren't
+either. At most one report per failure per hour; see `src/diagnostics.ts`.
 Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 ## Where things live
