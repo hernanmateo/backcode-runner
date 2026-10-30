@@ -148,6 +148,9 @@ export interface FeatureResult {
 }
 
 const LOCK_LEASE_MS = 60_000;
+/** Cada renovación es una escritura (y una lectura por cada pantalla de la app que mira el proyecto): a mitad del lease,
+ * con 30 s de margen, en vez de cada 20 s. Quien comprueba si el runner está conectado sigue viendo un lease de 60 s. */
+const LOCK_RENEW_MS = LOCK_LEASE_MS / 2;
 export const FEATURE_LEASE_MS = 5 * 60_000;
 /** «Sigo vivo» de las acciones (merge, OTA, builds…): se renueva cada minuto mientras dura. */
 export const ACTION_LEASE_MS = 3 * 60_000;
@@ -309,7 +312,7 @@ export class Store {
         console.error(`[lock] ${t("store.leaseLost")}`, err.message);
         process.exit(1);
       });
-    }, LOCK_LEASE_MS / 3);
+    }, LOCK_RENEW_MS);
     return async () => {
       clearInterval(timer);
       await deleteDoc(ref).catch(() => undefined);
