@@ -143,7 +143,10 @@ cable, on a phone paired with your runner's computer; the panel's **Phones** sec
 **development version** that loads the code instantly from your runner's Metro: the main branch, or any task with "Try on my
 phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
 the right order (rules → functions → other deploys → OTA), each with its own button plus **Deploy everything**, which stops at the
-first failure.
+first failure. Deploys are
+`backcode:deploy:<name>` scripts in any `package.json`, plus what the runner detects by itself: Cloudflare Workers (and their D1
+migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
+check if it fails (signing in to wrangler, supabase, firebase…).
 
 ## Features
 

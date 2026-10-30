@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { detectDeploys, providerOfCommand, type DeployProvider } from "./deploy-detect.js";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { promisify } from "node:util";
@@ -258,6 +259,10 @@ export interface DeployTarget {
   pm: "npm" | "pnpm" | "yarn" | "bun";
   /** A qué proyecto y canal de Firebase apunta (leído del script, sin ejecutarlo); la app lo enseña antes de desplegar. */
   env?: FirebaseDeployEnv;
+  /** Plataforma (por el comando): la app enseña qué revisar si falla (sesión de wrangler, supabase, firebase…). */
+  provider?: DeployProvider;
+  /** Detectado sin script (deploy-detect.ts): el comando estándar de la plataforma, su orden y lo que lo deja pendiente. */
+  auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[] };
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
@@ -291,8 +296,16 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
       const name = key.startsWith(DEPLOY_PREFIX) ? key.slice(DEPLOY_PREFIX.length) : "";
       if (!DEPLOY_NAME_RE.test(name)) continue;
       const env = await firebaseDeployEnv(strScripts[key], ctx).catch(() => null);
-      out.push({ id: `${dir}#${name}`, name, dir, pm, ...(env ? { env } : {}) });
+      const provider = providerOfCommand(strScripts[key]);
+      out.push({ id: `${dir}#${name}`, name, dir, pm, ...(env ? { env } : {}), ...(provider ? { provider } : {}) });
     }
+  }
+  // Lo que se reconoce solo (Cloudflare Workers, Supabase, Firebase), salvo plataformas que el repo ya declara.
+  const declared = new Set(out.map((d) => d.provider).filter((p): p is DeployProvider => !!p));
+  for (const d of await detectDeploys(files, show, declared)) {
+    if (out.some((o) => o.name === d.name)) continue;
+    const pm = files.includes(d.dir ? `${d.dir}/pnpm-lock.yaml` : "pnpm-lock.yaml") ? "pnpm" : files.includes(d.dir ? `${d.dir}/yarn.lock` : "yarn.lock") ? "yarn" : "npm";
+    out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm, provider: d.provider, auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, ...(d.local ? { local: d.local } : {}) } });
   }
   return out.slice(0, 20);
 }
