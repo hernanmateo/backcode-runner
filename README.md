@@ -144,7 +144,8 @@ cable, on a phone paired with your runner's computer; the panel's **Phones** sec
 phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
 the right order (rules → functions → other deploys → OTA), each with its own button plus **Deploy everything**, which stops at the
 first failure. Deploys are
-`backcode:deploy:<name>` scripts in any `package.json`, plus what the runner detects by itself: Cloudflare Workers (and their D1
+`backcode:deploy:<name>` scripts in any `package.json` or, for repos without JavaScript, `[deploy.<name>]` entries with
+`run = "…"` in a `backcode.toml` (run as is, no `npm`: no Node needed), plus what the runner detects by itself: Cloudflare Workers (and their D1
 migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
 check if it fails (signing in to wrangler, supabase, firebase…).
 

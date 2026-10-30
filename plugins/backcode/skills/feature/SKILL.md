@@ -47,9 +47,10 @@ that work: skip to step 2 and keep everything there.
    run deploys yourself.
    Backcode already detects Cloudflare Workers (wrangler config and D1 migrations), Supabase (migrations and edge
    functions) and Firebase (rules and functions). If the change needs any other deployment and the repo has no
-   `backcode:deploy:<name>` script for it, add one in this PR to the `package.json` of that part, calling the project's
-   existing deploy command (lowercase name with dashes; a database migration ending in `-db`; no secrets), so the team
-   can deploy it from the app.
+   deploy for it, add one in this PR, calling the project's existing deploy command (lowercase name with dashes; a
+   database migration ending in `-db` / `kind = "migration"`; no secrets): in a JavaScript repo, a
+   `backcode:deploy:<name>` script in that part's `package.json`; in a repo without JavaScript, a `[deploy.<name>]`
+   entry with `run = "…"` in a `backcode.toml`. So the team can deploy it from the app.
 2. From the worktree: `backcode task pr --title "<imperative title>" --body-file <file> --json`.
    It checks there are no uncommitted changes and no secrets, pushes the branch, opens (or updates) the PR and moves the
    task to "PR ready" on the Backcode board, under the user's name. It prints `{ "prUrl" }`. From there it moves by
