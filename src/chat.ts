@@ -147,6 +147,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
             text: m.text,
             files: m.attachments?.length ? await materializeAttachments(store, cfg.projectId, path, m.attachments, m.id) : [],
             ...(typeof m.video?.durationMs === "number" ? { videoMs: m.video.durationMs } : {}),
+            ...(m.voice === true ? { voice: true } : {}),
           })),
         ),
       );
