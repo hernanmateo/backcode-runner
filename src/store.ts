@@ -508,16 +508,17 @@ export class Store {
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
-  async mergedNotDeployed(channel: string): Promise<{ id: string; sha: string }[]> {
+  async mergedNotDeployed(channel: string): Promise<{ id: string; title: string; sha: string }[]> {
     const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
     return snap.docs
       .filter((d) => d.get("merged.sha") && !d.get(`deployed.${channel}`))
-      .map((d) => ({ id: d.id, sha: String(d.get("merged.sha")) }));
+      .map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
   }
 
   /**
    * Commit del último despliegue hecho de cada paso (`deploy:<destino>`, `ota:<canal>`), de las acciones terminadas bien
-   * (también los pasos de «Desplegarlo todo»). Para «Pendiente de desplegar».
+   * (también los pasos de «Desplegarlo todo») y `build` (builds para testers). Para «Pendiente de desplegar» y para saber
+   * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
     const snap = await getDocs(query(collection(this.project(), "actions"), where("status", "==", "done")));
@@ -531,6 +532,7 @@ export class Store {
       const type = d.get("type");
       if (type === "deploy") note(`deploy:${String(d.get("target"))}`, at, d.get("result.sha"));
       else if (type === "ota") note(`ota:${String(d.get("channel"))}`, at, d.get("result.sha"));
+      else if (type === "build") note("build", at, d.get("result.sha"));
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
     return new Map([...best].map(([id, v]) => [id, v.sha]));
