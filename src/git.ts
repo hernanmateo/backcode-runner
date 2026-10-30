@@ -288,6 +288,11 @@ export interface DeployTarget {
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
+
+/** Lo que la app ve de cada destino (un botón por destino): sin comandos, solo de dónde sale y a qué apunta. */
+export function deployCapabilities(targets: DeployTarget[]) {
+  return targets.map(({ id, name, dir, env, provider, source }) => ({ id, name, dir, ...(env ? { env } : {}), ...(provider ? { provider } : {}), ...(source === "detected" ? { detected: true } : source === "config" ? { config: true } : {}) }));
+}
 const DEPLOY_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 export async function findDeployTargets(repoPath: string, commit: string): Promise<DeployTarget[]> {

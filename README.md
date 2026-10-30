@@ -149,7 +149,8 @@ or **I already deployed it** on a step (admins), and Firebase rules the runner c
 `backcode:deploy:<name>` scripts in any `package.json` or, for repos without JavaScript, `[deploy.<name>]` entries with
 `run = "…"` in a `backcode.toml` (run as is, no `npm`: no Node needed), plus what the runner detects by itself: Cloudflare Workers (and their D1
 migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
-check if it fails (signing in to wrangler, supabase, firebase…).
+check if it fails (signing in to wrangler, supabase, firebase…). The runner reads them from the main branch at startup and every
+3 minutes, so a new one shows up in the app shortly after it's merged, without restarting.
 
 ## Features
 
@@ -220,7 +221,9 @@ would have to be published from a public repo, such as the releases one.
 - **`/backcode:setup`** checks your computer, installs the runner, helps you sign in to GitHub, connects the project (the
   configuration goes from your clipboard straight to the runner, never through the chat), finds or clones the repo and keeps it
   running at login. Then it leaves the project **ready to work**: checks the sessions of the deploy tools the repo uses
-  (wrangler, supabase, firebase; a missing login is a command for you to run with `!`), offers to turn the plugin on for the
+  (wrangler, supabase, firebase; a missing login is a command for you to run with `!`), looks for deploys the repo has but
+  doesn't declare yet (Vercel, Netlify, Fly, a `deploy` script, a Makefile…) and offers to declare them so they get a button in
+  the app (in a PR), offers to turn the plugin on for the
   whole team in the repo's `.claude/settings.json` (in a PR, the Backcode way), asks whether to keep the computer awake
   (`backcode awake`), explains the project's guidelines and ends with a ✓/✗ checklist. It never reads `~/.backcode/config/`
   or prints secrets.

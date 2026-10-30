@@ -115,7 +115,37 @@ A missing session is a browser login: don't do it for the user. Tell them the ex
 `! npx wrangler login`, `! npx supabase login`, `! npx firebase-tools login`, and check again afterwards. No deploys, or none
 with a provider: skip this step.
 
-### 6.2 The plugin, on for the whole team
+### 6.2 Deploys the repo doesn't declare yet
+
+The app only shows a deploy button for what step 6.1 listed. Look for the project's other deployments, reading only files
+versioned on the main branch (`git ls-files`, `git show <remote>/<base>:<file>`; run nothing, don't install anything):
+
+- `package.json` scripts (any folder, no `node_modules`) that deploy or release: `deploy`, `release`, `publish`… calling
+  vercel, netlify, fly, railway, render, wrangler pages, gcloud, aws, eas submit, docker push, rsync, ssh, a `scripts/*.sh`.
+- Platform configs: `vercel.json`, `netlify.toml`, `fly.toml`, `railway.json`/`railway.toml`, `render.yaml`, `app.yaml`
+  (App Engine), `serverless.yml`, `Procfile`, `Dockerfile`/`compose.yaml` with a deploy script next to it.
+- A `Makefile` with a `deploy`/`release` target, or `scripts/deploy*.sh`, in repos without JavaScript.
+- The README or CLAUDE.md, for how the team deploys by hand today.
+
+Leave out what 6.1 already lists (same folder and platform), CI-only deploys (`.github/workflows`: they deploy by
+themselves), the Expo app's builds and OTA (Backcode handles them), and anything that needs a command you'd have to guess.
+Nothing left: skip this step.
+
+Otherwise show the user a short list — name, folder and the exact command it would run — and ask which ones to add. For the
+ones they pick, **in a PR, the Backcode way**:
+
+1. `backcode task start "Declarar los despliegues del repo para Backcode"` (in the user's language).
+2. In that worktree, for each one: in a JavaScript part, a `backcode:deploy:<name>` script in that folder's `package.json`
+   calling the existing command (e.g. `"backcode:deploy:web": "npm run deploy"`, keeping the original script); without
+   JavaScript, a `[deploy.<name>]` entry with `run = "…"` (and `dir` if needed) in a `backcode.toml`. Lowercase names with
+   dashes; database migrations end in `-db` (`kind = "migration"` in `backcode.toml`) so they go first. Never secrets in the
+   command: they come from the `.env` files on the computer that deploys.
+3. Commit and run `backcode task pr --title "<same title>" --body-file <file>`, listing each deploy, its command and any
+   login it needs (e.g. `! npx vercel login`).
+
+Once it's merged, the buttons show up in the app's **Deploys** tab within a few minutes.
+
+### 6.3 The plugin, on for the whole team
 
 If the repo's `.claude/settings.json` doesn't have `"enabledPlugins": { "backcode@backcode": true }`, offer to add it so
 everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Add the marketplace too, so Claude
@@ -130,14 +160,14 @@ never with a commit to the main branch:
 
 Tell the user the PR is on the board, ready to review and merge from the app.
 
-### 6.3 Keep this computer awake
+### 6.4 Keep this computer awake
 
 Ask: "Do you want this computer to keep picking up tasks while you're not using it? **No** / **Plugged in** (recommended on
 laptops) / **Always**". Apply it with `backcode awake off`, `backcode awake plugged` or `backcode awake always` (`backcode awake`
 alone shows the current mode, from the panel and from the app). Mention the limit: with the lid closed and no external
 display, a Mac sleeps anyway.
 
-### 6.4 Project guidelines
+### 6.5 Project guidelines
 
 Run `echo '{"cwd":"<repo>"}' | backcode hook session-start`. If it prints JSON with the guidelines (`additionalContext`), the
 project has them on: explain in two lines that every change goes through `/backcode:feature` (its own worktree, and a PR
@@ -153,6 +183,7 @@ Show a short checklist with ✓ / ✗, and for every ✗ the exact command or st
 - Project connected
 - GitHub / Bitbucket access
 - Deploy tool sessions (one line per provider)
+- Deploys declared (or their PR)
 - Plugin on in the repo (or its PR)
 - Keep awake
 - Guidelines
