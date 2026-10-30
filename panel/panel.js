@@ -66,6 +66,8 @@ if (native) {
   });
 }
 document.documentElement.classList.toggle("compact", compact);
+// En la app de Mac la página llega hasta arriba, bajo los botones de la ventana (el CSS deja hueco al hacer scroll).
+document.documentElement.classList.toggle("native", !!native);
 let state = null;
 let logsFor = null;
 let logsAfter = 0;
