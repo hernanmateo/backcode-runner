@@ -126,6 +126,17 @@ export interface RefineJob {
   attachments?: Attachment[];
 }
 
+/** Conversación libre con mi runner (projects/{pid}/chats/{id}). */
+export interface RunnerChat {
+  uid: string;
+  title: string;
+  status: "pending" | "running" | "idle" | "failed";
+  sessionId?: string;
+  /** Rama a la que se cambió con checkout_branch (la conversación sigue en ella). */
+  branch?: string;
+  costUsd?: number;
+}
+
 /** Vueltas máximas de conversación sobre una misma tarea (evita bucles). */
 const MAX_CONVERSATION_RUNS = 30;
 
@@ -209,8 +220,8 @@ export class Store {
   // knowledge: atiende «Actualizar ahora» del mapa del código (acción knowledge).
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
-  // de una tarea en la app de Claude.
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true };
+  // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; chat?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -488,6 +499,58 @@ export class Store {
       ...("error" in outcome ? { status: "failed", error: outcome.error.slice(0, 1000) } : { status: "done", ...outcome }),
       updatedAt: serverTimestamp(),
     });
+  }
+
+  // --- Conversación libre con mi runner (botón junto a «Proponer una idea»): projects/{pid}/chats, solo los míos ---
+
+  /** Conversaciones mías con mensajes por atender. */
+  myChats() {
+    return query(collection(this.project(), "chats"), where("uid", "==", this.uid), where("status", "==", "pending"));
+  }
+
+  /** pending -> running de forma atómica. Devuelve la conversación si la reclamamos nosotros. */
+  async claimChat(id: string): Promise<RunnerChat | null> {
+    const ref = doc(this.project(), "chats", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "pending" || d.get("uid") !== this.uid) return null;
+      tx.update(ref, { status: "running", activity: "", updatedAt: serverTimestamp() });
+      return d.data() as RunnerChat;
+    });
+  }
+
+  /** Al arrancar: las conversaciones mías que se quedaron respondiendo (el runner se cayó) se pueden volver a usar. */
+  async recoverChats(): Promise<void> {
+    const snap = await getDocs(query(collection(this.project(), "chats"), where("uid", "==", this.uid), where("status", "==", "running")));
+    for (const d of snap.docs) await updateDoc(d.ref, { status: "failed", activity: "", error: t("store.actionInterrupted"), updatedAt: serverTimestamp() }).catch(() => undefined);
+  }
+
+  /** Mensajes de la persona que Claude aún no ha leído, en orden. */
+  async unreadChatMessages(id: string): Promise<ThreadMessage[]> {
+    // Sin orderBy en la consulta (pediría un índice compuesto): se ordena aquí.
+    const snap = await getDocs(query(collection(this.project(), "chats", id, "messages"), where("author", "==", "user")));
+    return snap.docs
+      .filter((d) => !d.get("read"))
+      .map((d) => ({ ...(d.data() as ThreadMessage), id: d.id }))
+      .sort((a, b) => (a.at?.toMillis() ?? 0) - (b.at?.toMillis() ?? 0));
+  }
+
+  async markChatRead(id: string, ids: string[]): Promise<void> {
+    await Promise.all(ids.map((mid) => updateDoc(doc(this.project(), "chats", id, "messages", mid), { read: serverTimestamp() }).catch(() => undefined)));
+  }
+
+  /** Lo que dice o hace Claude en la conversación (texto, herramientas, errores). */
+  async postChatMessage(id: string, kind: "say" | "tool" | "error" | "summary", text: string): Promise<void> {
+    const clean = text.trim().slice(0, 4000);
+    if (!clean) return;
+    await addDoc(collection(this.project(), "chats", id, "messages"), { author: "claude", kind, text: clean, at: serverTimestamp() }).catch((err: Error) => console.warn(`[chat] ${err.message}`));
+  }
+
+  async updateChat(id: string, data: { status?: "pending" | "running" | "idle" | "failed"; activity?: string; sessionId?: string; branch?: string; costUsd?: number; error?: string }): Promise<void> {
+    const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+    if (typeof clean.activity === "string") clean.activity = clean.activity.slice(0, 300);
+    if (typeof clean.error === "string") clean.error = clean.error.slice(0, 1000);
+    await updateDoc(doc(this.project(), "chats", id), { ...clean, updatedAt: serverTimestamp() });
   }
 
   /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */

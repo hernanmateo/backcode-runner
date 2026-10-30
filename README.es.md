@@ -404,6 +404,15 @@ Si pulsas Mergear y GitHub/Bitbucket rechaza el PR por conflictos con la rama pr
 toca lo mismo), el runner no lo da por fallo de Backcode: marca en la tarea los ficheros en conflicto al momento (sin esperar a
 la comprobación periódica) y la app explica que hay que pulsar **Arreglar con Claude** y volver a mergear.
 
+### Conversación con tu runner
+
+El botón redondo junto a *Proponer una idea* abre un chat libre con tu runner, sin tarea (`projects/{pid}/chats`, solo lo ves
+tú y lo atiende tu runner). Claude trabaja en una copia aparte (`_chat-<id>`) con los mismos límites que una tarea (guard,
+sandbox, `dontAsk`, entorno sin secretos). Puede responder dudas sin tocar nada o hacer arreglos pequeños: con
+`checkout_branch` cambia a una rama existente del remoto (nunca la principal) y, si se lo pides, mezcla la principal para ver
+los conflictos; con `commit_and_push` el runner commitea y sube sin forzar, rechazando ficheros protegidos (CI, `.claude`,
+`.env`…), secretos y marcas de conflicto. La copia se borra al acabar cada respuesta si no quedan cambios sin subir.
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.
