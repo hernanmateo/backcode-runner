@@ -228,6 +228,24 @@ would have to be published from a public repo, such as the releases one.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
+### Keeping the plugin up to date
+
+Claude Code only updates Anthropic's official marketplaces by itself, so the `backcode` plugin stays on the version you
+installed. The runner knows the latest one (they're released together) and tells you when yours is older:
+
+- **In Claude Code**, at the start of a session (at most once a day): Claude tells you, with the commands.
+- **In the panel** (*This computer › Claude Code plugin*): **Update the plugin** (or **Install the plugin** if you don't have it).
+- **In `backcode status`** and **`/backcode:doctor`**.
+
+To update by hand, then restart Claude Code:
+
+```bash
+claude plugin marketplace update backcode
+claude plugin update backcode@backcode
+```
+
+To never think about it again: in Claude Code, `/plugin` › Marketplaces › backcode › enable auto-update.
+
 ### Backcode guidelines outside Backcode
 
 An admin chooses in the app (**Edit project › When someone works with Claude Code on their own**) how people work on the repo with Claude

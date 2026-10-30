@@ -1,12 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { installGh, startGhLogin } from "./github.js";
-import { CLAUDE_INSTALL, type Check } from "./preflight.js";
+import { installOrUpdatePlugin } from "./plugin.js";
+import { CLAUDE_INSTALL, installedClaude, type Check } from "./preflight.js";
 
 // Lo que el panel puede arreglar por ti cuando falta algo en este ordenador. Es una lista cerrada: el panel solo pide
 // una acción por su nombre y aquí está el comando exacto (nunca viene de la página). Lo que necesita tu interacción
 // (iniciar sesión) se abre en la Terminal, a la vista.
 
-export type FixAction = "install-claude" | "login-claude" | "install-git" | "install-gh" | "login-gh";
+export type FixAction = "install-claude" | "login-claude" | "install-git" | "install-gh" | "login-gh" | "install-plugin" | "update-plugin";
 
 /** Qué botones ofrecer para un requisito, según el sistema. */
 export function fixesFor(check: Check): FixAction[] {
@@ -22,6 +23,8 @@ export function fixesFor(check: Check): FixAction[] {
     case "gh":
       // Se instala aquí (Homebrew o el binario oficial) y la sesión se inicia desde el panel, con el código en el navegador.
       return check.missing === "program" ? ["install-gh"] : ["login-gh"];
+    case "plugin":
+      return [check.outdated ? "update-plugin" : "install-plugin"];
     default:
       return [];
   }
@@ -64,6 +67,12 @@ export async function runFix(action: FixAction): Promise<{ ok: boolean; output?:
       return { ok: true };
     case "install-gh":
       return installGh();
+    case "install-plugin":
+    case "update-plugin": {
+      // Los mismos comandos que la guía, con el `claude` instalado. Hace falta reiniciar Claude Code para usarlo.
+      const claude = installedClaude();
+      return claude ? installOrUpdatePlugin(claude) : { ok: false, output: "claude not found" };
+    }
     case "login-gh": {
       // Sin terminal: el panel enseña el código y abre github.com/login/device; gh espera la autorización por detrás.
       const r = await startGhLogin();
@@ -72,4 +81,4 @@ export async function runFix(action: FixAction): Promise<{ ok: boolean; output?:
   }
 }
 
-export const FIX_ACTIONS: readonly FixAction[] = ["install-claude", "login-claude", "install-git", "install-gh", "login-gh"];
+export const FIX_ACTIONS: readonly FixAction[] = ["install-claude", "login-claude", "install-git", "install-gh", "login-gh", "install-plugin", "update-plugin"];

@@ -156,11 +156,14 @@ export async function hookMain(event: string): Promise<void> {
     return;
   }
   const g = guardFor(cwd);
-  if (!g || g.workflow === "off") return;
   if (event === "session-start") {
-    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: guidelines(g) } }));
+    // Si el plugin es más antiguo que el del runner, Claude se lo dice al usuario (uno al día), con o sin pautas.
+    const { pluginUpdateNotice, runningPluginVersion } = await import("./plugin.js");
+    const context = [g && g.workflow !== "off" ? guidelines(g) : null, pluginUpdateNotice(runningPluginVersion())].filter(Boolean).join("\n\n");
+    if (context) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }));
     return;
   }
+  if (!g || g.workflow === "off") return;
   if (event === "pre-tool-use" && g.workflow === "require" && payload.tool_name === "Bash" && payload.tool_input?.command) {
     const branchOf = (dir: string) => {
       try {

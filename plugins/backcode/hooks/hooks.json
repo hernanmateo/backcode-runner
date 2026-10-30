@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "B=\"$(command -v backcode 2>/dev/null || echo \"$HOME/.backcode/bin/backcode\")\"; [ -x \"$B\" ] && \"$B\" hook session-start 2>/dev/null; exit 0",
+            "command": "B=\"$(command -v backcode 2>/dev/null || echo \"$HOME/.backcode/bin/backcode\")\"; [ -x \"$B\" ] && CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" \"$B\" hook session-start 2>/dev/null; exit 0",
             "timeout": 10
           }
         ]

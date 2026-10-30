@@ -60,6 +60,14 @@ comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
+**Mantener el plugin al día.** Claude Code solo actualiza solos los marketplaces oficiales de Anthropic, así que el plugin
+`backcode` se queda en la versión que instalaste. El runner sabe cuál es la última (se publican juntos) y avisa si la tuya
+es más antigua: en Claude Code al empezar una sesión (como mucho una vez al día, con los comandos), en el panel (*Este
+ordenador › Plugin de Claude Code*, con el botón **Actualizar el plugin**, o **Instalar el plugin** si no lo tienes), en
+`backcode status` y en `/backcode:doctor`. A mano: `claude plugin marketplace update backcode` y
+`claude plugin update backcode@backcode`, y reinicia Claude Code. Para olvidarte: en Claude Code, `/plugin` › Marketplaces ›
+backcode › activar la actualización automática.
+
 **Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Cuando alguien trabaja con
 Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
 - **Libre**: Claude Code trabaja como siempre.
