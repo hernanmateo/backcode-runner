@@ -485,8 +485,9 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
 - **Versión de desarrollo** (en **Mi móvil**, «De desarrollo»): instala una build Debug que no lleva el JavaScript dentro,
   sino que lo carga del **servidor de desarrollo** (Metro) de tu runner, por la wifi y en un puerto propio de cada proyecto. Se
   instala una vez (y otra si cambia algo nativo). Después eliges qué código sirve: **la rama principal** (desde Mi móvil) o **una
-  tarea** con «Probar en mi móvil» en su ficha (su copia de trabajo si la tiene tu runner, así ves lo que Claude va cambiando; si
-  no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
+  tarea** con «Probar en mi móvil» en su ficha, que aparece cuando Claude no está trabajando en ella (necesita respuesta, PR
+  listo o fallida) y su rama aún no está mergeada (su copia de trabajo si la tiene tu runner, así ves lo que Claude ha
+  cambiado; si no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
   `~/.backcode/worktrees/<proyecto>/_dev` (o en la copia de la tarea), sin tocar ficheros versionados (`EXPO_NO_TYPESCRIPT_SETUP`),
   y se apaga solo a las 4 h o al reiniciar el runner. El estado lo guarda en `runners/{uid}/private/dev` (solo lo lees tú).
   El runner apunta en qué móviles instaló la versión de desarrollo de cada proyecto (`~/.backcode/dev-installs.json`; una
