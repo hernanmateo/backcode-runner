@@ -118,12 +118,14 @@ with a provider: skip this step.
 ### 6.2 The plugin, on for the whole team
 
 If the repo's `.claude/settings.json` doesn't have `"enabledPlugins": { "backcode@backcode": true }`, offer to add it so
-everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Do it **in a PR, the Backcode way**,
+everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Add the marketplace too, so Claude
+Code offers to install it to whoever doesn't have it yet:
+`"extraKnownMarketplaces": { "backcode": { "source": { "source": "github", "repo": "hernanmateo/backcode-runner" } } }`. Do it **in a PR, the Backcode way**,
 never with a commit to the main branch:
 
 1. `backcode task start "Activar el plugin de Backcode en el repo"` (in the user's language) → it prints the worktree path.
-2. In that worktree, create or update `.claude/settings.json`: if it already exists, merge the key into it without touching
-   anything else (keep the other keys and any other `enabledPlugins` entries).
+2. In that worktree, create or update `.claude/settings.json`: if it already exists, merge both keys into it without touching
+   anything else (keep the other keys, marketplaces and `enabledPlugins` entries).
 3. Commit it there and run `backcode task pr --title "<same title>" --body "<one line: why>"`.
 
 Tell the user the PR is on the board, ready to review and merge from the app.
