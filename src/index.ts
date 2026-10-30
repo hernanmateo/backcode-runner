@@ -12,7 +12,7 @@ import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.j
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
 import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
-import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
@@ -683,7 +683,7 @@ async function main(): Promise<void> {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const expoApp = await findExpoApp(cfg.repoPath, head).catch(() => null);
   // Despliegues que el repo declara (scripts backcode:deploy:*): web, api, scripts… cada uno con su botón en la app.
-  const deploys = (await findDeployTargets(cfg.repoPath, head).catch(() => [])).map(({ id, name, dir, env, provider, source }) => ({ id, name, dir, ...(env ? { env } : {}), ...(provider ? { provider } : {}), ...(source === "detected" ? { detected: true } : source === "config" ? { config: true } : {}) }));
+  const deploys = deployCapabilities(await findDeployTargets(cfg.repoPath, head).catch(() => []));
   store.capabilities = {
     pr: prHost?.kind ?? null,
     expo: !!expoApp,
@@ -713,7 +713,10 @@ async function main(): Promise<void> {
     planBusy = true;
     try {
       const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
-      const [targets, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => []), findExpoApp(cfg.repoPath, base).catch(() => null)]);
+      const [found, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => null), findExpoApp(cfg.repoPath, base).catch(() => null)]);
+      // Un destino añadido (o quitado) en la rama principal sale en la app sin reiniciar el runner.
+      if (found) await store.saveDeploys(deployCapabilities(found));
+      const targets = found ?? [];
       if (!targets.length && !app?.ota) return;
       // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.
       const fromHook = await flushDeployQueue({ projectId: cfg.projectId, repoPath: cfg.repoPath, remote: cfg.remote, baseBranch: cfg.baseBranch, targets, log: (step, sha, via) => store.logDeploy(step, sha, via) }).catch((err: Error) => (console.warn(`[deploy] ${err.message}`), 0));

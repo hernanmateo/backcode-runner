@@ -536,7 +536,7 @@ Al pulsarlo, en una copia limpia de la rama base y con los checks en verde: inst
 lockfile: la carpeta o la raíz del monorepo; con npm y sin `package-lock.json`, `npm install` en vez de `npm ci`), copia tus `.env`, `.env.local`, `.env.production` y `.env.production.local`
 (solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
-detectan al arrancar: tras añadir uno, reinicia el runner.
+buscan en la rama principal al arrancar y cada 3 minutos: uno nuevo sale en la app poco después de mergearlo, sin reiniciar.
 
 **Sin JavaScript: `backcode.toml`** (o `backcode.json`), en la raíz o en cualquier carpeta, para repos de Python, Go, C…
 que no tienen `package.json`. El runner ejecuta el comando tal cual, **sin `npm ci` ni `npm run`**, así que ese ordenador no

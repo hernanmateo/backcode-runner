@@ -149,7 +149,8 @@ or **I already deployed it** on a step (admins), and Firebase rules the runner c
 `backcode:deploy:<name>` scripts in any `package.json` or, for repos without JavaScript, `[deploy.<name>]` entries with
 `run = "…"` in a `backcode.toml` (run as is, no `npm`: no Node needed), plus what the runner detects by itself: Cloudflare Workers (and their D1
 migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
-check if it fails (signing in to wrangler, supabase, firebase…).
+check if it fails (signing in to wrangler, supabase, firebase…). The runner reads them from the main branch at startup and every
+3 minutes, so a new one shows up in the app shortly after it's merged, without restarting.
 
 ## Features
 

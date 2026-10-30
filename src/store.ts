@@ -289,6 +289,13 @@ export class Store {
     await updateDoc(doc(this.project(), "runners", this.uid), { prs: this.prs }).catch(() => undefined);
   }
 
+  /** Destinos de despliegue de la rama principal: se guardan solo si cambian (también van en cada renovación del lock). */
+  async saveDeploys(deploys: this["capabilities"]["deploys"]): Promise<void> {
+    if (JSON.stringify(deploys) === JSON.stringify(this.capabilities.deploys)) return;
+    this.capabilities = { ...this.capabilities, deploys: JSON.parse(JSON.stringify(deploys)) as this["capabilities"]["deploys"] };
+    await updateDoc(doc(this.project(), "runners", this.uid), { "capabilities.deploys": this.capabilities.deploys }).catch(() => undefined);
+  }
+
   /** Guarda el plan ya (sin esperar a la próxima renovación del lock). */
   async savePlan(plan: DeployPlan): Promise<void> {
     this.plan = JSON.parse(JSON.stringify(plan)) as DeployPlan;
