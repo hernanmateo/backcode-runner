@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { lastCliPublish, markCliPublished } from "./ota-watch.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { exitSupervised, RESTART_CODE, SUPERVISED, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
@@ -695,6 +696,25 @@ async function main(): Promise<void> {
   void refreshPlan();
   const planTimer = setInterval(() => void refreshPlan(), 3 * 60_000);
 
+  // OTA publicados desde la terminal (el script deja el commit en <app>/.expo): cada minuto, si cambia, las tareas
+  // mergeadas que entraron pasan a «Desplegada», como al publicar desde la app.
+  let cliSeen = "";
+  const watchCliOta = async () => {
+    const app = await findExpoApp(cfg.repoPath, "HEAD").catch(() => null);
+    if (!app?.ota) return;
+    const published = lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch);
+    const key = JSON.stringify(published);
+    if (key === cliSeen || key === "{}") return;
+    cliSeen = key;
+    const marked = await markCliPublished(store, cfg.repoPath, published);
+    if (marked) {
+      console.log(`[ota] ${t("ota.cliMarked", { n: marked })}`);
+      void refreshPlan();
+    }
+  };
+  void watchCliOta();
+  const cliOtaTimer = setInterval(() => void watchCliOta(), 60_000);
+
   // PR abiertos creados fuera de Backcode (las ramas de tareas, backcode/…, ya salen como tareas): para el tablero, con
   // sus checks. Solo si este runner tiene con qué leerlos (gh con sesión o token de Bitbucket); si falla, se dice por qué.
   const refreshPrs = async () => {
@@ -967,6 +987,7 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
@@ -1001,6 +1022,7 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);

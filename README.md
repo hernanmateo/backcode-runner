@@ -235,11 +235,15 @@ Code directly, through the plugin:
 For the work itself, **`/backcode:feature`**, or by hand:
 
 - `backcode task start "<title>"`: a worktree in `~/.backcode/worktrees/<project>/<id>` on `backcode/<handle>/<id>`, from a
-  freshly fetched `<remote>/<base>`, with your local `.env` files copied.
+  freshly fetched `<remote>/<base>`, with your local `.env` files copied, and the task already on the board **In progress**,
+  under your name and marked “Made in Claude Code”.
 - `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
-  branch, opens (or updates) the PR and **puts it on the board** as your task in “PR ready”, ready to merge and deploy from the
-  app. The runner doesn't continue it (it doesn't have its session): keep working in the worktree and `backcode task pr` updates
-  the same PR.
+  branch, opens (or updates) the PR and moves the task to “PR ready”. Then it moves by itself: **Merged** when the PR is merged,
+  **Deployed** when an OTA includes it (from the app, or from the terminal: the runner watches the commit the script leaves in
+  `<app>/.expo/eoas-last-publish-<branch>`), with push notifications to the whole project. The runner doesn't continue it (it
+  doesn't have its session): keep working in the worktree and `backcode task pr` updates the same PR.
+- `backcode task import <PR url> [--deployed production]` (admins): history, an already merged GitHub PR as a Merged (and
+  Deployed) task, once per PR.
 
 The hook never reads your configuration (it holds keys): each runner leaves only the project name, repo path, base branch,
 remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook session-start|pre-tool-use` decides from that. Without a

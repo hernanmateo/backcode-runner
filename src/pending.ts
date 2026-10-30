@@ -1,5 +1,6 @@
 import type { RunnerConfig } from "./config.js";
-import { type DeployTarget, type ExpoApp, git, remoteHead } from "./git.js";
+import { lastCliPublish } from "./ota-watch.js";
+import { type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./git.js";
 import type { Store } from "./store.js";
 
 // «Pendiente de desplegar»: qué hay en la rama base que aún no ha salido por cada vía (reglas, functions, web… y la OTA),
@@ -59,6 +60,10 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
   await git(cfg.repoPath, ["fetch", "--quiet", cfg.remote, cfg.baseBranch]).catch(() => undefined);
   const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const [last, merged] = await Promise.all([store.lastDeploys(), store.mergedFeatures()]);
+  // Un OTA publicado desde la terminal también cuenta (el script deja el commit en <app>/.expo): el más reciente gana.
+  const cli = app ? lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch).production : undefined;
+  const fromApp = last.get("ota:production");
+  if (cli && (!fromApp || (await isAncestor(cfg.repoPath, fromApp, cli)))) last.set("ota:production", cli);
   const candidates: { id: string; kind: "deploy" | "ota"; name: string; scope: Scope }[] = deploys.map((d) => ({ id: `deploy:${d.id}`, kind: "deploy", name: d.name, scope: scopeOf(d) }));
   if (app?.ota && app.channels.includes("production")) {
     const dir = app.appDir ? `${app.appDir}/` : "";
