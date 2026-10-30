@@ -60,9 +60,9 @@ comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
-**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Pautas de Backcode fuera de
-Backcode**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
-- **Desactivado**: Claude Code trabaja como siempre.
+**Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Cuando alguien trabaja con
+Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
+- **Libre**: Claude Code trabaja como siempre.
 - **Recordar**: al empezar cada sesión en ese repo (o en un worktree suyo), el plugin le da a Claude las pautas: cada
   funcionalidad o fix en su worktree y su rama desde la base al día, y a la rama principal solo por PR.
 - **Exigir**: además, un `git commit` en la rama principal o un `git push` que la suba (`main`, `HEAD:main`, `--all`…) pide

@@ -228,10 +228,10 @@ It drives the same `backcode` commands you can run yourself (`backcode status`, 
 
 ### Backcode guidelines outside Backcode
 
-An admin chooses in the app (**Edit project › Backcode guidelines outside Backcode**) how people work on the repo with Claude
+An admin chooses in the app (**Edit project › When someone works with Claude Code on their own**) how people work on the repo with Claude
 Code directly, through the plugin:
 
-- **Off**: Claude Code works as usual.
+- **Free**: Claude Code works as usual.
 - **Remind**: at the start of every session in that repo (or one of its worktrees), Claude gets the guidelines: every feature or
   fix in its own worktree and branch from the up-to-date base, and the main branch only through a PR.
 - **Require**: on top of that, a `git commit` on the main branch or a `git push` that updates it (`main`, `HEAD:main`, `--all`…)
