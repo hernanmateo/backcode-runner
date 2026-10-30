@@ -38,7 +38,7 @@ interface Scope {
 }
 
 /** Qué ficheros cubre un despliegue: por el `--only` de Firebase si lo lleva; si no, su carpeta. */
-function scopeOf(target: DeployTarget): Scope {
+export function scopeOf(target: DeployTarget): Scope {
   // Detectado sin script: su orden (bases de datos y reglas, functions, servidores) y sus carpetas.
   if (target.auto) {
     const paths = target.auto.paths;

@@ -22,6 +22,8 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { computePlan } from "./pending.js";
+import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
+import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
 import { machineInfo } from "./machine.js";
@@ -698,6 +700,7 @@ async function main(): Promise<void> {
   // «Pendiente de desplegar»: qué falta por salir (reglas, functions, OTA…) y en qué orden. Al arrancar, cada 3 min y
   // tras cada acción (un despliegue o un merge lo cambian).
   let planBusy = false;
+  const rulesChecked = new Map<string, number>();
   const refreshPlan = async () => {
     if (planBusy) return;
     planBusy = true;
@@ -705,7 +708,25 @@ async function main(): Promise<void> {
       const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
       const [targets, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => []), findExpoApp(cfg.repoPath, base).catch(() => null)]);
       if (!targets.length && !app?.ota) return;
-      await store.savePlan(await computePlan(cfg, store, targets, app));
+      // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.
+      const fromHook = await flushDeployQueue({ projectId: cfg.projectId, repoPath: cfg.repoPath, remote: cfg.remote, baseBranch: cfg.baseBranch, targets, log: (step, sha, via) => store.logDeploy(step, sha, via) }).catch((err: Error) => (console.warn(`[deploy] ${err.message}`), 0));
+      if (fromHook) console.log(`[deploy] ${t("deployed.fromHook", { n: fromHook })}`);
+      let plan = await computePlan(cfg, store, targets, app);
+      // Reglas de Firebase que no están al día: si las publicadas son las de la rama principal, lo están.
+      let verified = 0;
+      for (const s of plan.steps.filter((x) => x.status !== "upToDate" && x.kind === "deploy")) {
+        const target = targets.find((d) => `deploy:${d.id}` === s.id);
+        const key = `${s.id}@${plan.base}`;
+        if (!target || (rulesChecked.get(key) ?? 0) > Date.now() - 30 * 60_000) continue;
+        rulesChecked.set(key, Date.now());
+        if ((await rulesPublished({ repoPath: cfg.repoPath, base: plan.base, target, lastSha: s.lastSha, token: gcloudToken }).catch(() => null)) !== true) continue;
+        await store.logDeploy(s.id, plan.base, "verified").then(
+          () => (verified++, console.log(`[deploy] ${t("deployed.verified", { name: s.name })}`)),
+          () => undefined,
+        );
+      }
+      if (verified) plan = await computePlan(cfg, store, targets, app);
+      await store.savePlan(plan);
     } catch (err) {
       console.warn(`[plan] ${(err as Error).message}`);
     } finally {
@@ -714,6 +735,12 @@ async function main(): Promise<void> {
   };
   void refreshPlan();
   const planTimer = setInterval(() => void refreshPlan(), 3 * 60_000);
+  // «Ya lo desplegué» desde la app, `backcode deployed` o el runner de otro: se ve al momento.
+  const stopDeployLog = store.watchDeployLog(() => void refreshPlan());
+  // Lo que deja el hook del plugin: cada minuto (sin esperar a los 3 min del plan).
+  const deployQueueTimer = setInterval(() => {
+    if (hasQueuedDeploys(cfg.projectId)) void refreshPlan();
+  }, 60_000);
 
   // OTA publicados desde la terminal (el script deja el commit en <app>/.expo): cada minuto, si cambia, las tareas
   // mergeadas que entraron pasan a «Desplegada», como al publicar desde la app.
@@ -1011,6 +1038,8 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(deployQueueTimer);
+    stopDeployLog();
     clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
     stopDevServer();
@@ -1046,6 +1075,8 @@ async function main(): Promise<void> {
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
+    clearInterval(deployQueueTimer);
+    stopDeployLog();
     clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
     stopDevServer();

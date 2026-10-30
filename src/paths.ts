@@ -43,6 +43,8 @@ export interface PanelState {
   profileLang?: string;
   /** Nombre de cada proyecto en la app (lo apunta su runner al conectarse). */
   names?: Record<string, string>;
+  /** Último día (AAAA-MM-DD) en que se avisó en Claude Code de que el plugin está desactualizado (uno al día). */
+  pluginNoticeDay?: string;
 }
 
 export function readState(): PanelState {

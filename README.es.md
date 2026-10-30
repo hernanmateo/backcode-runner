@@ -60,6 +60,16 @@ comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
 
+**Mantener el plugin al día.** Claude Code solo actualiza solos los marketplaces oficiales de Anthropic, así que el plugin
+`backcode` se queda en la versión que instalaste. El runner sabe cuál es la última (se publican juntos) y avisa si la tuya
+es más antigua: en Claude Code al empezar una sesión (como mucho una vez al día, con los comandos), en el panel (*Este
+ordenador › Plugin de Claude Code*: la versión, dónde está instalado —para tu usuario, es decir en todos tus repos, y/o en
+proyectos concretos— y si está activado, con **Actualizar el plugin**, **Instalar el plugin** o **Activar el plugin**; y
+en cada proyecto, si el plugin está activado en su repo para todo el equipo, solo para ti o no está activo), en
+`backcode status` (lo mismo, con la línea del plugin de cada proyecto) y en `/backcode:doctor`. A mano: `claude plugin marketplace update backcode` y
+`claude plugin update backcode@backcode`, y reinicia Claude Code. Para olvidarte: en Claude Code, `/plugin` › Marketplaces ›
+backcode › activar la actualización automática.
+
 **Pautas de Backcode fuera de Backcode.** Un admin elige en la app, en **Editar proyecto › Cuando alguien trabaja con
 Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directamente (con el plugin):
 - **Libre**: Claude Code trabaja como siempre.
@@ -81,8 +91,19 @@ Para el trabajo en sí, **`/backcode:feature`**, o a mano:
   Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
   sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
 
+**Despliegues que hace Claude Code.** En cualquier repo conectado (con las pautas activadas o no), el plugin mira cada comando de
+Bash al acabar (hook `PostToolUse`): si despliega un destino del proyecto (`npm run backcode:deploy:<nombre>`, el script
+detectado de su carpeta, `firebase deploy --only …`, `wrangler deploy`, `wrangler d1 migrations apply … --remote`,
+`supabase db push`, `supabase functions deploy`) **y acabó bien**, lo apunta para «Pendiente de desplegar». Acabar bien quiere
+decir que Claude Code no lo dio por fallido (un comando que sale con error no llega a este hook), que no se interrumpió y que la
+salida trae la marca de éxito de la herramienta (`Deploy complete!`, `Current Version ID:`, `Finished supabase db push`…); lo
+dudoso (otro entorno u otro proyecto, un despliegue parcial, en seco o en local, cambios sin commit en lo que cubre, un script
+sin plataforma conocida) no se apunta. El hook solo deja el paso y el commit en `~/.backcode/deploylog/<proyecto>.jsonl` (nunca
+el comando ni su salida) y vuelve al momento; el runner del proyecto lo recoge, comprueba que ese commit ya está en la rama
+principal remota (si aún no, lo espera hasta un día) y lo apunta en `projects/{pid}/deployLog`.
+
 El hook no lee la configuración (lleva claves): cada runner deja en `~/.backcode/guard/<proyecto>.json` solo el nombre, la ruta
-del repo, la rama base, el remoto y el modo, y `backcode hook session-start|pre-tool-use` decide con eso. Sin runner (o con uno
+del repo, la rama base, el remoto y el modo, y `backcode hook session-start|pre-tool-use|post-tool-use` decide con eso. Sin runner (o con uno
 anterior a esto), el plugin no hace nada. El plugin solo actúa dentro de Claude Code: para que a la rama principal solo se llegue
 por PR desde cualquier sitio, activa la protección de rama en GitHub o Bitbucket (la app enlaza los ajustes en modo «Exigir»).
 
@@ -136,6 +157,7 @@ Todo lo del panel se puede hacer también con comandos (`npm i -g backcode` deja
 | `backcode start [proyecto…]` | Arranca en esta terminal todos los proyectos (o los indicados), con los logs juntos (`[proyecto]` delante). |
 | `backcode service install` / `uninstall` / `status` | Arrancar al iniciar sesión (lo mismo que el interruptor del panel). Log en `~/.backcode/logs/service.log`. |
 | `backcode deploys [--json] [--project <id>]` | Despliegues del proyecto en su rama principal (`id`, `name`, `dir`, `provider`, `source`; sin comandos ni secretos). Desde el repo o un worktree suyo, o con `--project`. |
+| `backcode deployed <nombre> [--sha <commit>] [--project <id>]` | Apunta un despliegue hecho a mano (desde la terminal, otro ordenador…) para que «Pendiente de desplegar» lo sepa. El nombre, como lo enseña `backcode deploys`; el commit, `HEAD` o el indicado, y tiene que estar ya en la rama principal remota. Solo admins. |
 | `backcode awake [off\|plugged\|always]` | Mantener el ordenador despierto, como en el panel (lo aplica en menos de un minuto). Sin modo: el actual, el de la app y el que se aplica. |
 | `backcode --version` | Versión instalada. |
 
@@ -429,6 +451,16 @@ cubre cada uno lo saca del `--only` de Firebase del script o de su carpeta) y di
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
   para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
 - Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
+- **Lo desplegado fuera de la app también cuenta** (registro `projects/{pid}/deployLog`: paso, commit, cuándo, quién y vía):
+  - lo que despliega **Claude Code** con el plugin (ver «Despliegues que hace Claude Code» arriba);
+  - **a mano**: `backcode deployed <nombre>` desde el repo, o **Ya lo desplegué** en el paso (admins, con confirmación), que lo
+    da por desplegado con la punta de la rama principal. No despliega nada;
+  - **reglas de Firebase comprobadas**: para un paso de reglas que no está al día, el runner pregunta a Firebase Rules qué reglas
+    de Firestore y Storage están publicadas y, si son las de la rama principal, lo da por desplegado (como mucho cada 30 min por
+    paso y commit). Usa `gcloud auth print-access-token` (solo en memoria, nunca se escribe) con el propio proyecto como proyecto
+    de cuota; sin `gcloud` con sesión no comprueba nada (no lee las credenciales de firebase-tools). Los índices de Firestore no
+    se pueden comprobar así: si el paso los cubre, solo cuenta si no han cambiado desde el último despliegue apuntado.
+  - Solo lo apunta el runner de un admin, o un admin desde la app («Ya lo desplegué»); nadie lo edita ni lo borra.
 - En la pestaña OTA avisa si hay pasos pendientes que van antes; en la ficha de una tarea mergeada, por dónde le falta salir.
 - Si la OTA trae cambios que parecen nativos (config de Expo, dependencias, `ios/`, `android/`), lo avisa: quizá toca una build.
 

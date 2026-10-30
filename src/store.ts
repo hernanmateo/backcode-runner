@@ -12,6 +12,7 @@ import {
   getDocs,
   limit,
   getFirestore,
+  orderBy,
   onSnapshot,
   increment,
   query,
@@ -31,6 +32,7 @@ import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
 import type { DeployPlan } from "./pending.js";
+import type { DeployVia } from "./deploy-log.js";
 import type { OpenPr } from "./hosts.js";
 import type { DiagnosticPayload } from "./diagnostics.js";
 
@@ -521,7 +523,7 @@ export class Store {
    * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
-    const snap = await getDocs(query(collection(this.project(), "actions"), where("status", "==", "done")));
+    const [snap, log] = await Promise.all([getDocs(query(collection(this.project(), "actions"), where("status", "==", "done"))), getDocs(query(collection(this.project(), "deployLog"), orderBy("at", "desc"), limit(200))).catch(() => null)]);
     const best = new Map<string, { at: number; sha: string }>();
     const note = (id: string, at: number, sha: unknown) => {
       if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) return;
@@ -535,6 +537,8 @@ export class Store {
       else if (type === "build") note("build", at, d.get("result.sha"));
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
+    // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.
+    for (const d of log?.docs ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
     return new Map([...best].map(([id, v]) => [id, v.sha]));
   }
 
@@ -542,6 +546,24 @@ export class Store {
   async mergedFeatures(): Promise<{ id: string; title: string; sha: string }[]> {
     const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
     return snap.docs.filter((d) => d.get("merged.sha")).map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
+  }
+
+  /** Apunta un despliegue hecho fuera de la app (solo el runner de un admin: las reglas lo comprueban). */
+  async logDeploy(step: string, sha: string, via: DeployVia): Promise<void> {
+    await addDoc(collection(this.project(), "deployLog"), { step, sha, at: serverTimestamp(), by: this.uid, via });
+  }
+
+  /** Cambios en el registro de despliegues (p. ej. «Ya lo desplegué» desde la app): el plan se recalcula. */
+  watchDeployLog(onChange: () => void): () => void {
+    let first = true;
+    return onSnapshot(
+      query(collection(this.project(), "deployLog"), orderBy("at", "desc"), limit(1)),
+      () => {
+        if (!first) onChange();
+        first = false;
+      },
+      () => undefined,
+    );
   }
 
   async markDeployed(featureId: string, channel: string, sha: string): Promise<void> {

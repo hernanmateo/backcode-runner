@@ -143,7 +143,9 @@ cable, on a phone paired with your runner's computer; the panel's **Phones** sec
 **development version** that loads the code instantly from your runner's Metro: the main branch, or any task with "Try on my
 phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
 the right order (rules → functions → other deploys → OTA), each with its own button plus **Deploy everything**, which stops at the
-first failure. Deploys are
+first failure. Deploys done outside the app count too: what Claude Code deploys through the plugin, `backcode deployed <name>`
+or **I already deployed it** on a step (admins), and Firebase rules the runner checks against what's published (with
+`gcloud auth print-access-token`, kept in memory only; without gcloud it skips the check). Deploys are
 `backcode:deploy:<name>` scripts in any `package.json` or, for repos without JavaScript, `[deploy.<name>]` entries with
 `run = "…"` in a `backcode.toml` (run as is, no `npm`: no Node needed), plus what the runner detects by itself: Cloudflare Workers (and their D1
 migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
@@ -226,6 +228,27 @@ would have to be published from a public repo, such as the releases one.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
+### Keeping the plugin up to date
+
+Claude Code only updates Anthropic's official marketplaces by itself, so the `backcode` plugin stays on the version you
+installed. The runner knows the latest one (they're released together) and tells you when yours is older:
+
+- **In Claude Code**, at the start of a session (at most once a day): Claude tells you, with the commands.
+- **In the panel** (*This computer › Claude Code plugin*): the version, where it's installed (for your user, i.e. all your
+  repos, and/or in specific projects) and whether it's enabled, with **Update the plugin**, **Install the plugin** or
+  **Enable the plugin**. Each project card also says whether the plugin is on in its repo for the whole team (the repo's
+  `.claude/settings.json`), only for you, or not active there.
+- **In `backcode status`** (the same, plus the plugin line of each project) and **`/backcode:doctor`**.
+
+To update by hand, then restart Claude Code:
+
+```bash
+claude plugin marketplace update backcode
+claude plugin update backcode@backcode
+```
+
+To never think about it again: in Claude Code, `/plugin` › Marketplaces › backcode › enable auto-update.
+
 ### Backcode guidelines outside Backcode
 
 An admin chooses in the app (**Edit project › When someone works with Claude Code on their own**) how people work on the repo with Claude
@@ -250,8 +273,19 @@ For the work itself, **`/backcode:feature`**, or by hand:
 - `backcode task import <PR url> [--deployed production]` (admins): history, an already merged GitHub PR as a Merged (and
   Deployed) task, once per PR.
 
+**Deploys Claude Code runs.** In any connected repo (guidelines on or off), the plugin looks at every Bash command when it
+finishes (`PostToolUse` hook): if it deploys one of the project's targets (`npm run backcode:deploy:<name>`, the detected script
+in its folder, `firebase deploy --only …`, `wrangler deploy`, `wrangler d1 migrations apply … --remote`, `supabase db push`,
+`supabase functions deploy`) **and it succeeded**, it's recorded for Pending deploys. Succeeded means Claude Code didn't report
+it as failed (a command that exits with an error never reaches this hook), it wasn't interrupted, and the output has the tool's
+success line (`Deploy complete!`, `Current Version ID:`, `Finished supabase db push`…). Anything doubtful (another environment or
+project, a partial, dry-run or local deploy, uncommitted changes in what it covers, a script with no known platform) isn't
+recorded. The hook only leaves the step and the commit in `~/.backcode/deploylog/<project>.jsonl` (never the command or its
+output) and returns right away; the project's runner picks it up, checks that the commit is already on the remote main branch
+(if not yet, it waits for up to a day) and records it in `projects/{pid}/deployLog`.
+
 The hook never reads your configuration (it holds keys): each runner leaves only the project name, repo path, base branch,
-remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook session-start|pre-tool-use` decides from that. Without a
+remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook session-start|pre-tool-use|post-tool-use` decides from that. Without a
 runner (or with an older one), the plugin does nothing. It only acts inside Claude Code: to make the main branch reachable only
 through PRs from anywhere, turn on branch protection in GitHub or Bitbucket (the app links to the settings in Require mode).
 
@@ -282,6 +316,7 @@ Everything in the panel also works from the terminal. `install.sh` puts `backcod
 | `backcode start [project…]` | Run all projects (or the given ones) in this terminal, with prefixed logs. |
 | `backcode service install` · `uninstall` · `status` | Start at login, same as the switch in the panel. |
 | `backcode deploys [--json] [--project <id>]` | The project's deploys on its main branch (`id`, `name`, `dir`, `provider`, `source`; no commands or secrets). From the repo or one of its worktrees, or with `--project`. |
+| `backcode deployed <name> [--sha <commit>] [--project <id>]` | Record a deploy done by hand (from the terminal, another computer…) so Pending deploys knows it. The name, as `backcode deploys` shows it; the commit, `HEAD` or the given one, and it must already be on the remote main branch. Admins only. |
 | `backcode awake [off\|plugged\|always]` | Keep the computer awake, same as in the panel (it applies it within a minute). No mode: shows the current one, the app's and the one applied. |
 | `backcode --version` | Print the installed version. |
 

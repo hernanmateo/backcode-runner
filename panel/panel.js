@@ -137,7 +137,7 @@ function renderCompactControls() {
   btn.textContent = s(compact ? "viewFull" : "viewCompact");
   btn.setAttribute("aria-pressed", String(compact));
   // En compacto, si falta algo en el ordenador o hay versión nueva, un aviso que vuelve a la vista completa.
-  const missing = state.checks.filter((c) => c.status !== "ok").length;
+  const missing = state.checks.filter((c) => c.status !== "ok" && !c.optional).length;
   const alert = $("compact-alert");
   const text = missing ? s("compactMissing", { n: missing }) : state.restartNeeded || state.updateAvailable ? s("compactUpdate") : "";
   alert.textContent = text;
@@ -213,6 +213,8 @@ let fixResult = {};
 
 function guideKey(c) {
   if (c.id === "gh") return c.missing === "session" ? "guide.ghSession" : "guide.gh";
+  if (c.id === "plugin" && c.outdated) return "guide.pluginUpdate";
+  if (c.id === "plugin" && c.disabled) return "guide.pluginDisabled";
   if (c.id === "git" && state.platform !== "darwin") return "guide.gitLinux";
   if (c.id === "login" && state.platform !== "darwin") return "guide.loginLinux";
   return `guide.${c.id}`;
@@ -350,6 +352,7 @@ function renderProjects() {
         h("span", { class: "state" }, s(`state.${p.state}`)),
         h("label", { class: "switch", title: s(active ? "stop" : "start") }, toggle, h("span", { class: "slider", "aria-hidden": "true" }))),
       h("div", { class: "meta" }, [p.repoPath, s(`pr.${p.pullRequest}`)].filter(Boolean).join(" · ")),
+      p.plugin ? h("div", { class: "meta", title: s(`plugin.${p.plugin}Help`) }, s(`plugin.${p.plugin}`)) : null,
       p.lastLine ? h("div", { class: "last", title: p.lastLine }, p.lastLine) : null,
       h("div", { class: "row" }, actions)));
   }

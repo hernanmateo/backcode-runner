@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { t } from "./i18n.js";
 import { ghPath } from "./github.js";
@@ -119,7 +119,7 @@ export async function checkMachine(opts: { verbose: boolean }): Promise<boolean>
 }
 
 export interface Check {
-  id: "node" | "claude" | "login" | "git" | "gh";
+  id: "node" | "claude" | "login" | "git" | "gh" | "plugin";
   /** ok · warn (funciona, pero algo fallará) · fail (no puede arrancar) */
   status: "ok" | "warn" | "fail";
   detail: string;
@@ -127,6 +127,12 @@ export interface Check {
   fix?: string;
   /** Qué falta: el programa o la sesión (decide la guía y el botón del panel). */
   missing?: "program" | "session";
+  /** No hace falta para las tareas (el plugin de Claude Code): no cuenta como «falta algo». */
+  optional?: boolean;
+  /** El plugin está instalado pero es más antiguo que el del runner. */
+  outdated?: boolean;
+  /** El plugin está instalado para tu usuario pero desactivado (y en ningún proyecto). */
+  disabled?: boolean;
 }
 
 /** Lo mismo que checkMachine, más git y GitHub CLI, en datos para el panel. */
@@ -152,6 +158,27 @@ export async function machineReport(): Promise<Check[]> {
   const ghBin = ghPath() ?? "gh";
   const gh = /\d+\.\d+\.\d+/.exec(await run(ghBin, ["--version"], 10_000))?.[0];
   const ghAuth = gh ? await exec(ghBin, ["auth", "status"], { timeout: 15_000 }).then(() => true, () => false) : false;
+  // El plugin de Claude Code (opcional: para trabajar con Claude Code fuera de las tareas). Solo con el `claude` instalado.
+  if (installed && cli) {
+    const { PLUGIN_INSTALL_CMDS, PLUGIN_UPDATE_CMDS, PLUGIN_VERSION, olderThan, pluginInstalls } = await import("./plugin.js");
+    const plugins = await pluginInstalls(installed);
+    if (plugins) {
+      const old = plugins.find((p) => olderThan(p.version, PLUGIN_VERSION));
+      const newest = plugins.map((p) => p.version).sort((a, b) => (olderThan(a, b) ? 1 : -1))[0];
+      // Dónde: para tu usuario (todos tus repos), y/o en proyectos concretos; y si está desactivado.
+      const user = plugins.find((p) => p.scope === "user");
+      const projects = plugins.filter((p) => p.scope !== "user" && p.projectPath).map((p) => `${basename(p.projectPath!)}${p.enabled ? "" : ` (${t("panel.check.pluginOff")})`}`);
+      const where = [user ? t(user.enabled ? "panel.check.pluginUser" : "panel.check.pluginUserOff") : null, projects.length ? t("panel.check.pluginProjects", { names: projects.join(", ") }) : null].filter(Boolean).join(" · ");
+      const disabled = !plugins.some((p) => p.enabled);
+      checks.push(!plugins.length
+        ? { id: "plugin", status: "warn", optional: true, missing: "program", detail: t("panel.check.pluginMissing"), fix: PLUGIN_INSTALL_CMDS.join(" && ") }
+        : old
+          ? { id: "plugin", status: "warn", outdated: true, detail: `${t("panel.check.pluginOld", { installed: old.version, latest: PLUGIN_VERSION })} · ${where}`, fix: PLUGIN_UPDATE_CMDS.join(" && ") }
+          : disabled
+            ? { id: "plugin", status: "warn", optional: true, disabled: true, detail: `${t("panel.check.pluginOk", { version: newest })} · ${where}`, fix: `claude plugin enable backcode@backcode --scope user` }
+            : { id: "plugin", status: "ok", detail: `${t("panel.check.pluginOk", { version: newest })} · ${where}` });
+    }
+  }
   checks.push(!gh ? { id: "gh", status: "warn", missing: "program", detail: t("panel.check.noGh"), fix: process.platform === "darwin" ? "brew install gh" : "https://cli.github.com" } : ghAuth ? { id: "gh", status: "ok", detail: `GitHub CLI ${gh}` } : { id: "gh", status: "warn", missing: "session", detail: t("panel.check.ghLogin"), fix: "gh auth login --hostname github.com --git-protocol https --web" });
   return checks;
 }

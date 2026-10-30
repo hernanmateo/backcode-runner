@@ -14,7 +14,8 @@ import { CONFIG_DIR, importLegacy, IS_BINARY, legacyConfigs, ownArgs, readState,
 import { APP_LINKS } from "./links.js";
 import { hasSavedApiKey, removeApiKey, saveApiKey } from "./anthropic.js";
 import { FIX_ACTIONS, fixesFor, runFix, type FixAction } from "./fixes.js";
-import { machineReport, type Check } from "./preflight.js";
+import { installedClaude, machineReport, type Check } from "./preflight.js";
+import { pluginInRepos, pluginInstalls, type RepoPlugin } from "./plugin.js";
 import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
@@ -65,11 +66,24 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     console.log(`${tags.get(p.id)} ${line}`);
   });
   let checks: Check[] = [];
+  // El plugin de Claude Code en el repo de cada proyecto (repo / user / off), con las comprobaciones.
+  let repoPlugins: Record<string, RepoPlugin> = {};
+  const pluginRepos = async (): Promise<Record<string, RepoPlugin>> => {
+    const claude = installedClaude();
+    const installs = claude ? await pluginInstalls(claude) : null;
+    if (!claude || !installs) return {};
+    return pluginInRepos(claude, installs, [...supervisor.projects.values()].flatMap((p) => (p.repoPath ? [p.repoPath] : [])));
+  };
   let checksLang = "";
   let checking: Promise<void> | null = null;
   const refreshChecks = () => {
     checksLang = lang();
-    return (checking ??= machineReport().then((c) => void (checks = c)).finally(() => (checking = null)));
+    return (checking ??= Promise.all([machineReport(), pluginRepos().catch(() => ({}))])
+      .then(([c, r]) => {
+        checks = c;
+        repoPlugins = r;
+      })
+      .finally(() => (checking = null)));
   };
   void refreshChecks();
   let updateReady = false;
@@ -129,6 +143,7 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
         id: p.id,
         name: p.name,
         repoPath: p.repoPath,
+        plugin: p.repoPath ? (repoPlugins[p.repoPath] ?? null) : null,
         pullRequest: p.pullRequest,
         state: p.state,
         startedAt: p.startedAt,
