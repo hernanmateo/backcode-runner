@@ -484,6 +484,23 @@ lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 detectan al arrancar: tras añadir uno, reinicia el runner.
 
+**Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:
+
+| Plataforma | Qué lo detecta | Destinos (en este orden) |
+|---|---|---|
+| Cloudflare Workers | `wrangler.jsonc` / `.json` / `.toml` | `<carpeta>-db` (`wrangler d1 migrations apply <db> --remote`, si hay D1 con migraciones `.sql`) y `<carpeta>` (`wrangler deploy`) |
+| Supabase | `supabase/config.toml` | `supabase-db` (`supabase db push --linked`, si hay `supabase/migrations/*.sql`) y `supabase-functions` (`supabase functions deploy`) |
+| Firebase | `firebase.json` | `firebase-rules` (Firestore/Storage) y `firebase-functions` |
+
+Si el repo ya declara un `backcode:deploy:*` que usa esa plataforma, no se detecta (no salen dos botones). Se ejecutan con
+`npx` en tu ordenador, con **tu** sesión de cada herramienta (`wrangler login`, `supabase login` + `supabase link`,
+`firebase login`); la «i» junto a cada despliegue en la app lo explica si falla. De Supabase se copia el enlace local
+(`supabase/.temp`), y `db push` necesita `SUPABASE_DB_PASSWORD` en tu shell. En el plan de «Pendiente de desplegar», las
+migraciones y reglas van primero, luego las functions, luego servidores y webs, y la OTA al final.
+
+Y cuando una tarea (o `/backcode:feature`) añade algo que hay que desplegar en otra plataforma, Claude añade su
+`backcode:deploy:<nombre>` en el mismo PR, para que tengas el botón al mergearlo.
+
 Si el script llama a `firebase` (directamente, vía `npm run <otro>` o en un `.sh` del repo), el runner deduce sin ejecutarlo a
 qué va: proyecto (`-P`/`--project`, alias de `.firebaserc` o su `default`) y canal de Hosting (`hosting:channel:deploy <canal>`
 o el sitio principal con `firebase deploy`). La app lo enseña junto al botón, en la confirmación y en el historial, p. ej.

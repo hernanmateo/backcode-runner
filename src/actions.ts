@@ -567,10 +567,11 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_deploy", commit);
   const dir = join(wt, target.dir);
   try {
-    await installFrozen(target, wt, dir);
+    // Detectado sin script: dependencias solo si esa carpeta es un paquete (p. ej. un Worker que importa librerías).
+    if (!target.auto || existsSync(join(dir, "package.json"))) await installFrozen(target, wt, dir);
     const envFiles = [".env", ".env.local", ".env.production", ".env.production.local"];
-    await copyLocalFiles(cfg.repoPath, wt, [...envFiles, ...(target.dir ? envFiles.map((f) => join(target.dir, f)) : [])]);
-    const out = await exec([target.pm, "run", `${DEPLOY_PREFIX}${target.name}`], dir, { timeoutMs: DEPLOY_TIMEOUT_MS });
+    await copyLocalFiles(cfg.repoPath, wt, [...envFiles, ...(target.dir ? envFiles.map((f) => join(target.dir, f)) : []), ...(target.auto?.local ?? []).map((f) => join(target.dir, f))]);
+    const out = await exec(target.auto ? target.auto.cmd : [target.pm, "run", `${DEPLOY_PREFIX}${target.name}`], dir, { timeoutMs: DEPLOY_TIMEOUT_MS });
     // El enlace que suelen imprimir (URL de la web, del servicio…): el último que aparezca.
     const url = out.match(/https:\/\/[^\s"'<>)\]]+/g)?.pop();
     return { ok: true, result: { url, sha: commit, log: out.slice(-1400) } };

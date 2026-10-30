@@ -44,6 +44,11 @@ that work: skip to step 2 and keep everything there.
    **Summary**, **Changes**, **How it was tested**, **Risks / follow-ups**. If something must be done by hand after
    merging (deploy rules or functions, a migration, an env var…), list each step with why and the exact command. Never
    run deploys yourself.
+   Backcode already detects Cloudflare Workers (wrangler config and D1 migrations), Supabase (migrations and edge
+   functions) and Firebase (rules and functions). If the change needs any other deployment and the repo has no
+   `backcode:deploy:<name>` script for it, add one in this PR to the `package.json` of that part, calling the project's
+   existing deploy command (lowercase name with dashes; a database migration ending in `-db`; no secrets), so the team
+   can deploy it from the app.
 2. From the worktree: `backcode task pr --title "<imperative title>" --body-file <file> --json`.
    It checks there are no uncommitted changes and no secrets, pushes the branch, opens (or updates) the PR and registers
    it on the Backcode board as a task in "PR ready", under the user's name. It prints `{ "prUrl" }`.

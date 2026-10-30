@@ -38,6 +38,11 @@ interface Scope {
 
 /** Qué ficheros cubre un despliegue: por el `--only` de Firebase si lo lleva; si no, su carpeta. */
 function scopeOf(target: DeployTarget): Scope {
+  // Detectado sin script: su orden (bases de datos y reglas, functions, servidores) y sus carpetas.
+  if (target.auto) {
+    const paths = target.auto.paths;
+    return { covers: paths.join(" + ") || target.dir || "repo", rank: target.auto.rank, match: (f) => paths.some((p) => !p || f === p || f.startsWith(`${p}/`)) };
+  }
   const only = target.env?.only?.split(",").map((s) => s.trim().split(":")[0]) ?? [];
   if (only.length && only.every((o) => o === "firestore" || o === "storage")) {
     return { covers: only.join(" + "), rank: 0, match: (f) => (only.includes("firestore") && /(^|\/)firestore\.(rules|indexes\.json)$/.test(f)) || (only.includes("storage") && /(^|\/)storage\.rules$/.test(f)) };
