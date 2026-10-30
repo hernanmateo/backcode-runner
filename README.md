@@ -269,8 +269,11 @@ For the work itself, **`/backcode:feature`**, or by hand:
 - `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
   branch, opens (or updates) the PR and moves the task to “PR ready”. Then it moves by itself: **Merged** when the PR is merged,
   **Deployed** when an OTA includes it (from the app, or from the terminal: the runner watches the commit the script leaves in
-  `<app>/.expo/eoas-last-publish-<branch>`), with push notifications to the whole project. The runner doesn't continue it (it
-  doesn't have its session): keep working in the worktree and `backcode task pr` updates the same PR.
+  `<app>/.expo/eoas-last-publish-<branch>`), with push notifications to the whole project. When Claude Code runs `task start`
+  or `task pr`, the task keeps that session (`CLAUDE_CODE_SESSION_ID`): once it's in “PR ready”, you can write to Claude from
+  the task's conversation in the app and your runner resumes that same session in the worktree (it copies the session from the
+  repo's folder to the worktree's; the original isn't touched) and updates the PR. Without a session (run by hand, or older
+  tasks) the runner doesn't continue it: keep working in the worktree and `backcode task pr` updates the same PR.
 - `backcode task import <PR url> [--deployed production]` (admins): history, an already merged GitHub PR as a Merged (and
   Deployed) task, once per PR.
 

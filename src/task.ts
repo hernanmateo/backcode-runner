@@ -41,6 +41,12 @@ function configFor(dir: string) {
   return { cfg: loadConfig(), guard };
 }
 
+/** La sesión de Claude Code que ejecuta el comando (si lo ejecuta Claude): la tarea la guarda para seguirla desde la app. */
+function claudeSession(): { sessionId?: string } {
+  const id = process.env.CLAUDE_CODE_SESSION_ID;
+  return id && /^[A-Za-z0-9-]{1,100}$/.test(id) ? { sessionId: id } : {};
+}
+
 async function start(args: string[], json: boolean): Promise<void> {
   const title = args.filter((a) => !a.startsWith("--")).join(" ").trim();
   if (!title) fail(t("task.noStartTitle"));
@@ -55,7 +61,7 @@ async function start(args: string[], json: boolean): Promise<void> {
   // Los .env locales (no van en git): que el worktree arranque igual que el repo.
   await copyLocalFiles(cfg.repoPath, wt.path, [".env", ".env.local"]).catch(() => undefined);
   // Ya en el tablero, «En curso»: así se ve desde que empieza (y avisa). Con un servidor antiguo, se registra al abrir el PR.
-  await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, branch, stage: "start", lang: lang() }).catch((err: Error) => console.warn(`  · ${t("task.notRegistered", { error: err.message })}`));
+  await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, branch, stage: "start", ...claudeSession(), lang: lang() }).catch((err: Error) => console.warn(`  · ${t("task.notRegistered", { error: err.message })}`));
   if (json) console.log(JSON.stringify({ featureId, branch, path: wt.path, base: `${cfg.remote}/${cfg.baseBranch}`, title }));
   else console.log(t("task.started", { path: wt.path, branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
 }
@@ -98,7 +104,7 @@ async function pr(args: string[], json: boolean): Promise<void> {
   const url = await host.openOrUpdatePr({ cwd: dir, branch, base: repo.baseBranch, title, body: body + footer });
 
   const { fns } = await connect(cfg);
-  await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, summary: body.slice(0, 4000), prUrl: url, branch, lang: lang() });
+  await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, summary: body.slice(0, 4000), prUrl: url, branch, ...claudeSession(), lang: lang() });
   if (json) console.log(JSON.stringify({ featureId, branch, prUrl: url }));
   else console.log(t("task.registered", { url }));
 }

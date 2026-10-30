@@ -81,15 +81,18 @@ Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directa
 Para el trabajo en sí, **`/backcode:feature`**, o a mano:
 - `backcode task start "<título>"`: worktree en `~/.backcode/worktrees/<proyecto>/<id>` con la rama `backcode/<handle>/<id>`
   desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados, y la tarea ya en el tablero **En curso**, a tu
-  nombre y marcada «Hecha en Claude Code».
+  nombre y marcada «Hecha en Claude Code». Si lo ejecuta Claude Code (también `task pr`), la tarea guarda esa sesión
+  (`CLAUDE_CODE_SESSION_ID`): ya en «PR listo», puedes escribirle a Claude desde la conversación de la tarea en la app y tu
+  runner retoma esa misma sesión en el worktree (copia la sesión de la carpeta del repo a la del worktree; la original no se
+  toca) y actualiza el PR.
 - `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
   la rama, la sube, abre (o actualiza) el PR y pasa la tarea a «PR listo» (function `registerLocalWork`). Luego se mueve sola:
   **Mergeada** al mergear el PR y **Desplegada** cuando un OTA la incluye, también si se publica desde la terminal (el runner
   mira el commit que deja el script en `<app>/.expo/eoas-last-publish-<rama>`), con avisos push a todo el proyecto (también a
   ti: son cambios que pasan solos).
 - `backcode task import <url del PR> [--deployed production]` (admins): historial, un PR de GitHub ya mergeado como tarea ya
-  Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
-  sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
+  Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. Sin sesión de Claude Code (a mano o
+  tareas anteriores) el runner no la continúa: los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
 
 **Despliegues que hace Claude Code.** En cualquier repo conectado (con las pautas activadas o no), el plugin mira cada comando de
 Bash al acabar (hook `PostToolUse`): si despliega un destino del proyecto (`npm run backcode:deploy:<nombre>`, el script

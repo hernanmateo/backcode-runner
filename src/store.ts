@@ -50,8 +50,9 @@ import { firestoreSource, LiveQuery } from "./live-query.js";
  * del usuario, no en un runner: no son huérfanas. Antes volvían a la cola y el runner las pasaba a «PR listo» sin PR (sin
  * botón de mergear) hasta el siguiente `backcode task pr`.
  */
-export function orphanFate(feature: { origin?: string; attempts?: number }, maxAttempts: number): "execute" | "failed" | "keep" {
-  if (feature.origin === "local") return "keep";
+export function orphanFate(feature: { origin?: string; attempts?: number; runnerId?: string }, maxAttempts: number): "execute" | "failed" | "keep" {
+  // Sin runnerId la lleva la sesión de Claude Code que la empezó; con él, la retomó el runner (se siguió desde la app).
+  if (feature.origin === "local" && !feature.runnerId) return "keep";
   return (feature.attempts ?? 0) < maxAttempts ? "execute" : "failed";
 }
 
@@ -59,7 +60,8 @@ export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "do
 
 export interface Feature {
   title: string;
-  /** "local": hecha con Claude Code fuera de Backcode y registrada con `backcode task pr` (sin sesión ni encargo del runner). */
+  /** "local": hecha con Claude Code fuera de Backcode (`backcode task start` / `task pr`), sin encargo del runner; con su
+   * sessionId (la sesión de Claude Code que lo ejecutó), el runner la continúa cuando se le escribe desde la app. */
   origin?: string;
   refinedPrompt: string;
   acceptanceCriteria?: string[];
@@ -323,7 +325,7 @@ export class Store {
   async recoverOrphans(): Promise<void> {
     const snap = await getDocs(query(this.features(), where("status", "==", "running"), where("assignee", "==", this.uid)));
     for (const d of snap.docs) {
-      const fate = orphanFate(d.data() as { origin?: string; attempts?: number }, this.cfg.maxAttempts);
+      const fate = orphanFate(d.data() as { origin?: string; attempts?: number; runnerId?: string }, this.cfg.maxAttempts);
       if (fate === "keep") continue;
       const retry = fate === "execute";
       await updateDoc(d.ref, retry
@@ -371,7 +373,8 @@ export class Store {
       if (!((group?.get("members") ?? {}) as Record<string, string>)[this.uid]) return t("store.notMember");
     }
     const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? [], (feature.attachments ?? []).map((a) => a.path));
-    if (feature.promptHash !== expected) return t("store.promptChanged");
+    // Las hechas con Claude Code (origin local) no tienen encargo de la app: las registra quien las hizo, con su sesión.
+    if (feature.origin !== "local" && feature.promptHash !== expected) return t("store.promptChanged");
     if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return t("store.badBranch");
     return null;
   }

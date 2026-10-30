@@ -11,7 +11,7 @@ import { KIT_DIR, loadConfig } from "./config.js";
 import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
-import { followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
+import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
@@ -101,7 +101,7 @@ function diagnosticFor(action: Action, result: ActionResult, thrown: Error | und
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Hecha fuera de Backcode: el runner no tiene su sesión ni su encargo, y empezar de cero pisaría la rama del PR. Vuelve a
   // «PR listo» tal cual; los cambios se siguen haciendo en su worktree (backcode task pr actualiza el PR).
-  if (feature.origin === "local") {
+  if (feature.origin === "local" && !feature.sessionId) {
     await store.event(id, "say", t("run.localTask"));
     return { status: "done", result: { ...(feature.result ?? {}), error: undefined } };
   }
@@ -114,6 +114,11 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Modo plan: hasta que quien la ejecuta aprueba el plan, Claude solo lee el repo y propone (o rehace) el plan.
   const planning = !!feature.planFirst && !feature.planApproved;
   const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
+  // Hecha con Claude Code desde el repo: su sesión está guardada en la carpeta del repo, no en la del worktree.
+  if (resuming && feature.origin === "local" && !adoptTranscript(wt.path, feature.sessionId!)) {
+    await store.event(id, "say", t("run.localTask"));
+    return { status: "done", result: { ...(feature.result ?? {}), error: undefined } };
+  }
   await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
   // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
   // Claude los resuelve en esta vuelta y el commit de open_pull_request cierra el merge.
