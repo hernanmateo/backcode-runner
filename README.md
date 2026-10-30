@@ -347,7 +347,7 @@ something fails **because of Backcode** (a runner exception, or a deploy whose c
 `backcode.toml`), the runner sends a cleaned report: runner version, OS, action type, deploy source and platform, the error
 and the log tail (3000 chars max) and a fingerprint. Personal paths, worktrees, the repo name and remote, and emails are
 replaced before it leaves your computer, and if anything still looks like a secret the whole report is dropped. Your code,
-files and `.env` are never sent, and failures of your own project (tests, tool sessions, permissions, network) aren't
+files and `.env` are never sent, and failures of your own project (tests, tool sessions, permissions, network, remote server outages such as a GitHub 5xx) aren't
 either. At most one report per failure per hour; see `src/diagnostics.ts`.
 Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md).
 

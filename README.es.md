@@ -642,7 +642,7 @@ Si activas **Perfil › Enviar diagnósticos a Backcode** en la app (desactivado
 Backcode** tu runner manda un informe para que se arregle (`src/diagnostics.ts`). Solo cuenta como de Backcode una
 excepción del propio runner (no la salida de un comando del proyecto) o un despliegue cuyo comando eligió Backcode
 (detectado o de `backcode.toml`) y que falla; los fallos de tu proyecto o de tu ordenador (tests, sesión de una
-herramienta, permisos, red, cuota, lockfile) **no** se envían.
+herramienta, permisos, red, caídas del servidor remoto como un 5xx de GitHub, cuota, lockfile) **no** se envían.
 
 - Se envía: versión del runner, sistema (`darwin-arm64`…), tipo de acción, origen y plataforma del despliegue, el error y
   la cola del registro (máx. 3000 caracteres) y una huella del fallo (hash del mensaje sin rutas, números ni hashes).

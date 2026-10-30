@@ -18,8 +18,9 @@ test("clasifica: excepciones del runner, despliegues elegidos por Backcode y nad
   assert.equal(classify("npm run build terminó con código 1:\nTypeError: x is not a function", { thrown: false }), null);
   // Mensajes que prepara el propio runner (validaciones): no.
   assert.equal(classify("No hay canal production en eas.json", { thrown: false }), null);
-  // Sesión, red, cuota, tests, lockfile: nunca.
-  for (const e of ["wrangler deploy terminó con código 1:\nYou are not logged in", "Error: getaddrinfo ENOTFOUND api.github.com", "usage limit reached", "npm test terminó con código 1:\n3 failing", "permission denied (publickey)", "firebase deploy terminó con código 1:\nHTTP Error: 403"]) {
+  // Sesión, red, caídas del servidor remoto, cuota, tests, lockfile: nunca.
+  const remote500 = "sh -c ./scripts/release-runner.sh terminó con código 1:\nremote: Internal Server Error\nTo <remote>\n ! [remote rejected] HEAD -> main (Internal Server Error)\nerror: falló el empuje de algunas referencias a '<remote>'";
+  for (const e of [remote500, "wrangler deploy terminó con código 1:\n✘ [ERROR] 503 Service Unavailable", "firebase deploy terminó con código 1:\nHTTP Error: 502, Bad Gateway","wrangler deploy terminó con código 1:\nYou are not logged in", "Error: getaddrinfo ENOTFOUND api.github.com", "usage limit reached", "npm test terminó con código 1:\n3 failing", "permission denied (publickey)", "firebase deploy terminó con código 1:\nHTTP Error: 403"]) {
     assert.equal(classify(e, { thrown: true, source: "detected" }), null, e);
   }
 });
