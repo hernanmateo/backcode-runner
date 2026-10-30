@@ -66,10 +66,15 @@ Backcode**, cómo se trabaja en el repo con Claude Code directamente (con el plu
 
 Para el trabajo en sí, **`/backcode:feature`**, o a mano:
 - `backcode task start "<título>"`: worktree en `~/.backcode/worktrees/<proyecto>/<id>` con la rama `backcode/<handle>/<id>`
-  desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados.
+  desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados, y la tarea ya en el tablero **En curso**, a tu
+  nombre y marcada «Hecha en Claude Code».
 - `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
-  la rama, la sube, abre (o actualiza) el PR y lo **registra en el tablero** como tarea tuya en «PR listo» (function
-  `registerLocalWork`). Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
+  la rama, la sube, abre (o actualiza) el PR y pasa la tarea a «PR listo» (function `registerLocalWork`). Luego se mueve sola:
+  **Mergeada** al mergear el PR y **Desplegada** cuando un OTA la incluye, también si se publica desde la terminal (el runner
+  mira el commit que deja el script en `<app>/.expo/eoas-last-publish-<rama>`), con avisos push a todo el proyecto (también a
+  ti: son cambios que pasan solos).
+- `backcode task import <url del PR> [--deployed production]` (admins): historial, un PR de GitHub ya mergeado como tarea ya
+  Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
   sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
 
 El hook no lee la configuración (lleva claves): cada runner deja en `~/.backcode/guard/<proyecto>.json` solo el nombre, la ruta

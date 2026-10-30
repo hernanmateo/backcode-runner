@@ -23,9 +23,10 @@ that work: skip to step 2 and keep everything there.
 ## 1. Start: worktree and branch
 
 1. One topic per branch. If the request mixes unrelated things, say so and do them one at a time (one PR each).
-2. Run `backcode task start "<short title>" --json` from the repo. It fetches the remote, creates a worktree from
-   `<remote>/<base>` on a branch `backcode/<handle>/<id>`, copies the local `.env` files, and prints
-   `{ "path", "branch", "base", "featureId" }`.
+2. Run `backcode task start "<short title>" --json` from the repo (the title is required: it's the task's name on the
+   board). It fetches the remote, creates a worktree from `<remote>/<base>` on a branch `backcode/<handle>/<id>`, copies
+   the local `.env` files, puts the task on the Backcode board already **In progress** (marked as made in Claude Code),
+   and prints `{ "path", "branch", "base", "featureId" }`.
 3. Work **only inside that `path`** from now on: `cd` into it for every command, and read/edit files with that absolute
    path. The original checkout stays as it was. If the project needs its dependencies installed, install them there.
 
@@ -50,8 +51,10 @@ that work: skip to step 2 and keep everything there.
    existing deploy command (lowercase name with dashes; a database migration ending in `-db`; no secrets), so the team
    can deploy it from the app.
 2. From the worktree: `backcode task pr --title "<imperative title>" --body-file <file> --json`.
-   It checks there are no uncommitted changes and no secrets, pushes the branch, opens (or updates) the PR and registers
-   it on the Backcode board as a task in "PR ready", under the user's name. It prints `{ "prUrl" }`.
+   It checks there are no uncommitted changes and no secrets, pushes the branch, opens (or updates) the PR and moves the
+   task to "PR ready" on the Backcode board, under the user's name. It prints `{ "prUrl" }`. From there it moves by
+   itself: Merged when the PR is merged, Deployed when an OTA (from the app or the terminal) includes it, with push
+   notifications to the team.
 3. If it fails, read the message, fix the cause (commit pending changes, remove a secret…) and run it again.
 4. Tell the user the PR link and that it's on the Backcode board, where it's reviewed, merged and deployed.
 
