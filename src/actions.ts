@@ -20,7 +20,7 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
   /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */

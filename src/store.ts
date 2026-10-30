@@ -210,7 +210,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude.
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -517,6 +517,12 @@ export class Store {
 
   async prUrlOf(featureId: string): Promise<string | undefined> {
     return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
+  }
+
+  /** PR y rama de una tarea (para «Arreglar con Claude» los conflictos, aunque no sea mía). */
+  async prOf(featureId: string): Promise<{ prUrl?: string; branch?: string }> {
+    const d = await getDoc(this.feature(featureId));
+    return { prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl, branch: (d.get("branch") as string | undefined) || undefined };
   }
 
   /** Mis tareas con PR abierto (terminadas y sin mergear), para vigilar si chocan con la rama base. */
