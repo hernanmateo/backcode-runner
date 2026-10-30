@@ -21,6 +21,23 @@ const Refined = z.object({
   securityFlags: z.array(z.string()),
   suggestedModel: z.enum(["haiku", "sonnet", "opus", "fable"]),
   modelReason: z.string(),
+  planFirst: z.boolean(),
+  // Desglose en tareas pequeñas (null si es una sola).
+  split: z
+    .object({
+      reason: z.string(),
+      tasks: z.array(
+        z.object({
+          title: z.string(),
+          prompt: z.string(),
+          acceptanceCriteria: z.array(z.string()),
+          suggestedModel: z.enum(["haiku", "sonnet", "opus", "fable"]),
+          planFirst: z.boolean(),
+          dependsOn: z.array(z.number().int()),
+        }),
+      ),
+    })
+    .nullable(),
 });
 
 // Claude Code no acepta el $schema 2020-12 que pone Zod por defecto: draft-7 y sin $schema.
