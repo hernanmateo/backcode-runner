@@ -53,7 +53,8 @@ releases.
 runner, te ayuda con GitHub, conecta el proyecto leyendo la configuración del portapapeles —nunca por el chat—, encuentra o
 clona el repo y lo deja arrancando al iniciar sesión) y después deja el proyecto **listo para trabajar**: comprueba las sesiones
 de las herramientas de despliegue que usa el repo (wrangler, supabase, firebase; si falta un login, te da el comando para
-lanzarlo con `!`), ofrece activar el plugin para todo el equipo en el `.claude/settings.json` del repo (en un PR, con el flujo de
+lanzarlo con `!`), busca los despliegues que el repo tiene pero no declara (Vercel, Netlify, Fly, un script `deploy`, un
+Makefile…) y ofrece declararlos para que tengan botón en la app (en un PR), ofrece activar el plugin para todo el equipo en el `.claude/settings.json` del repo (en un PR, con el flujo de
 Backcode), pregunta si mantener el ordenador despierto (`backcode awake`), explica las pautas del proyecto y acaba con una lista
 ✓/✗. Nunca lee `~/.backcode/config/` ni imprime secretos. `/backcode:doctor` diagnostica y arregla lo que falle. Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo

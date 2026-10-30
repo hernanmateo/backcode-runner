@@ -9,7 +9,7 @@ import { readState, updateState } from "./paths.js";
 // (hook session-start), en el panel y en `backcode status`, con un botón o los comandos para ponerlo al día.
 
 /** La versión del plugin que va con este runner (= plugins/backcode/.claude-plugin/plugin.json; lo comprueba un test). */
-export const PLUGIN_VERSION = "1.1.6";
+export const PLUGIN_VERSION = "1.1.7";
 export const PLUGIN_ID = "backcode@backcode";
 export const MARKETPLACE_REPO = "hernanmateo/backcode-runner";
 /** Lo que hay que escribir en Claude Code para actualizarlo a mano (con `!`, o en una terminal sin él). */
