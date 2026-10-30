@@ -1,5 +1,5 @@
 {
-  "description": "Backcode guidelines outside Backcode: in repos connected to a project that turns them on, remind Claude to put every feature or fix in its own worktree and PR, and (when required) ask before a direct commit or push to the main branch. The runner decides; without it, nothing happens.",
+  "description": "Backcode guidelines outside Backcode: in repos connected to a project that turns them on, remind Claude to put every feature or fix in its own worktree and PR, and (when required) ask before a direct commit or push to the main branch. In any connected repo, a deploy Claude runs from Bash (and that prints its tool's success line) is recorded so the app's Pending deploys knows it. The runner decides; without it, nothing happens.",
   "hooks": {
     "SessionStart": [
       {
@@ -19,6 +19,18 @@
           {
             "type": "command",
             "command": "B=\"$(command -v backcode 2>/dev/null || echo \"$HOME/.backcode/bin/backcode\")\"; [ -x \"$B\" ] && \"$B\" hook pre-tool-use 2>/dev/null; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B=\"$(command -v backcode 2>/dev/null || echo \"$HOME/.backcode/bin/backcode\")\"; [ -x \"$B\" ] && \"$B\" hook post-tool-use 2>/dev/null; exit 0",
             "timeout": 10
           }
         ]

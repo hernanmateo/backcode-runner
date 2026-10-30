@@ -135,13 +135,26 @@ export async function hookMain(event: string): Promise<void> {
     process.stdin.on("end", () => resolve(data));
     setTimeout(() => resolve(data), 3000).unref();
   });
-  let payload: { cwd?: string; tool_name?: string; tool_input?: { command?: string } } = {};
+  let payload: { cwd?: string; tool_name?: string; tool_input?: { command?: string }; tool_response?: { stdout?: string; stderr?: string; interrupted?: boolean } } = {};
   try {
     payload = JSON.parse(input || "{}");
   } catch {
     return;
   }
   const cwd = payload.cwd && existsSync(payload.cwd) ? payload.cwd : process.cwd();
+  // Despliegues que hace Claude Code (deploy-log.ts): en cualquier repo conectado, con las pautas activadas o no. Lo
+  // barato primero (sin git): el hook corre tras cada comando de Bash.
+  if (event === "post-tool-use") {
+    const { looksLikeDeploy, noteHookDeploy } = await import("./deploy-log.js");
+    if (!looksLikeDeploy(payload)) return;
+    const pg = guardFor(cwd);
+    if (!pg) return;
+    const names = await noteHookDeploy(payload, cwd, pg.projectId);
+    if (!names.length) return;
+    const { t } = await import("./i18n.js");
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: t("deployed.noted", { names: names.join(", "), base: `${pg.remote}/${pg.baseBranch}` }) } }));
+    return;
+  }
   const g = guardFor(cwd);
   if (!g || g.workflow === "off") return;
   if (event === "session-start") {

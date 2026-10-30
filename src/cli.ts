@@ -71,6 +71,12 @@ switch (command) {
     await deploysMain(rest);
     break;
   }
+  case "deployed": {
+    // Un despliegue hecho a mano (fuera de la app): que «Pendiente de desplegar» lo sepa (deploy-log.ts).
+    const { deployedMain } = await import("./deploy-log.js");
+    await deployedMain(rest);
+    break;
+  }
   case "awake": {
     // «Mantener el ordenador despierto» del panel, desde la terminal (lo usa /backcode:setup).
     const { awakeMain } = await import("./ready.js");
