@@ -413,6 +413,10 @@ sandbox, `dontAsk`, entorno sin secretos). Puede responder dudas sin tocar nada 
 los conflictos; con `commit_and_push` el runner commitea y sube sin forzar, rechazando ficheros protegidos (CI, `.claude`,
 `.env`…), secretos y marcas de conflicto. La copia se borra al acabar cada respuesta si no quedan cambios sin subir.
 
+En el **modo conversación por voz** de la app, tus mensajes llegan marcados como dichos (`voice`): desde la versión 1.0.62, el
+runner le pide a Claude que responda como en una conversación hablada (corto, sin Markdown, código ni rutas), porque la app
+lo lee en voz alta. Lo que hace y edita sigue igual, con los mismos límites.
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.

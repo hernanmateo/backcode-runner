@@ -130,6 +130,8 @@ export interface RefineJob {
 export interface ChatUserMessage extends ThreadMessage {
   attachments?: Attachment[];
   video?: { path: string; durationMs: number };
+  /** Dicho en el modo conversación por voz de la app: la respuesta se escucha, no se lee. */
+  voice?: boolean;
 }
 
 /** Conversación libre con mi runner (projects/{pid}/chats/{id}). */

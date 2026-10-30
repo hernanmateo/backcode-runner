@@ -44,6 +44,14 @@ test("buildChatPrompt lista los adjuntos del mensaje y avisa del vídeo", () => 
   assert.doesNotMatch(buildChatPrompt([{ text: "solo texto" }]), /Attached files|screen recording/);
 });
 
+test("buildChatPrompt: en el modo conversación pide una respuesta para escuchar", () => {
+  const p = buildChatPrompt([{ text: "escrito" }, { text: "¿qué hace el login?", voice: true }]);
+  assert.match(p, /said to you/);
+  assert.match(p, /voice conversation mode/);
+  assert.match(p, /without Markdown/);
+  assert.doesNotMatch(buildChatPrompt([{ text: "dicho", voice: true }, { text: "escrito" }]), /voice conversation mode/);
+});
+
 test("buildChatSystemAppend: idioma, reglas de git y de seguridad", () => {
   const s = buildChatSystemAppend({ projectName: "App", projectContext: "", worktree: "/no/existe", baseBranch: "main", remote: "origin", language: "Spanish" });
   assert.match(s, /in Spanish/);
