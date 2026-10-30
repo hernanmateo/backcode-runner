@@ -264,7 +264,8 @@ For the work itself, **`/backcode:feature`**, or by hand:
 
 - `backcode task start "<title>"`: a worktree in `~/.backcode/worktrees/<project>/<id>` on `backcode/<handle>/<id>`, from a
   freshly fetched `<remote>/<base>`, with your local `.env` files copied, and the task already on the board **In progress**,
-  under your name and marked “Made in Claude Code”.
+  under your name and marked “Made in Claude Code”. It stays there until `backcode task pr`: the runner leaves it alone, also
+  when it restarts (it isn't one of its own tasks left running).
 - `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
   branch, opens (or updates) the PR and moves the task to “PR ready”. Then it moves by itself: **Merged** when the PR is merged,
   **Deployed** when an OTA includes it (from the app, or from the terminal: the runner watches the commit the script leaves in
