@@ -177,10 +177,11 @@ export class Store {
   warnings: RepoWarning[] = [];
   /** Qué sabe hacer este runner: abrir/mergear PRs (y dónde), publicar OTA (canales) y builds locales para testers. La app lo usa para ofrecerlo. */
   // expo: el repo es una app Expo (la app ofrece la guía de OTA aunque aún no tenga).
+  // knowledge: atiende «Actualizar ahora» del mapa del código (acción knowledge).
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude.
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -547,7 +548,7 @@ export class Store {
     if (project.get("repoUrl") !== url) await updateDoc(this.project(), { repoUrl: url });
   }
 
-  async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string; iconHint?: string }> {
+  async knowledgeState(): Promise<{ exists: boolean; commit?: string; updatedAt?: number; iconPath?: string; iconHint?: string; earlyRefresh?: boolean }> {
     const d = await getDoc(this.knowledge());
     return {
       exists: d.exists(),
@@ -555,6 +556,7 @@ export class Store {
       updatedAt: (d.get("updatedAt") as Timestamp | undefined)?.toMillis(),
       iconPath: d.get("iconPath") as string | undefined,
       iconHint: d.get("iconHint") as string | undefined,
+      earlyRefresh: d.get("earlyRefresh") === true,
     };
   }
 
@@ -570,10 +572,10 @@ export class Store {
     await setDoc(this.knowledge(), { iconPath: path, updatedBy: this.uid, updatedAt: serverTimestamp() }, { merge: true });
   }
 
-  async saveKnowledge(summary: string, commit: string, costUsd: number, iconHint?: string): Promise<void> {
+  async saveKnowledge(summary: string, commit: string, costUsd: number, iconHint?: string, earlyRefresh = false): Promise<void> {
     // merge: conserva el icono del repo (iconPath) al regenerar el mapa.
     // totalCostUsd/runs: coste acumulado de todos los mapas generados (las reglas comprueban que suma exactamente costUsd).
-    const data = { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp() };
+    const data = { summary, commit, costUsd, totalCostUsd: increment(costUsd), runs: increment(1), updatedBy: this.uid, updatedAt: serverTimestamp(), ...(earlyRefresh ? { earlyRefresh: true } : {}) };
     // Si el servidor aún no admite iconHint (reglas sin desplegar), el mapa se guarda igual sin la pista.
     await setDoc(this.knowledge(), { ...data, iconHint: iconHint ?? deleteField() }, { merge: true }).catch(() => setDoc(this.knowledge(), data, { merge: true }));
   }

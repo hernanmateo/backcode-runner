@@ -668,6 +668,7 @@ async function main(): Promise<void> {
     install: expoApp ? { platforms: await installPlatforms().catch(() => []) } : null,
 
     refine: true,
+    knowledge: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
   };
@@ -835,7 +836,12 @@ async function main(): Promise<void> {
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.steps) ? action.steps.join(" → ") : undefined) ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
         const release = awake.hold();
-        const { ok, result } = await runAction(cfg, store, prHost, action as unknown as Action)
+        // «Actualizar ahora» el mapa del código: aquí mismo (necesita el entorno de Claude y se cancela al cerrar el runner).
+        const work =
+          action.type === "knowledge"
+            ? refreshKnowledge(cfg, store, agentEnv(), knowledgeAbort.signal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
+            : runAction(cfg, store, prHost, action as unknown as Action);
+        const { ok, result } = await work
           .catch((err): { ok: boolean; result: ActionResult } => ({ ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } }))
           .finally(() => {
             clearInterval(actionLease);

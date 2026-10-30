@@ -317,7 +317,9 @@ pay Anthropic directly. The app shows the cost and tokens of every task.
 <br>
 No. Claude Code runs on your computer and the code stays there. What reaches Backcode is the activity you see in the app
 (messages, commands, file names, the plan), usage figures and a short map of the repository (stack, structure, commands)
-that helps the AI write better briefs. You can turn the map off with <code>BACKCODE_KNOWLEDGE=off</code>.
+that helps the AI write better briefs. You can turn the map off with <code>BACKCODE_KNOWLEDGE=off</code>. It refreshes itself when the main branch changes (at most once a day);
+<strong>Update now</strong> in the app (Edit project) asks your runner to redo it right away (at most once every 10 minutes), and a
+map made from an almost empty repo is redone early once, as soon as the repo has code.
 </details>
 
 <details>

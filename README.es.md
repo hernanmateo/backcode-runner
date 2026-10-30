@@ -503,6 +503,11 @@ convenciones. La IA que prepara los encargos lo usa para escribir prompts con ru
 (nunca tus `.env` locales), no tiene Bash ni red, y si el resumen parece contener un secreto se descarta. Desactívalo con
 `BACKCODE_KNOWLEDGE=off`.
 
+**Actualizar ahora**: en la app, *Editar proyecto › Lo que la IA sabe del código*, lo regenera tu runner al momento (acción
+`knowledge`, como mucho una vez cada 10 minutos; el botón sale si tu runner está conectado). Y si el mapa se hizo con el repo casi
+vacío (menos de 15 ficheros) y ahora ya tiene código, se rehace sin esperar a las 24 h **una sola vez** por proyecto (queda marcado
+con `earlyRefresh`).
+
 También busca el **icono del proyecto** en el repo (el `icon` de `app.json` o de `app.config.js/ts`, `apple-touch-icon`, `logo`,
 `favicon`…; si la config de Expo no lo dice, usa la ruta que propone la IA al generar el mapa, siempre que exista en el repo y sea
 una imagen válida) leyéndolo
