@@ -27,6 +27,7 @@ import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
+import { runChat } from "./chat.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
@@ -698,6 +699,7 @@ async function main(): Promise<void> {
     refine: true,
     knowledge: true,
     fixConflicts: true,
+    chat: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
   };
@@ -803,6 +805,7 @@ async function main(): Promise<void> {
   if (store.capabilities.install?.platforms.length) void resumeDevServer(cfg, store);
   await store.recoverOrphans();
   await store.recoverActions().catch(() => undefined);
+  await store.recoverChats().catch(() => undefined);
   await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
   // Al arrancar, tu copia local de la rama base se pone al día si es seguro (p. ej. tras merges hechos por otros).
   const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message, changed: [] as string[] }));
@@ -974,6 +977,37 @@ async function main(): Promise<void> {
     (err) => console.warn(`[refine] ${err.message}`),
   );
 
+  // Conversación libre con mi runner (botón junto a «Proponer una idea»): de una en una, en paralelo a las tareas.
+  let chatBusy = false;
+  let pendingChats: string[] = [];
+  const chatAbort = new AbortController();
+  const drainChats = async () => {
+    if (chatBusy) return;
+    chatBusy = true;
+    try {
+      while (!stopping && !restarting && pendingChats.length) {
+        const id = pendingChats.shift()!;
+        const chat = await store.claimChat(id).catch(() => null);
+        if (!chat) continue;
+        const release = awake.hold();
+        const project = await store.projectInfo().catch(() => ({ name: "", context: "" }));
+        await runChat(cfg, store, id, chat, { env: agentEnv(), isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
+          .catch((err: Error) => console.warn(`[chat] ${err.message}`))
+          .finally(release);
+      }
+    } finally {
+      chatBusy = false;
+    }
+  };
+  const unsubscribeChats = onSnapshot(
+    store.myChats(),
+    (snap) => {
+      pendingChats = snap.docs.map((d) => d.id);
+      void drainChats();
+    },
+    (err) => console.warn(`[chat] ${err.message}`),
+  );
+
   // Lo que este ordenador ofrece para crear proyectos (carpeta, cuentas de GitHub y Bitbucket): al arrancar, cada hora y
   // cuando cambian los ajustes en la app. Con varios proyectos conectados lo publican todos (es lo mismo); si falla, da igual.
   let workspaceDir: string | undefined;
@@ -1043,11 +1077,13 @@ async function main(): Promise<void> {
     stopLang();
     unsubscribeActions();
     unsubscribeRefines();
+    unsubscribeChats();
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
     clearInterval(machineTimer);
     refineAbort.abort();
+    chatAbort.abort();
     clearInterval(knowledgeTimer);
     clearInterval(devicesTimer);
     clearInterval(planTimer);
@@ -1075,12 +1111,13 @@ async function main(): Promise<void> {
     if (restarting || stopping) return;
     restarting = true;
     console.log(`[backcode] ${t("update.waiting")}`);
-    while (busy || actionsBusy || refineBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
+    while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();
     stopLang();
     unsubscribeActions();
     unsubscribeRefines();
+    unsubscribeChats();
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
