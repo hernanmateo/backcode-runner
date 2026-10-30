@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { materializeAttachments } from "./attachments.js";
 import type { RunnerConfig } from "./config.js";
 import { hasMarkers } from "./conflicts.js";
 import { createDetachedWorktree, git, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
@@ -139,8 +140,18 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       if (!unread.length) break;
       await store.markChatRead(id, unread.map((m) => m.id!));
       activity(t("ch.thinking"));
+      // Las imágenes de cada mensaje se descargan en su subcarpeta de .backcode-attachments (excluida de git y protegida).
+      const prompt = buildChatPrompt(
+        await Promise.all(
+          unread.map(async (m) => ({
+            text: m.text,
+            files: m.attachments?.length ? await materializeAttachments(store, cfg.projectId, path, m.attachments, m.id) : [],
+            ...(typeof m.video?.durationMs === "number" ? { videoMs: m.video.durationMs } : {}),
+          })),
+        ),
+      );
       for await (const msg of query({
-        prompt: buildChatPrompt(unread),
+        prompt,
         options: {
           pathToClaudeCodeExecutable: claudeExecutable(),
           resume: sessionId,
