@@ -654,7 +654,24 @@ export async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: s
   // Donde está el lockfile: la carpeta del paquete o, en un monorepo (workspaces), la raíz.
   const lockfile = { pnpm: "pnpm-lock.yaml", yarn: "yarn.lock", bun: existsSync(join(dir, "bun.lockb")) || existsSync(join(wt, "bun.lockb")) ? "bun.lockb" : "bun.lock", npm: "package-lock.json" }[app.pm];
   const installDir = existsSync(join(dir, "package.json")) && existsSync(join(dir, lockfile)) && !has("pnpm-workspace.yaml") ? dir : wt;
-  await exec(frozen, installDir);
+  await exec(installCommand(app.pm, frozen, installDir), installDir);
+}
+
+/**
+ * `npm ci` solo funciona con package-lock.json (o npm-shrinkwrap.json): sin él falla siempre (p. ej. unas functions de
+ * Firebase que no suben el lockfile). Ahí se instala con `npm install`, como haría cualquiera a mano.
+ */
+export function installCommand(pm: ExpoApp["pm"], frozen: string[], installDir: string): string[] {
+  if (pm !== "npm" || existsSync(join(installDir, "package-lock.json")) || existsSync(join(installDir, "npm-shrinkwrap.json"))) return frozen;
+  return ["npm", "install", "--no-audit", "--no-fund"];
+}
+
+/**
+ * Quita la ayuda de uso que npm imprime tras un error de uso (p. ej. `npm ci` con el lockfile desfasado): son cientos de
+ * líneas que, al recortar la salida, se comen el mensaje que explica el fallo.
+ */
+export function stripNpmUsage(out: string): string {
+  return out.replace(/^npm (?:error|ERR!) Usage:\r?\n[\s\S]*?^npm (?:error|ERR!) Run "npm help [\w-]+" for more info\r?\n?/gm, "");
 }
 
 export const otaMissing = () => t("act.otaMissing");
@@ -802,7 +819,7 @@ export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record
       clearTimeout(timer);
       if (finished) return;
       if (code === 0) resolve(out);
-      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: out.slice(-2800) })));
+      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: stripNpmUsage(out).slice(-2800) })));
     });
   });
 }

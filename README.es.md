@@ -522,7 +522,7 @@ es duplicar el que ya tenéis, sin renombrarlo:
 ```
 
 Al pulsarlo, en una copia limpia de la rama base y con los checks en verde: instala con el gestor del repo (donde esté el
-lockfile: la carpeta o la raíz del monorepo), copia tus `.env`, `.env.local`, `.env.production` y `.env.production.local`
+lockfile: la carpeta o la raíz del monorepo; con npm y sin `package-lock.json`, `npm install` en vez de `npm ci`), copia tus `.env`, `.env.local`, `.env.production` y `.env.production.local`
 (solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 detectan al arrancar: tras añadir uno, reinicia el runner.

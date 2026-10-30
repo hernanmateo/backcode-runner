@@ -59,7 +59,7 @@ const NOT_OURS = new RegExp(
     "ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|getaddrinfo|network (error|is unreachable)|offline",
     "rate.?limit|usage limit|quota|\\b429\\b|overloaded|\\b529\\b",
     "ENOSPC|no space left",
-    "tests? (failed|failing)|\\d+ failing|test suites?: \\d+ failed|npm ci.*(lockfile|package-lock)|can only install with an existing package-lock",
+    "tests? (failed|failing)|\\d+ failing|test suites?: \\d+ failed|npm ci.*(lockfile|package-lock)|can only install with an existing package-lock|update your lock ?file|missing from lock ?file|are in sync",
     "command not found|not recognized as an internal|could not determine executable",
   ].join("|"),
   "i",
