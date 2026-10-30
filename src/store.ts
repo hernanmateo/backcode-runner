@@ -43,6 +43,17 @@ import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
 
+/**
+ * Qué hacer al arrancar con una tarea mía en 'running': volver a la cola, darla por fallida (sin intentos) o dejarla.
+ * Las hechas con Claude Code fuera de Backcode (`origin: "local"`, `backcode task start`) están «En curso» en un worktree
+ * del usuario, no en un runner: no son huérfanas. Antes volvían a la cola y el runner las pasaba a «PR listo» sin PR (sin
+ * botón de mergear) hasta el siguiente `backcode task pr`.
+ */
+export function orphanFate(feature: { origin?: string; attempts?: number }, maxAttempts: number): "execute" | "failed" | "keep" {
+  if (feature.origin === "local") return "keep";
+  return (feature.attempts ?? 0) < maxAttempts ? "execute" : "failed";
+}
+
 export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "done" | "failed" | "waiting";
 
 export interface Feature {
@@ -297,11 +308,13 @@ export class Store {
     };
   }
 
-  /** Con el lock en mano, cualquier tarea mía en 'running' es huérfana de un runner anterior. */
+  /** Con el lock en mano, mis tareas en 'running' son huérfanas de un runner anterior (salvo las hechas fuera: orphanFate). */
   async recoverOrphans(): Promise<void> {
     const snap = await getDocs(query(this.features(), where("status", "==", "running"), where("assignee", "==", this.uid)));
     for (const d of snap.docs) {
-      const retry = ((d.get("attempts") as number | undefined) ?? 0) < this.cfg.maxAttempts;
+      const fate = orphanFate(d.data() as { origin?: string; attempts?: number }, this.cfg.maxAttempts);
+      if (fate === "keep") continue;
+      const retry = fate === "execute";
       await updateDoc(d.ref, retry
         ? { status: "execute", runnerId: deleteField(), leaseUntil: deleteField() }
         : { status: "failed", runnerId: deleteField(), leaseUntil: deleteField(), result: { error: t("store.orphan") }, finishedAt: serverTimestamp() });
