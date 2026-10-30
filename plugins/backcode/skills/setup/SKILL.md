@@ -142,8 +142,8 @@ display, a Mac sleeps anyway.
 Run `echo '{"cwd":"<repo>"}' | backcode hook session-start`. If it prints JSON with the guidelines (`additionalContext`), the
 project has them on: explain in two lines that every change goes through `/backcode:feature` (its own worktree, and a PR
 registered on the board) and, if the text says "The project requires this", that a direct commit or push to the main branch
-asks for confirmation (`require` mode). Nothing printed: guidelines are off (an admin can turn them on in the app, Edit
-project), or the runner hasn't started for this project yet (it writes them when it starts: check `backcode status`).
+asks for confirmation (`require` mode). Nothing printed: an admin set them to Free (they're on, in Remind mode, by default;
+it's changed in the app, Edit project), or the runner hasn't started for this project yet (it writes them when it starts: check `backcode status`).
 
 ## 7. Done
 

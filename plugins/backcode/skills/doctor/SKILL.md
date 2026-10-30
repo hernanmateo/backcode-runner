@@ -32,6 +32,6 @@ ask for the configuration in the chat, no `sudo`, and ask before changing anythi
 | Panel doesn't open | Nothing listening on 127.0.0.1:47474, or another program on that port | `backcode` starts it; `BACKCODE_PANEL_PORT=47475 backcode` for another port |
 | Stuck on an old version | Updates fail (no network, a git copy with local changes) | The log says why; reinstall with the Mac app or `install.sh` |
 | Guidelines or `/backcode:feature` not working, or `backcode status` says the plugin has a new version | The Claude Code plugin is missing or old: Claude Code doesn't update this marketplace by itself | `! claude plugin marketplace update backcode` and `! claude plugin update backcode@backcode` (or **Update the plugin** in the panel), then restart Claude Code. To keep it current: /plugin › Marketplaces › backcode › enable auto-update |
-| Guidelines not showing in a repo | The project has them **Free** (off) in the app, or this computer's runner isn't connected to that project | An admin sets **Remind** in the app (Edit project); connect the runner to the project. Then a new Claude Code session |
+| Guidelines not showing in a repo | An admin set the project to **Free** (off) in the app (the default is **Remind**), or this computer's runner isn't connected to that project | An admin sets **Remind** in the app (Edit project); connect the runner to the project. Then a new Claude Code session |
 
 When it's fixed, run `backcode status` again and tell the user what was wrong and what you changed, in one or two lines.

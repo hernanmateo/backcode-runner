@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "backcode",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Backcode from Claude Code: set up and troubleshoot the runner, and work the Backcode way outside Backcode (one worktree and PR per feature or fix, registered on the board).",
   "author": {
     "name": "Brothapps S.L.",

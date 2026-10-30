@@ -5,7 +5,7 @@ import { HOME_DIR } from "./paths.js";
 
 // Pautas de Backcode fuera de Backcode: el plugin de Claude Code (plugins/backcode/hooks) llama a `backcode hook <evento>`
 // en las sesiones normales de Claude Code. Si el repo está conectado a un proyecto con las pautas activadas (ajuste
-// `workflow` del proyecto, lo eligen los admins en la app), recuerda que cada funcionalidad o fix va en su worktree y su PR
+// `workflow` del proyecto, lo eligen los admins en la app; por defecto «warn», Recordar), recuerda que cada funcionalidad o fix va en su worktree y su PR
 // y, en modo «require», pide confirmar un commit o un push directo a la rama principal.
 //
 // Cada runner deja en ~/.backcode/guard/<proyecto>.json lo justo para decidirlo (nombre, ruta del repo, rama base, remoto y
@@ -23,7 +23,8 @@ export interface GuardInfo {
 
 const GUARD_DIR = join(HOME_DIR, "guard");
 
-export const asWorkflow = (v: unknown): Workflow => (v === "warn" || v === "require" ? v : "off");
+/** Sin ajuste (proyectos antiguos o creados sin él), «warn» (Recordar): solo un «off» explícito las apaga. */
+export const asWorkflow = (v: unknown): Workflow => (v === "off" || v === "require" ? v : "warn");
 
 /** Lo escribe el runner del proyecto al arrancar y cuando cambia el ajuste en la app. */
 export function writeGuard(info: GuardInfo): void {
