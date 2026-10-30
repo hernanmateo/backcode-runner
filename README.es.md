@@ -81,15 +81,18 @@ Claude Code por su cuenta**, cómo se trabaja en el repo con Claude Code directa
 Para el trabajo en sí, **`/backcode:feature`**, o a mano:
 - `backcode task start "<título>"`: worktree en `~/.backcode/worktrees/<proyecto>/<id>` con la rama `backcode/<handle>/<id>`
   desde `<remoto>/<base>` (trae la base antes) y los `.env` locales copiados, y la tarea ya en el tablero **En curso**, a tu
-  nombre y marcada «Hecha en Claude Code».
+  nombre y marcada «Hecha en Claude Code». Si lo ejecuta Claude Code (también `task pr`), la tarea guarda esa sesión
+  (`CLAUDE_CODE_SESSION_ID`): ya en «PR listo», puedes escribirle a Claude desde la conversación de la tarea en la app y tu
+  runner retoma esa misma sesión en el worktree (copia la sesión de la carpeta del repo a la del worktree; la original no se
+  toca) y actualiza el PR.
 - `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
   la rama, la sube, abre (o actualiza) el PR y pasa la tarea a «PR listo» (function `registerLocalWork`). Luego se mueve sola:
   **Mergeada** al mergear el PR y **Desplegada** cuando un OTA la incluye, también si se publica desde la terminal (el runner
   mira el commit que deja el script en `<app>/.expo/eoas-last-publish-<rama>`), con avisos push a todo el proyecto (también a
   ti: son cambios que pasan solos).
 - `backcode task import <url del PR> [--deployed production]` (admins): historial, un PR de GitHub ya mergeado como tarea ya
-  Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. El runner no la continúa (no tiene su
-  sesión): los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
+  Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. Sin sesión de Claude Code (a mano o
+  tareas anteriores) el runner no la continúa: los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
 
 **Despliegues que hace Claude Code.** En cualquier repo conectado (con las pautas activadas o no), el plugin mira cada comando de
 Bash al acabar (hook `PostToolUse`): si despliega un destino del proyecto (`npm run backcode:deploy:<nombre>`, el script
@@ -448,6 +451,8 @@ en el orden correcto: primero las reglas (Firestore/Storage), luego las function
 al final, para que la app nueva no llegue antes que lo que necesita en el servidor. El runner lo calcula al arrancar, cada 3 min
 y tras cada acción: compara la rama principal con el commit del último despliegue hecho desde Backcode de cada paso (qué ficheros
 cubre cada uno lo saca del `--only` de Firebase del script o de su carpeta) y dice qué tareas mergeadas traen cada cambio.
+Las tareas terminadas, las acciones y el registro de despliegues los sigue con un listener de Firestore: cada documento se lee
+una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los lee como antes).
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
   para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
 - Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
@@ -483,8 +488,9 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
 - **Versión de desarrollo** (en **Mi móvil**, «De desarrollo»): instala una build Debug que no lleva el JavaScript dentro,
   sino que lo carga del **servidor de desarrollo** (Metro) de tu runner, por la wifi y en un puerto propio de cada proyecto. Se
   instala una vez (y otra si cambia algo nativo). Después eliges qué código sirve: **la rama principal** (desde Mi móvil) o **una
-  tarea** con «Probar en mi móvil» en su ficha (su copia de trabajo si la tiene tu runner, así ves lo que Claude va cambiando; si
-  no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
+  tarea** con «Probar en mi móvil» en su ficha, que aparece cuando Claude no está trabajando en ella (necesita respuesta, PR
+  listo o fallida) y su rama aún no está mergeada (su copia de trabajo si la tiene tu runner, así ves lo que Claude ha
+  cambiado; si no, su rama subida). Cierras y vuelves a abrir la app y lo ves; los cambios siguientes llegan solos. Metro corre en
   `~/.backcode/worktrees/<proyecto>/_dev` (o en la copia de la tarea), sin tocar ficheros versionados (`EXPO_NO_TYPESCRIPT_SETUP`),
   y se apaga solo a las 4 h o al reiniciar el runner. El estado lo guarda en `runners/{uid}/private/dev` (solo lo lees tú).
   El runner apunta en qué móviles instaló la versión de desarrollo de cada proyecto (`~/.backcode/dev-installs.json`; una

@@ -42,6 +42,7 @@ import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
+import { firestoreSource, LiveQuery } from "./live-query.js";
 
 /**
  * Qué hacer al arrancar con una tarea mía en 'running': volver a la cola, darla por fallida (sin intentos) o dejarla.
@@ -49,8 +50,9 @@ import { readState, updateState } from "./paths.js";
  * del usuario, no en un runner: no son huérfanas. Antes volvían a la cola y el runner las pasaba a «PR listo» sin PR (sin
  * botón de mergear) hasta el siguiente `backcode task pr`.
  */
-export function orphanFate(feature: { origin?: string; attempts?: number }, maxAttempts: number): "execute" | "failed" | "keep" {
-  if (feature.origin === "local") return "keep";
+export function orphanFate(feature: { origin?: string; attempts?: number; runnerId?: string }, maxAttempts: number): "execute" | "failed" | "keep" {
+  // Sin runnerId la lleva la sesión de Claude Code que la empezó; con él, la retomó el runner (se siguió desde la app).
+  if (feature.origin === "local" && !feature.runnerId) return "keep";
   return (feature.attempts ?? 0) < maxAttempts ? "execute" : "failed";
 }
 
@@ -58,7 +60,8 @@ export type FeatureStatus = "backlog" | "rejected" | "execute" | "running" | "do
 
 export interface Feature {
   title: string;
-  /** "local": hecha con Claude Code fuera de Backcode y registrada con `backcode task pr` (sin sesión ni encargo del runner). */
+  /** "local": hecha con Claude Code fuera de Backcode (`backcode task start` / `task pr`), sin encargo del runner; con su
+   * sessionId (la sesión de Claude Code que lo ejecutó), el runner la continúa cuando se le escribe desde la app. */
   origin?: string;
   refinedPrompt: string;
   acceptanceCriteria?: string[];
@@ -147,6 +150,9 @@ export interface FeatureResult {
 }
 
 const LOCK_LEASE_MS = 60_000;
+/** Cada renovación es una escritura (y una lectura por cada pantalla de la app que mira el proyecto): a mitad del lease,
+ * con 30 s de margen, en vez de cada 20 s. Quien comprueba si el runner está conectado sigue viendo un lease de 60 s. */
+const LOCK_RENEW_MS = LOCK_LEASE_MS / 2;
 export const FEATURE_LEASE_MS = 5 * 60_000;
 /** «Sigo vivo» de las acciones (merge, OTA, builds…): se renueva cada minuto mientras dura. */
 export const ACTION_LEASE_MS = 3 * 60_000;
@@ -186,6 +192,13 @@ export class Store {
     private cfg: RunnerConfig,
     readonly uid: string,
   ) {}
+
+  // Lo que «Pendiente de desplegar», los OTA y los conflictos releen cada pocos minutos: con listener (live-query.ts),
+  // cada documento se lee al cambiar y no en cada vuelta.
+  private readonly doneFeatures = new LiveQuery(() => firestoreSource(query(this.features(), where("status", "==", "done"))));
+  private readonly myDoneFeatures = new LiveQuery(() => firestoreSource(query(this.features(), where("assignee", "==", this.uid), where("status", "==", "done"))));
+  private readonly doneActions = new LiveQuery(() => firestoreSource(query(collection(this.project(), "actions"), where("status", "==", "done"))));
+  private readonly deployLog = new LiveQuery(() => firestoreSource(query(collection(this.project(), "deployLog"), orderBy("at", "desc"), limit(200))));
 
   /** Avisos sobre la configuración (rama base, alojamiento…) que la app muestra junto al estado del runner. */
   warnings: RepoWarning[] = [];
@@ -301,7 +314,7 @@ export class Store {
         console.error(`[lock] ${t("store.leaseLost")}`, err.message);
         process.exit(1);
       });
-    }, LOCK_LEASE_MS / 3);
+    }, LOCK_RENEW_MS);
     return async () => {
       clearInterval(timer);
       await deleteDoc(ref).catch(() => undefined);
@@ -312,7 +325,7 @@ export class Store {
   async recoverOrphans(): Promise<void> {
     const snap = await getDocs(query(this.features(), where("status", "==", "running"), where("assignee", "==", this.uid)));
     for (const d of snap.docs) {
-      const fate = orphanFate(d.data() as { origin?: string; attempts?: number }, this.cfg.maxAttempts);
+      const fate = orphanFate(d.data() as { origin?: string; attempts?: number; runnerId?: string }, this.cfg.maxAttempts);
       if (fate === "keep") continue;
       const retry = fate === "execute";
       await updateDoc(d.ref, retry
@@ -360,7 +373,8 @@ export class Store {
       if (!((group?.get("members") ?? {}) as Record<string, string>)[this.uid]) return t("store.notMember");
     }
     const expected = promptHash(feature.title, feature.refinedPrompt, feature.acceptanceCriteria ?? [], (feature.attachments ?? []).map((a) => a.path));
-    if (feature.promptHash !== expected) return t("store.promptChanged");
+    // Las hechas con Claude Code (origin local) no tienen encargo de la app: las registra quien las hizo, con su sesión.
+    if (feature.origin !== "local" && feature.promptHash !== expected) return t("store.promptChanged");
     if (!feature.branch || !new RegExp(`^backcode/[a-z0-9-]{1,32}/${id}$`).test(feature.branch)) return t("store.badBranch");
     return null;
   }
@@ -507,8 +521,7 @@ export class Store {
 
   /** Mis tareas con PR abierto (terminadas y sin mergear), para vigilar si chocan con la rama base. */
   async myOpenPrs(): Promise<{ id: string; branch: string; prUrl?: string; conflicts: string[] }[]> {
-    const snap = await getDocs(query(collection(this.project(), "features"), where("assignee", "==", this.uid), where("status", "==", "done")));
-    return snap.docs
+    return (await this.myDoneFeatures.get())
       .filter((d) => d.get("branch") && !d.get("merged"))
       .map((d) => ({ id: d.id, branch: String(d.get("branch")), prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl, conflicts: (d.get("conflicts") as string[] | undefined) ?? [] }));
   }
@@ -524,8 +537,7 @@ export class Store {
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
   async mergedNotDeployed(channel: string): Promise<{ id: string; title: string; sha: string }[]> {
-    const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
-    return snap.docs
+    return (await this.doneFeatures.get())
       .filter((d) => d.get("merged.sha") && !d.get(`deployed.${channel}`))
       .map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
   }
@@ -536,13 +548,13 @@ export class Store {
    * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
-    const [snap, log] = await Promise.all([getDocs(query(collection(this.project(), "actions"), where("status", "==", "done"))), getDocs(query(collection(this.project(), "deployLog"), orderBy("at", "desc"), limit(200))).catch(() => null)]);
+    const [actions, log] = await Promise.all([this.doneActions.get(), this.deployLog.get().catch(() => null)]);
     const best = new Map<string, { at: number; sha: string }>();
     const note = (id: string, at: number, sha: unknown) => {
       if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) return;
       if ((best.get(id)?.at ?? -1) < at) best.set(id, { at, sha });
     };
-    for (const d of snap.docs) {
+    for (const d of actions) {
       const at = (d.get("requestedAt") as Timestamp | undefined)?.toMillis() ?? 0;
       const type = d.get("type");
       if (type === "deploy") note(`deploy:${String(d.get("target"))}`, at, d.get("result.sha"));
@@ -551,14 +563,13 @@ export class Store {
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
     // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.
-    for (const d of log?.docs ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
+    for (const d of log ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
     return new Map([...best].map(([id, v]) => [id, v.sha]));
   }
 
   /** Tareas mergeadas (con el commit del merge y su título). */
   async mergedFeatures(): Promise<{ id: string; title: string; sha: string }[]> {
-    const snap = await getDocs(query(collection(this.project(), "features"), where("status", "==", "done")));
-    return snap.docs.filter((d) => d.get("merged.sha")).map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
+    return (await this.doneFeatures.get()).filter((d) => d.get("merged.sha")).map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
   }
 
   /** Apunta un despliegue hecho fuera de la app (solo el runner de un admin: las reglas lo comprueban). */
@@ -568,15 +579,8 @@ export class Store {
 
   /** Cambios en el registro de despliegues (p. ej. «Ya lo desplegué» desde la app): el plan se recalcula. */
   watchDeployLog(onChange: () => void): () => void {
-    let first = true;
-    return onSnapshot(
-      query(collection(this.project(), "deployLog"), orderBy("at", "desc"), limit(1)),
-      () => {
-        if (!first) onChange();
-        first = false;
-      },
-      () => undefined,
-    );
+    // El mismo listener que lee lastDeploys: cuando avisa, el plan que se recalcula ya ve el apunte nuevo.
+    return this.deployLog.watch(onChange);
   }
 
   async markDeployed(featureId: string, channel: string, sha: string): Promise<void> {

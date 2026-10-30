@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Remote Control de la sesión de una tarea: un Claude Code interactivo (`claude --resume <sesión> --remote-control`) en
@@ -93,7 +93,7 @@ export function startRemoteControl(opts: { bin: string; cwd: string; sessionId: 
  * no está, simplemente no se ve nada.
  */
 export function followTranscript(cwd: string, sessionId: string, onEntry: (entry: Record<string, unknown>) => void): () => void {
-  const file = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
+  const file = transcriptPath(cwd, sessionId);
   // Solo lo nuevo: lo que ya había es la parte de la conversación que hizo el runner.
   let offset = existsSync(file) ? statSync(file).size : 0;
   let partial = "";
@@ -120,4 +120,31 @@ export function followTranscript(cwd: string, sessionId: string, onEntry: (entry
     }
   }, 3000);
   return () => clearInterval(timer);
+}
+
+const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+/** Dónde guarda Claude Code la conversación de una sesión: por carpeta de trabajo. */
+export function transcriptPath(cwd: string, sessionId: string): string {
+  return join(projectsDir(), cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
+}
+
+/**
+ * Una sesión empezada en otra carpeta (p. ej. la de una tarea hecha con Claude Code desde el repo, que luego pasó a su
+ * worktree): se copia a la carpeta del worktree para poder retomarla allí. La original no se toca. Devuelve si está.
+ */
+export function adoptTranscript(cwd: string, sessionId: string): boolean {
+  const target = transcriptPath(cwd, sessionId);
+  if (existsSync(target)) return true;
+  try {
+    for (const dir of readdirSync(projectsDir())) {
+      const source = join(projectsDir(), dir, `${sessionId}.jsonl`);
+      if (!existsSync(source)) continue;
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(source, target);
+      return true;
+    }
+  } catch {
+    // Sin carpeta de sesiones: no hay nada que copiar.
+  }
+  return false;
 }

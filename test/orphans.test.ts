@@ -16,3 +16,8 @@ test("las empezadas con backcode task start (origin local) siguen «En curso»: 
 test("las de diagnóstico se tratan como cualquier otra", () => {
   assert.equal(orphanFate({ origin: "diagnostic" }, 2), "execute");
 });
+
+test("una hecha con Claude Code que el runner retomó (tiene runnerId) se trata como las del runner", () => {
+  assert.equal(orphanFate({ origin: "local", runnerId: "r1", attempts: 1 }, 2), "execute");
+  assert.equal(orphanFate({ origin: "local", runnerId: "r1", attempts: 2 }, 2), "failed");
+});

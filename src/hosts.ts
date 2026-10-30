@@ -52,6 +52,29 @@ const summarize = (items: { name: string; state: "ok" | "pending" | "fail" }[]):
 
 // --- GitHub (gh CLI) ----------------------------------------------------------------
 
+/** Fallos de GitHub que no dependen del PR (p. ej. "GraphQL: Something went wrong…" justo tras sacarlo de borrador, 5xx, timeouts). */
+export function isTransientGhError(e: unknown): boolean {
+  const text = `${(e as { stderr?: unknown })?.stderr ?? ""}\n${(e as Error)?.message ?? e}`;
+  return /something went wrong|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|try again later/i.test(text);
+}
+
+/**
+ * Mergea reintentando los fallos transitorios de GitHub. Si el merge falla pero el PR ya consta como mergeado
+ * (--delete-branch no puede borrar la rama local de un worktree, o GitHub mergeó pese al error), se da por bueno.
+ */
+export async function mergeWithRetry(merge: () => Promise<unknown>, state: () => Promise<string>, delaysMs = [3000, 10000]): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await merge();
+      return;
+    } catch (e) {
+      if ((await state()) === "MERGED") return;
+      if (attempt >= delaysMs.length || !isTransientGhError(e)) throw e;
+      await new Promise((r) => setTimeout(r, delaysMs[attempt]));
+    }
+  }
+}
+
 export function githubHost(repoPath: string): PrHost {
   const gh = async (args: string[], cwd = repoPath) => (await run("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024 })).stdout.trim();
   return {
@@ -82,11 +105,10 @@ export function githubHost(repoPath: string): PrHost {
     },
     async merge(prUrl) {
       await gh(["pr", "ready", prUrl]).catch(() => undefined); // si ya no era borrador, da igual
-      await gh(["pr", "merge", prUrl, "--squash", "--delete-branch"]).catch(async (e) => {
-        // --delete-branch puede fallar al borrar la rama local (está en un worktree) tras mergear bien.
-        const state = await gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => "");
-        if (state !== "MERGED") throw e;
-      });
+      await mergeWithRetry(
+        () => gh(["pr", "merge", prUrl, "--squash", "--delete-branch"]),
+        () => gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => ""),
+      );
       const sha = await gh(["pr", "view", prUrl, "--json", "mergeCommit", "-q", ".mergeCommit.oid"]).catch(() => "");
       return { sha: sha || undefined };
     },
