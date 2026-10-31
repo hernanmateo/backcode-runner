@@ -665,7 +665,11 @@ export class Store {
       const type = d.get("type");
       if (type === "deploy") note(`deploy:${String(d.get("target"))}`, at, d.get("result.sha"));
       else if (type === "ota") note(`ota:${String(d.get("channel"))}`, at, d.get("result.sha"));
-      else if (type === "build") note("build", at, d.get("result.sha"));
+      else if (type === "build") {
+        note("build", at, d.get("result.sha"));
+        // Por plataforma: para saber si el binario de testers de cada una tiene los cambios nativos de la rama base.
+        for (const p of (d.get("platforms") ?? []) as unknown[]) if (p === "ios" || p === "android") note(`build:${p}`, at, d.get("result.sha"));
+      }
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
     // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.

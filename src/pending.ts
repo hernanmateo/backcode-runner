@@ -1,6 +1,7 @@
 import type { RunnerConfig } from "./config.js";
 import { lastCliPublish } from "./ota-watch.js";
 import { type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./git.js";
+import { BUILD_PLATFORMS, type BuildPlatform, nativeDependencyChanges, nativeFilesByPlatform } from "./native-changes.js";
 import type { Store } from "./store.js";
 
 // «Pendiente de desplegar»: qué hay en la rama base que aún no ha salido por cada vía (reglas, functions, web… y la OTA),
@@ -29,6 +30,21 @@ export interface DeployPlan {
   steps: PlanStep[];
   /** La OTA trae cambios que parecen nativos (config de Expo, dependencias, ios/android…): quizá haga falta una build. */
   nativeHint?: boolean;
+  /**
+   * Builds que faltan: plataformas con cambios nativos en la rama base desde el commit de su última build hecha desde
+   * Backcode (una OTA no los lleva). Sin build registrada de una plataforma no se sabe y no sale.
+   */
+  builds?: BuildStep[];
+}
+
+export interface BuildStep {
+  platform: BuildPlatform;
+  /** Commit de la última build de esa plataforma. */
+  lastSha: string;
+  /** Ficheros nativos cambiados desde entonces (y los primeros, para enseñarlos). */
+  changes: number;
+  files: string[];
+  features?: { id: string; title: string }[];
 }
 
 interface Scope {
@@ -84,15 +100,35 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
       continue;
     }
     if (c.kind === "ota" && files.some((f) => NATIVE.test(f))) nativeHint = true;
-    // Qué tareas lo traen: las mergeadas cuyo commit está entre el último despliegue y la base y toca estos ficheros.
+    const features = await bringing(lastSha, c.scope.match);
+    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, changes: files.length, features });
+  }
+
+  // Builds: cambios nativos de la app desde la última build de cada plataforma (las dos suelen compartir commit).
+  const builds: BuildStep[] = [];
+  for (const platform of app ? BUILD_PLATFORMS : []) {
+    const lastSha = last.get(`build:${platform}`);
+    if (!app || !lastSha || lastSha === base) continue;
+    const changed = (await git(cfg.repoPath, ["diff", "--name-only", lastSha, base]).catch(() => "")).split("\n").filter(Boolean);
+    const pkg = `${app.appDir ? `${app.appDir}/` : ""}package.json`;
+    const show = (sha: string) => git(cfg.repoPath, ["show", `${sha}:${pkg}`]).catch(() => "");
+    const pkgChanged = changed.includes(pkg) && nativeDependencyChanges(await show(lastSha), await show(base)).length > 0;
+    const files = nativeFilesByPlatform(changed, app.appDir, pkgChanged)[platform];
+    if (!files.length) continue;
+    const native = new Set(files);
+    builds.push({ platform, lastSha, changes: files.length, files: files.slice(0, 5), features: await bringing(lastSha, (f) => native.has(f)) });
+  }
+  return { base, steps: steps.slice(0, 10), ...(nativeHint ? { nativeHint } : {}), ...(builds.length ? { builds } : {}) };
+
+  /** Qué tareas lo traen: las mergeadas cuyo commit está entre el último despliegue y la base y tocan esos ficheros. */
+  async function bringing(lastSha: string, match: (file: string) => boolean): Promise<{ id: string; title: string }[]> {
     const commits = new Set((await git(cfg.repoPath, ["log", "--format=%H", `${lastSha}..${base}`]).catch(() => "")).split("\n").filter(Boolean));
     const features: { id: string; title: string }[] = [];
     for (const f of merged) {
       if (!commits.has(f.sha) || features.length >= 10) continue;
       const touched = (await git(cfg.repoPath, ["show", "--name-only", "--format=", f.sha]).catch(() => "")).split("\n").filter(Boolean);
-      if (touched.some(c.scope.match)) features.push({ id: f.id, title: f.title.slice(0, 120) });
+      if (touched.some(match)) features.push({ id: f.id, title: f.title.slice(0, 120) });
     }
-    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, changes: files.length, features });
+    return features;
   }
-  return { base, steps: steps.slice(0, 10), ...(nativeHint ? { nativeHint } : {}) };
 }
