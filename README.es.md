@@ -506,6 +506,12 @@ una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los 
   - Solo lo apunta el runner de un admin, o un admin desde la app («Ya lo desplegué»); nadie lo edita ni lo borra.
 - En la pestaña OTA avisa si hay pasos pendientes que van antes; en la ficha de una tarea mergeada, por dónde le falta salir.
 - Si la OTA trae cambios que parecen nativos (config de Expo, dependencias, `ios/`, `android/`), lo avisa: quizá toca una build.
+- **Build pendiente**: por cada plataforma con una build para testers hecha desde Backcode, compara su commit con la rama
+  principal. Si desde entonces hay cambios nativos (`ios/` solo para iOS, `android/` solo para Android; para las dos
+  `app.json`/`app.config.*`, `eas.json`, `plugins/`, `modules/` y las dependencias nativas del `package.json` de la app:
+  `expo` —el SDK—, `expo-*` y las de React Native), la tarjeta no dice «Todo desplegado»: enseña «Build iOS/Android» con
+  los ficheros y un botón a la pestaña Build, y avisa de que la OTA no basta (también en la pestaña OTA). Sin build
+  registrada de una plataforma no sabe nada de ella y no la enseña. Las builds no entran en «Desplegarlo todo».
 
 ### Instalar en mi móvil
 Pestaña **Mi móvil** de la pantalla de publicar (en apps Expo, si el ordenador de tu runner tiene Xcode o adb). Es la vía más rápida
