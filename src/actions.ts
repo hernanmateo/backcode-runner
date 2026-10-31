@@ -13,7 +13,7 @@ import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
-import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markDeployedTasks } from "./deploy-tasks.js";
+import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
@@ -22,6 +22,8 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
+  /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
+  id?: string;
   type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
@@ -133,7 +135,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   }
   const done =
     action.type === "build"
-      ? await withTasks(cfg, store, "build", await publishBuild(cfg, host, action))
+      ? await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)))
       : action.type === "deploy"
         ? await withTasks(cfg, store, `deploy:${action.target ?? ""}`, await runDeploy(cfg, host, action.target ?? ""))
         : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true);
@@ -164,6 +166,26 @@ async function withTasks(cfg: RunnerConfig, store: Store, key: string, done: { o
     features = [...(features ?? []), ...marked.filter((m) => !features?.some((f) => f.id === m.id))].slice(0, MAX_DEPLOYED_TASKS);
   }
   return features ? { ...done, result: { ...done.result, features } } : done;
+}
+
+/**
+ * Tras una build para testers hecha bien: apunta en cada tarea que entró en ella (por plataforma, frente a la última build
+ * hecha bien de esa plataforma) la versión, la runtimeVersion y la acción. Si falla, la build sigue dándose por buena.
+ */
+async function withBuiltTasks(cfg: RunnerConfig, store: Store, action: Action, done: { ok: boolean; result: ActionResult }): Promise<{ ok: boolean; result: ActionResult }> {
+  const sha = done.result.sha;
+  const platforms = (["ios", "android"] as const).filter((p) => action.platforms?.includes(p));
+  if (!done.ok || !sha || !action.id || !platforms.length) return done;
+  try {
+    const last = await store.lastDeploys();
+    const previous: Partial<Record<(typeof platforms)[number], string>> = {};
+    for (const p of platforms) previous[p] = last.get(`build:${p}`);
+    const build = { version: action.version ?? "", runtimeVersion: action.runtimeVersion ?? "", actionId: action.id };
+    await markBuiltTasks(store, platforms, build, sha, previous, (a, c) => isAncestor(cfg.repoPath, a, c));
+  } catch {
+    // sin marcar: la build ya salió
+  }
+  return done;
 }
 
 /** Pone al día tu copia local de la rama base (solo si es seguro: ver syncLocalBase) e instala si cambiaron dependencias. */

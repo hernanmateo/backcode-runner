@@ -1,6 +1,7 @@
 import type { RunnerConfig } from "./config.js";
 import { lastCliPublish } from "./ota-watch.js";
 import { type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./git.js";
+import { includedTasks } from "./deploy-tasks.js";
 import { BUILD_PLATFORMS, type BuildPlatform, nativeDependencyChanges, nativeFilesByPlatform } from "./native-changes.js";
 import type { Store } from "./store.js";
 
@@ -35,6 +36,8 @@ export interface DeployPlan {
    * Backcode (una OTA no los lleva). Sin build registrada de una plataforma no se sabe y no sale.
    */
   builds?: BuildStep[];
+  /** Builds para testers (app de Expo con perfil production): por plataforma, tareas mergeadas desde su última build. */
+  buildTasks?: PlanBuild[];
 }
 
 export interface BuildStep {
@@ -45,6 +48,39 @@ export interface BuildStep {
   changes: number;
   files: string[];
   features?: { id: string; title: string }[];
+}
+
+/** Tareas pendientes de build de una plataforma. */
+export interface PlanBuild {
+  platform: "ios" | "android";
+  /** Commit de la última build hecha bien de esa plataforma; sin él, nunca se hizo desde Backcode y no se sabe qué falta. */
+  lastSha?: string;
+  /** Cuántas tareas faltan (features va recortada a MAX_PLAN_BUILD_TASKS). */
+  count?: number;
+  features?: { id: string; title: string }[];
+}
+
+/** Como mucho estas tareas por plataforma en el plan (el documento del runner no debe crecer sin límite). */
+export const MAX_PLAN_BUILD_TASKS = 30;
+
+/** Tareas mergeadas que van en `base` y no en la última build de cada plataforma (las mismas que entrarían en la siguiente). */
+export async function pendingBuilds(
+  merged: { id: string; title: string; sha: string }[],
+  base: string,
+  last: Map<string, string>,
+  isAncestor: (ancestor: string, commit: string) => Promise<boolean>,
+): Promise<PlanBuild[]> {
+  const out: PlanBuild[] = [];
+  for (const platform of ["ios", "android"] as const) {
+    const lastSha = last.get(`build:${platform}`);
+    if (!lastSha) {
+      out.push({ platform });
+      continue;
+    }
+    const features = await includedTasks(merged, base, lastSha, isAncestor);
+    out.push({ platform, lastSha, count: features.length, features: features.slice(0, MAX_PLAN_BUILD_TASKS) });
+  }
+  return out;
 }
 
 interface Scope {
@@ -118,7 +154,9 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
     const native = new Set(files);
     builds.push({ platform, lastSha, changes: files.length, files: files.slice(0, 5), features: await bringing(lastSha, (f) => native.has(f)) });
   }
-  return { base, steps: steps.slice(0, 10), ...(nativeHint ? { nativeHint } : {}), ...(builds.length ? { builds } : {}) };
+  // Tareas pendientes de build: las mergeadas desde la última build hecha bien de cada plataforma.
+  const buildTasks = app?.buildProfiles.includes("production") ? await pendingBuilds(merged, base, last, (a, c) => isAncestor(cfg.repoPath, a, c)) : [];
+  return { base, steps: steps.slice(0, 10), ...(nativeHint ? { nativeHint } : {}), ...(builds.length ? { builds } : {}), ...(buildTasks.length ? { buildTasks } : {}) };
 
   /** Qué tareas lo traen: las mergeadas cuyo commit está entre el último despliegue y la base y tocan esos ficheros. */
   async function bringing(lastSha: string, match: (file: string) => boolean): Promise<{ id: string; title: string }[]> {

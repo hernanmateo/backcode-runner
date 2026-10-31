@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { channelOfTarget, includedTasks, MAX_DEPLOYED_TASKS, markDeployedTasks } from "../src/deploy-tasks.js";
+import { channelOfTarget, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "../src/deploy-tasks.js";
+import { pendingBuilds } from "../src/pending.js";
 
 // Historia lineal a → b → c → d: un commit es antecesor de otro si va antes (o es el mismo).
 const ORDER = ["a", "b", "c", "d"];
@@ -83,4 +84,42 @@ test("si no se puede marcar (no es admin) o falla la lectura, el despliegue sigu
   assert.equal((await markDeployedTasks(failing, "production", "a", isAncestor)).length, 1);
   const unreadable = { mergedNotDeployed: async () => Promise.reject(new Error("offline")), markDeployed: async () => undefined };
   assert.deepEqual(await markDeployedTasks(unreadable, "production", "d", isAncestor), []);
+});
+
+test("build: marca por plataforma las tareas nuevas desde la última build de cada una, sin repetir las ya marcadas", async () => {
+  const calls: { id: string; platforms: string[]; actionId: string }[] = [];
+  const store = {
+    mergedFeatures: async () => [
+      { ...merged[0], builds: ["ios", "android"] },
+      { ...merged[1], builds: ["ios"] },
+      { ...merged[2], builds: [] },
+      { ...merged[3], builds: [] },
+    ],
+    markBuilt: async (id: string, platforms: string[], build: { actionId: string }) => void calls.push({ id, platforms, actionId: build.actionId }),
+  };
+  const marks = await markBuiltTasks(store, ["ios", "android"], { version: "1.0.17", runtimeVersion: "1.0.17", actionId: "act1" }, "c", { ios: "b" }, isAncestor);
+  // iOS: desde b solo entra t3; Android (sin build anterior): t2 y t3 (t1 ya estaba en una de Android); t4 no va en c.
+  assert.deepEqual(Object.fromEntries(marks), { t3: ["ios", "android"], t2: ["android"] });
+  assert.deepEqual(calls, [
+    { id: "t3", platforms: ["ios", "android"], actionId: "act1" },
+    { id: "t2", platforms: ["android"], actionId: "act1" },
+  ]);
+});
+
+test("build repetida: no vuelve a marcar las tareas que ya tienen build de esa plataforma", async () => {
+  const calls: string[] = [];
+  const store = {
+    mergedFeatures: async () => merged.map((f) => ({ ...f, builds: ["ios"] })),
+    markBuilt: async (id: string) => void calls.push(id),
+  };
+  assert.equal((await markBuiltTasks(store, ["ios"], { version: "1.0.17", runtimeVersion: "1", actionId: "a2" }, "d", {}, isAncestor)).size, 0);
+  assert.deepEqual(calls, []);
+});
+
+test("pendientes de build: por plataforma, las mergeadas desde su última build; sin build, no se sabe cuáles", async () => {
+  const builds = await pendingBuilds(merged, "d", new Map([["build:ios", "b"], ["build", "b"]]), isAncestor);
+  assert.deepEqual(builds, [
+    { platform: "ios", lastSha: "b", count: 2, features: [{ id: "t3", title: "Tres" }, { id: "t4", title: "Cuatro" }] },
+    { platform: "android" },
+  ]);
 });

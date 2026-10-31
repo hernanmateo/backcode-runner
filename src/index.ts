@@ -732,7 +732,7 @@ async function main(): Promise<void> {
       // Un destino añadido (o quitado) en la rama principal sale en la app sin reiniciar el runner.
       if (found) await store.saveDeploys(deployCapabilities(found));
       const targets = found ?? [];
-      if (!targets.length && !app?.ota) return;
+      if (!targets.length && !app?.ota && !app?.buildProfiles.includes("production")) return;
       // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.
       const fromHook = await flushDeployQueue({ projectId: cfg.projectId, repoPath: cfg.repoPath, remote: cfg.remote, baseBranch: cfg.baseBranch, targets, log: (step, sha, via) => store.logDeploy(step, sha, via) }).catch((err: Error) => (console.warn(`[deploy] ${err.message}`), 0));
       if (fromHook) console.log(`[deploy] ${t("deployed.fromHook", { n: fromHook })}`);
@@ -939,7 +939,7 @@ async function main(): Promise<void> {
               ? fixConflicts(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""))
               : action.type === "fixChecks"
                 ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, knowledgeAbort.signal, String(action.featureId ?? ""))
-                : runAction(cfg, store, prHost, action as unknown as Action);
+                : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
         let thrown: Error | undefined;
         const { ok, result } = await work
           .catch((err): { ok: boolean; result: ActionResult } => {
