@@ -92,7 +92,7 @@ export async function fixConflicts(cfg: RunnerConfig, store: Store, host: PrHost
  * Si este ordenador tiene el worktree de la tarea en esa rama y sin cambios, se pone al día con lo que se acaba de subir:
  * así, al retomarla, no parte de la rama de antes (y su push no choca con el merge).
  */
-async function followLocalWorktree(cfg: RunnerConfig, featureId: string, branch: string): Promise<void> {
+export async function followLocalWorktree(cfg: RunnerConfig, featureId: string, branch: string): Promise<void> {
   const wt = join(cfg.worktreesDir, featureId);
   if (!existsSync(wt)) return;
   const current = await git(wt, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "");

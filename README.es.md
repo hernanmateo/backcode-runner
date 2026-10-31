@@ -404,6 +404,21 @@ Si pulsas Mergear y GitHub/Bitbucket rechaza el PR por conflictos con la rama pr
 toca lo mismo), el runner no lo da por fallo de Backcode: marca en la tarea los ficheros en conflicto al momento (sin esperar a
 la comprobación periódica) y la app explica que hay que pulsar **Arreglar con Claude** y volver a mergear.
 
+#### Checks en rojo: devolver a Claude Code
+
+Si el merge se bloquea porque los checks del PR están en rojo, el runner guarda en el resultado el final del log de los jobs que
+fallan (en GitHub, `gh run view --log-failed`; sin colores, fechas, ruido de los tests, líneas repetidas ni líneas que parezcan
+secretos, hasta 3000 caracteres) y la tarjeta de merge lo enseña con **Devolver a Claude Code**:
+
+- Si la ejecutó tu runner y eres quien la aceptó, Claude retoma la misma sesión con el error y el log en el hilo, lo arregla,
+  pasa los tests y actualiza el mismo PR.
+- Si no (hecha con Claude Code fuera de Backcode, o la ejecuta otro), un admin lo pide a su runner (acción `fixChecks`): saca la
+  rama del PR en una copia aparte, Claude lo arregla con el log y ejecuta los tests en el sandbox (como en una tarea, con las
+  mismas rutas protegidas: no puede tocar la CI), y el runner revisa secretos, commitea y sube sin forzar.
+
+Cuando la CI vuelva a estar en verde, se mergea como siempre. En Bitbucket todavía no se lee el log: Claude recibe solo qué checks
+fallan.
+
 ### Conversación con tu runner
 
 El botón redondo junto a *Proponer una idea* abre un chat libre con tu runner, sin tarea (`projects/{pid}/chats`, solo lo ves
