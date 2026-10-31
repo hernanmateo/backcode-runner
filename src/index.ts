@@ -30,7 +30,7 @@ import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
-import { runChat, type ChatTaskInput } from "./chat.js";
+import { runChat, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
@@ -1010,8 +1010,11 @@ async function main(): Promise<void> {
         // create_task: la tarea la crea y acepta el servidor (createChatTask) y entra en la cola de este runner (myQueue).
         const createTask = async (input: ChatTaskInput) =>
           (await httpsCallable<Record<string, unknown>, { featureId: string; branch: string }>(fns, "createChatTask")({ projectId: cfg.projectId, chatId: id, ...input, lang: lang() })).data;
+        // message_task: el servidor (messageChatTask) comprueba que la tarea es mía y de esta conversación y decide según su estado.
+        const messageTask = async ({ taskId, ...rest }: ChatTaskMessage) =>
+          (await httpsCallable<Record<string, unknown>, { mode: "update" | "message" | "resume" }>(fns, "messageChatTask")({ projectId: cfg.projectId, chatId: id, featureId: taskId, ...rest, lang: lang() })).data;
         const listTasks = () => store.chatTasks(id);
-        await runChat(cfg, store, id, chat, { env: agentEnv(), createTask, listTasks, isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
+        await runChat(cfg, store, id, chat, { env: agentEnv(), createTask, messageTask, listTasks, isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
           .catch((err: Error) => console.warn(`[chat] ${err.message}`))
           .finally(release);
       }

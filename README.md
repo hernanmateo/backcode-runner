@@ -175,7 +175,7 @@ check if it fails (signing in to wrangler, supabase, firebase…). The runner re
     </td>
     <td valign="top">
       <h4>Conversations, not one-shots</h4>
-      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back.
+      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back. From the chat with your runner, Claude can launch tasks and correct them later: it rewrites the brief of a queued task, or sends your correction to a running or finished one, which picks it up in the same session and updates its PR.
     </td>
   </tr>
   <tr>
