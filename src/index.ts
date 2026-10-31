@@ -29,6 +29,7 @@ import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
 import { runChat } from "./chat.js";
+import { detectCi } from "./ci.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
@@ -711,11 +712,18 @@ async function main(): Promise<void> {
   // tras cada acción (un despliegue o un merge lo cambian).
   let planBusy = false;
   const rulesChecked = new Map<string, number>();
+  let ciChecked = "";
   const refreshPlan = async () => {
     if (planBusy) return;
     planBusy = true;
     try {
       const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+      // CI de la rama base: una vez por commit. Sin CI no se da por sabido (los checks de un push tardan en aparecer).
+      if (base !== ciChecked) {
+        const ci = await detectCi(cfg.repoPath, base, prHost);
+        if (ci !== null) await store.saveCi(ci);
+        if (ci) ciChecked = base;
+      }
       const [found, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => null), findExpoApp(cfg.repoPath, base).catch(() => null)]);
       // Un destino añadido (o quitado) en la rama principal sale en la app sin reiniciar el runner.
       if (found) await store.saveDeploys(deployCapabilities(found));

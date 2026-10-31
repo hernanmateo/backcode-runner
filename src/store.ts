@@ -229,7 +229,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; chat?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; chat?: boolean; ci?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -316,6 +316,13 @@ export class Store {
     if (JSON.stringify(deploys) === JSON.stringify(this.capabilities.deploys)) return;
     this.capabilities = { ...this.capabilities, deploys: JSON.parse(JSON.stringify(deploys)) as this["capabilities"]["deploys"] };
     await updateDoc(doc(this.project(), "runners", this.uid), { "capabilities.deploys": this.capabilities.deploys }).catch(() => undefined);
+  }
+
+  /** Si la rama base tiene CI (ver ci.ts): se guarda solo si cambia (también va en cada renovación del lock). */
+  async saveCi(ci: boolean): Promise<void> {
+    if (this.capabilities.ci === ci) return;
+    this.capabilities = { ...this.capabilities, ci };
+    await updateDoc(doc(this.project(), "runners", this.uid), { "capabilities.ci": ci }).catch(() => undefined);
   }
 
   /** Guarda el plan ya (sin esperar a la próxima renovación del lock). */

@@ -651,7 +651,7 @@ El texto de las tareas lo escriben otros miembros del grupo: se trata como **dat
 | Red | Los comandos solo llegan a `BACKCODE_ALLOWED_DOMAINS`. No hay WebFetch ni WebSearch. |
 | Permisos | En modo `dontAsk`, lo que no está permitido se deniega. Además, un hook bloquea `git push`, `gh`, `curl`, `ssh`, `sudo`… |
 | Repo | No se cargan los settings ni los hooks de `.claude/` del repo. CI, `.claude/`, `.mcp.json`, `CLAUDE.md`, `.env*`, claves y adjuntos están protegidos. |
-| Publicación | El push y el PR los hace el runner, sin hooks de git, y el PR siempre en **borrador**. El merge y el OTA solo ocurren si un admin los pide desde la app y los checks están en verde. |
+| Publicación | El push y el PR los hace el runner, sin hooks de git, y el PR siempre en **borrador**. El merge y el OTA solo ocurren si un admin los pide desde la app y los checks están en verde. Si el repo no tiene CI (ni fichero de CI ni checks en la rama base), no hay checks: el runner lo anuncia y la app avisa de que se mergea y despliega sin comprobar nada. |
 
 Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa cada PR como si viniera de un desconocido.
 
