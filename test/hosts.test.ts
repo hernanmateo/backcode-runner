@@ -55,3 +55,18 @@ test("mergeUnlessConflict: un PR con conflictos devuelve null (no lanza) y el re
   assert.deepEqual(await mergeUnlessConflict(host(async () => ({ sha: "abc" })), "https://github.com/o/r/pull/1"), { sha: "abc" });
   await assert.rejects(mergeUnlessConflict(host(async () => { throw graphql; }), "https://github.com/o/r/pull/1"), graphql);
 });
+
+test("requireGreen: sin checks deja pasar, salvo si el proyecto los exige", async () => {
+  const { requireGreen, setRequireChecks } = await import("../src/actions.js");
+  const none = { state: "none" as const, pending: [] };
+  assert.equal(requireGreen(none, "PR"), null);
+  assert.equal(requireGreen({ state: "green", pending: [] }, "PR"), null);
+  assert.ok(requireGreen({ state: "failing", pending: ["ci: fail"] }, "PR")?.error);
+  setRequireChecks(true);
+  try {
+    assert.ok(requireGreen(none, "PR")?.error);
+    assert.equal(requireGreen({ state: "green", pending: [] }, "PR"), null);
+  } finally {
+    setRequireChecks(false);
+  }
+});

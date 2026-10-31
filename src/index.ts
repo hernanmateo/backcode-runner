@@ -6,6 +6,7 @@ import { exitSupervised, RESTART_CODE, SUPERVISED, UPDATE_EVERY_MS, updateIfAvai
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { onSnapshot } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
@@ -16,7 +17,7 @@ import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSessi
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
-import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
@@ -29,7 +30,7 @@ import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
-import { runChat } from "./chat.js";
+import { runChat, type ChatTaskInput } from "./chat.js";
 import { detectCi } from "./ci.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
@@ -833,6 +834,7 @@ async function main(): Promise<void> {
       console.warn(`[guard] ${(err as Error).message}`);
     }
   });
+  const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -1005,7 +1007,11 @@ async function main(): Promise<void> {
         if (!chat) continue;
         const release = awake.hold();
         const project = await store.projectInfo().catch(() => ({ name: "", context: "" }));
-        await runChat(cfg, store, id, chat, { env: agentEnv(), isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
+        // create_task: la tarea la crea y acepta el servidor (createChatTask) y entra en la cola de este runner (myQueue).
+        const createTask = async (input: ChatTaskInput) =>
+          (await httpsCallable<Record<string, unknown>, { featureId: string; branch: string }>(fns, "createChatTask")({ projectId: cfg.projectId, chatId: id, ...input, lang: lang() })).data;
+        const listTasks = () => store.chatTasks(id);
+        await runChat(cfg, store, id, chat, { env: agentEnv(), createTask, listTasks, isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
           .catch((err: Error) => console.warn(`[chat] ${err.message}`))
           .finally(release);
       }
@@ -1100,6 +1106,7 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
+    stopRequireChecks();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
@@ -1142,6 +1149,7 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
+    stopRequireChecks();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
