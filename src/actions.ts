@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
+import { failingLog } from "./check-logs.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
@@ -227,8 +228,10 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   if (pr?.state === "closed") {
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl } };
   }
-  const blocked = requireGreen(await host.prChecks(prUrl), "PR");
-  if (blocked) return { ok: false, result: blocked };
+  const checks = await host.prChecks(prUrl);
+  const blocked = requireGreen(checks, "PR");
+  // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
+  if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked };
   const merged = await mergeUnlessConflict(host, prUrl);
   if (!merged) {
     // Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca

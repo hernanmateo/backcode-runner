@@ -20,6 +20,8 @@ export interface PrHost {
   openOrUpdatePr(o: { cwd: string; branch: string; base: string; title: string; body: string }): Promise<string>;
   prChecks(prUrl: string): Promise<Checks>;
   commitChecks(sha: string): Promise<Checks>;
+  /** Log en bruto de los checks que fallan del PR (GitHub Actions); ausente si el host no lo da. Ver check-logs.ts. */
+  failedLog?(prUrl: string): Promise<string>;
   /** Saca el PR de borrador, lo mergea con squash y borra la rama. Devuelve el commit resultante si se conoce. */
   merge(prUrl: string): Promise<{ sha?: string }>;
   /** Estado del PR (p. ej. para enterarse de un merge hecho a mano en GitHub/Bitbucket) y su commit de merge. */
@@ -99,6 +101,14 @@ export function githubHost(repoPath: string): PrHost {
       const out = await gh(["pr", "checks", prUrl, "--json", "name,bucket"]).catch((e) => (/no checks/i.test(String(e?.stderr ?? e)) ? "[]" : Promise.reject(e)));
       const rows = JSON.parse(out || "[]") as { name: string; bucket: string }[];
       return summarize(rows.filter((r) => r.bucket !== "skipping").map((r) => ({ name: r.name, state: r.bucket === "pass" ? "ok" : r.bucket === "pending" ? "pending" : "fail" })));
+    },
+    async failedLog(prUrl) {
+      // Los checks de GitHub Actions enlazan a .../actions/runs/<run>/job/<job>: el log de los jobs fallidos de cada run
+      // (como mucho 3, los demás suelen repetir el mismo error).
+      const rows = JSON.parse(await gh(["pr", "checks", prUrl, "--json", "bucket,link"]).catch(() => "[]") || "[]") as { bucket: string; link?: string }[];
+      const runs = [...new Set(rows.filter((r) => r.bucket === "fail").map((r) => /\/actions\/runs\/(\d+)/.exec(r.link ?? "")?.[1]).filter((id): id is string => !!id))].slice(0, 3);
+      const logs = await Promise.all(runs.map((id) => gh(["run", "view", id, "--log-failed"]).catch(() => "")));
+      return logs.filter(Boolean).join("\n");
     },
     async commitChecks(sha) {
       const repo = await gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);

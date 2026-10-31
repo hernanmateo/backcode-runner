@@ -23,6 +23,7 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
+import { fixChecks } from "./fix-checks.js";
 import { computePlan } from "./pending.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
@@ -701,6 +702,7 @@ async function main(): Promise<void> {
     refine: true,
     knowledge: true,
     fixConflicts: true,
+    fixChecks: true,
     chat: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
@@ -925,13 +927,16 @@ async function main(): Promise<void> {
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
         const release = awake.hold();
         // «Actualizar ahora» el mapa del código: aquí mismo (necesita el entorno de Claude y se cancela al cerrar el runner).
-        // Igual «Arreglar con Claude» los conflictos de un PR: Claude resuelve, el runner commitea y sube.
+        // Igual «Arreglar con Claude» los conflictos de un PR y «Devolver a Claude Code» sus checks en rojo: Claude
+        // arregla, el runner commitea y sube.
         const work =
           action.type === "knowledge"
             ? refreshKnowledge(cfg, store, agentEnv(), knowledgeAbort.signal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
             : action.type === "fixConflicts"
               ? fixConflicts(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""))
-              : runAction(cfg, store, prHost, action as unknown as Action);
+              : action.type === "fixChecks"
+                ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, knowledgeAbort.signal, String(action.featureId ?? ""))
+                : runAction(cfg, store, prHost, action as unknown as Action);
         let thrown: Error | undefined;
         const { ok, result } = await work
           .catch((err): { ok: boolean; result: ActionResult } => {
