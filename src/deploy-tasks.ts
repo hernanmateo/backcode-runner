@@ -70,3 +70,36 @@ export async function markDeployedTasks(
   }
   return out;
 }
+
+/** Build para testers en la que entra una tarea (se guarda en la tarea, en `builds.<plataforma>`). */
+export interface TaskBuild {
+  version: string;
+  runtimeVersion: string;
+  actionId: string;
+}
+
+export type BuildPlatform = "ios" | "android";
+
+/**
+ * Tras una build hecha bien: marca en cada tarea que entró en ella (por plataforma, las mergeadas que van en `commit` y no
+ * iban en la última build hecha bien de esa plataforma: `previous`) la build en la que entró. Una tarea que ya tenía
+ * build de esa plataforma no se toca (se queda la primera: repetir la build no duplica ni pisa nada). Devuelve, por
+ * tarea, las plataformas marcadas.
+ */
+export async function markBuiltTasks(
+  store: Pick<Store, "mergedFeatures" | "markBuilt">,
+  platforms: BuildPlatform[],
+  build: TaskBuild,
+  commit: string,
+  previous: Partial<Record<BuildPlatform, string>>,
+  isAncestor: (ancestor: string, commit: string) => Promise<boolean>,
+): Promise<Map<string, BuildPlatform[]>> {
+  const merged = await store.mergedFeatures();
+  const marks = new Map<string, BuildPlatform[]>();
+  for (const platform of platforms) {
+    const pending = merged.filter((f) => !f.builds?.includes(platform));
+    for (const f of await includedTasks(pending, commit, previous[platform], isAncestor)) marks.set(f.id, [...(marks.get(f.id) ?? []), platform]);
+  }
+  for (const [id, list] of marks) await store.markBuilt(id, list, build).catch(() => undefined); // solo el runner de un admin puede (reglas)
+  return marks;
+}

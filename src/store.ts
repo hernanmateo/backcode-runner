@@ -33,6 +33,7 @@ import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
 import type { DeployPlan } from "./pending.js";
 import type { DeployVia } from "./deploy-log.js";
+import type { TaskBuild } from "./deploy-tasks.js";
 import type { OpenPr } from "./hosts.js";
 import type { DiagnosticPayload } from "./diagnostics.js";
 
@@ -650,7 +651,7 @@ export class Store {
 
   /**
    * Commit del último despliegue hecho de cada paso (`deploy:<destino>`, `ota:<canal>`), de las acciones terminadas bien
-   * (también los pasos de «Desplegarlo todo») y `build` (builds para testers). Para «Pendiente de desplegar» y para saber
+   * (también los pasos de «Desplegarlo todo») y `build` (builds para testers; también por plataforma, `build:<plataforma>`). Para «Pendiente de desplegar» y para saber
    * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
@@ -667,7 +668,8 @@ export class Store {
       else if (type === "ota") note(`ota:${String(d.get("channel"))}`, at, d.get("result.sha"));
       else if (type === "build") {
         note("build", at, d.get("result.sha"));
-        // Por plataforma: para saber si el binario de testers de cada una tiene los cambios nativos de la rama base.
+        // Por plataforma: para saber si el binario de testers de cada una tiene los cambios nativos de la rama base y qué
+        // tareas faltan por entrar en una build de cada una.
         for (const p of (d.get("platforms") ?? []) as unknown[]) if (p === "ios" || p === "android") note(`build:${p}`, at, d.get("result.sha"));
       }
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
@@ -677,9 +679,17 @@ export class Store {
     return new Map([...best].map(([id, v]) => [id, v.sha]));
   }
 
-  /** Tareas mergeadas (con el commit del merge y su título). */
-  async mergedFeatures(): Promise<{ id: string; title: string; sha: string }[]> {
-    return (await this.doneFeatures.get()).filter((d) => d.get("merged.sha")).map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")) }));
+  /** Tareas mergeadas (con el commit del merge, su título y las plataformas de las builds en las que ya entró). */
+  async mergedFeatures(): Promise<{ id: string; title: string; sha: string; builds: string[] }[]> {
+    return (await this.doneFeatures.get())
+      .filter((d) => d.get("merged.sha"))
+      .map((d) => ({ id: d.id, title: String(d.get("title") ?? ""), sha: String(d.get("merged.sha")), builds: Object.keys((d.get("builds") ?? {}) as object) }));
+  }
+
+  /** Apunta en la tarea la build para testers en la que entró, por plataforma (solo el runner de un admin: reglas). */
+  async markBuilt(featureId: string, platforms: string[], build: TaskBuild): Promise<void> {
+    const entry = { ...build, at: serverTimestamp(), by: this.uid };
+    await updateDoc(this.feature(featureId), Object.fromEntries(platforms.map((p) => [`builds.${p}`, entry])));
   }
 
   /** Apunta un despliegue hecho fuera de la app (solo el runner de un admin: las reglas lo comprueban). */

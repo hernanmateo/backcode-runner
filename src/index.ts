@@ -17,6 +17,7 @@ import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSessi
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
+import { stopWaitingForChecks } from "./wait-checks.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
@@ -30,7 +31,7 @@ import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
-import { runChat, type ChatTaskInput } from "./chat.js";
+import { runChat, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
 import { machineInfo } from "./machine.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
@@ -731,7 +732,7 @@ async function main(): Promise<void> {
       // Un destino añadido (o quitado) en la rama principal sale en la app sin reiniciar el runner.
       if (found) await store.saveDeploys(deployCapabilities(found));
       const targets = found ?? [];
-      if (!targets.length && !app?.ota) return;
+      if (!targets.length && !app?.ota && !app?.buildProfiles.includes("production")) return;
       // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.
       const fromHook = await flushDeployQueue({ projectId: cfg.projectId, repoPath: cfg.repoPath, remote: cfg.remote, baseBranch: cfg.baseBranch, targets, log: (step, sha, via) => store.logDeploy(step, sha, via) }).catch((err: Error) => (console.warn(`[deploy] ${err.message}`), 0));
       if (fromHook) console.log(`[deploy] ${t("deployed.fromHook", { n: fromHook })}`);
@@ -938,7 +939,7 @@ async function main(): Promise<void> {
               ? fixConflicts(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""))
               : action.type === "fixChecks"
                 ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, knowledgeAbort.signal, String(action.featureId ?? ""))
-                : runAction(cfg, store, prHost, action as unknown as Action);
+                : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
         let thrown: Error | undefined;
         const { ok, result } = await work
           .catch((err): { ok: boolean; result: ActionResult } => {
@@ -1010,8 +1011,11 @@ async function main(): Promise<void> {
         // create_task: la tarea la crea y acepta el servidor (createChatTask) y entra en la cola de este runner (myQueue).
         const createTask = async (input: ChatTaskInput) =>
           (await httpsCallable<Record<string, unknown>, { featureId: string; branch: string }>(fns, "createChatTask")({ projectId: cfg.projectId, chatId: id, ...input, lang: lang() })).data;
+        // message_task: el servidor (messageChatTask) comprueba que la tarea es mía y de esta conversación y decide según su estado.
+        const messageTask = async ({ taskId, ...rest }: ChatTaskMessage) =>
+          (await httpsCallable<Record<string, unknown>, { mode: "update" | "message" | "resume" }>(fns, "messageChatTask")({ projectId: cfg.projectId, chatId: id, featureId: taskId, ...rest, lang: lang() })).data;
         const listTasks = () => store.chatTasks(id);
-        await runChat(cfg, store, id, chat, { env: agentEnv(), createTask, listTasks, isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
+        await runChat(cfg, store, id, chat, { env: agentEnv(), createTask, messageTask, listTasks, isProtected, denyRead: DENY_READ, describeTool, project }, chatAbort.signal)
           .catch((err: Error) => console.warn(`[chat] ${err.message}`))
           .finally(release);
       }
@@ -1098,6 +1102,7 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     console.log(`[backcode] ${t("main.stopping")}`);
+    stopWaitingForChecks();
     unsubscribe();
     stopLang();
     unsubscribeActions();
@@ -1139,6 +1144,8 @@ async function main(): Promise<void> {
     if (restarting || stopping) return;
     restarting = true;
     console.log(`[backcode] ${t("update.waiting")}`);
+    // Una acción esperando a la CI no retrasa el reinicio hasta 15 minutos: falla con los checks en curso.
+    stopWaitingForChecks();
     while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();

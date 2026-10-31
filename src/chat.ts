@@ -21,6 +21,8 @@ import type { RunnerChat, Store } from "./store.js";
 // Para trabajo completo («haz X»), create_task crea una tarea normal del tablero a su nombre (callable createChatTask, que
 // la acepta como acceptFeature) y la ejecuta este runner por su cola de siempre (rama propia, PR en borrador, mismos
 // límites que cualquier tarea); task_status dice cómo van. El chat no espera a que acaben: puede lanzar varias.
+// message_task corrige una de esas tareas (callable messageChatTask): en cola cambia el encargo; si no, el texto va a su
+// hilo como un mensaje de la persona (marcado «desde el chat») y el runner se lo pasa a su sesión o la retoma.
 
 /** Vueltas seguidas como mucho por cada recogida (mensajes que llegan mientras responde). */
 const MAX_ROUNDS = 10;
@@ -42,6 +44,7 @@ export function chatBranchOk(branch: string, baseBranch: string): boolean {
 export const CHAT_ALLOWED_TOOLS = [
   "Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite",
   "mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__task_status",
+  "mcp__backcode__message_task",
 ];
 
 /** Lo que pide Claude con create_task, ya limpio (los límites los vuelve a comprobar createChatTask). */
@@ -71,6 +74,24 @@ export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCr
   return { title, prompt, acceptanceCriteria, ...(raw.planFirst ? { planFirst: true } : {}) };
 }
 
+/** Lo que pide Claude con message_task, ya limpio (quién, estado y límites los decide messageChatTask). */
+export interface ChatTaskMessage {
+  taskId: string;
+  text: string;
+  title?: string;
+  acceptanceCriteria?: string[];
+}
+
+/** Recorta y valida la entrada de message_task: null si el id no es válido o no hay texto. */
+export function chatTaskMessageInput(raw: { taskId: string; text: string; title?: string; acceptanceCriteria?: string[] }): ChatTaskMessage | null {
+  const taskId = raw.taskId.trim();
+  const text = raw.text.trim().slice(0, 8000);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(taskId) || !text) return null;
+  const title = raw.title?.replaceAll(/\s+/g, " ").trim().slice(0, 200);
+  const acceptanceCriteria = raw.acceptanceCriteria?.map((c) => c.trim().slice(0, 500)).filter(Boolean).slice(0, 20);
+  return { taskId, text, ...(title ? { title } : {}), ...(acceptanceCriteria ? { acceptanceCriteria } : {}) };
+}
+
 /** Las tareas de la conversación, una por línea (para Claude). */
 export function describeChatTasks(tasks: ChatTask[]): string {
   if (!tasks.length) return t("ch.noTasks");
@@ -84,6 +105,8 @@ export interface ChatDeps {
   env: Record<string, string>;
   /** Crea la tarea (createChatTask) y la deja en la cola de este runner. */
   createTask: (input: ChatTaskInput) => Promise<{ featureId: string; branch: string }>;
+  /** Corrige o amplía una tarea de esta conversación (messageChatTask): qué hizo el servidor según su estado. */
+  messageTask: (input: ChatTaskMessage) => Promise<{ mode: "update" | "message" | "resume" }>;
   /** Tareas lanzadas desde esta conversación. */
   listTasks: () => Promise<ChatTask[]>;
   isProtected: (rel: string) => boolean;
@@ -188,6 +211,28 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
             return reply(`${text} (id ${featureId})`);
           } catch (err) {
             return fail(t("ch.taskFailed", { error: String((err as Error).message ?? err).slice(0, 500) }));
+          }
+        },
+      ),
+      tool(
+        "message_task",
+        "Correct or extend a task created from this conversation (use the id from create_task or task_status) instead of creating another one. What happens depends on its status: queued and not started yet (execute) = the text REPLACES its prompt (so send the complete, self-contained updated prompt; title and acceptanceCriteria are replaced only if given); running = the text reaches its Claude Code session as a message from the member (at its next step or when the current turn ends, before the pull request is opened or updated); waiting or done = it goes to the task thread and the runner resumes the session to update the branch and pull request; failed = error, create another task. Messages are limited to 4000 characters.",
+        {
+          taskId: z.string().min(1).max(64),
+          text: z.string().min(1).max(8000),
+          title: z.string().min(1).max(200).optional(),
+          acceptanceCriteria: z.array(z.string().max(500)).max(20).optional(),
+        },
+        async (raw) => {
+          const input = chatTaskMessageInput(raw);
+          if (!input) return fail(t("ch.messageFailed", { error: "taskId/text" }));
+          try {
+            const { mode } = await deps.messageTask(input);
+            const text = t(mode === "update" ? "ch.taskUpdated" : mode === "resume" ? "ch.taskResumed" : "ch.taskMessaged", { id: input.taskId });
+            await store.postChatMessage(id, "tool", text);
+            return reply(text);
+          } catch (err) {
+            return fail(t("ch.messageFailed", { error: String((err as Error).message ?? err).slice(0, 500) }));
           }
         },
       ),

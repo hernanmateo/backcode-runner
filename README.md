@@ -138,7 +138,9 @@ For every task you accept, the runner:
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
 It also handles what an admin asks for from the app, always with your own credentials: merge a PR once checks are green,
-publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing, **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
+publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing (after a
+successful build, each task that went into it records the build per platform — version, runtimeVersion and action — and the
+**Build** tab lists the merged tasks still pending a build of each platform), **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
 cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready) — or a
 **development version** that loads the code instantly from your runner's Metro: the main branch, or any task with "Try on my
 phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
@@ -175,7 +177,7 @@ check if it fails (signing in to wrangler, supabase, firebase…). The runner re
     </td>
     <td valign="top">
       <h4>Conversations, not one-shots</h4>
-      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back.
+      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back. From the chat with your runner, Claude can launch tasks and correct them later: it rewrites the brief of a queued task, or sends your correction to a running or finished one, which picks it up in the same session and updates its PR.
     </td>
   </tr>
   <tr>
@@ -344,7 +346,7 @@ Task briefs are written by other members of your group, so the runner treats the
 | **Network** | Commands can only reach an allowlist (`registry.npmjs.org` by default). No WebFetch or WebSearch. |
 | **Tools** | `dontAsk` mode denies anything not explicitly allowed; a hook also blocks `git push`, `gh`, `curl`, `ssh`, `sudo`… |
 | **Repository** | The repo's `.claude/` settings and hooks are not loaded. CI, `.claude/`, `.mcp.json`, `CLAUDE.md`, `.env*` and keys are protected paths. |
-| **Publishing** | The runner, not Claude, pushes (without git hooks) and the PR is always a **draft**. Merges and OTAs only happen when an admin asks and checks are green. If the repo has no CI (no CI file and no checks on the base branch), there are no checks: the runner reports it and the app warns that it merges and deploys without checking anything. With **Require checks** (Edit project, Team plan), no checks (or no GitHub/Bitbucket to read them from) means the runner won't merge or deploy. |
+| **Publishing** | The runner, not Claude, pushes (without git hooks) and the PR is always a **draft**. Merges and OTAs only happen when an admin asks and checks are green; if they're still running, the runner checks again every 15 s for up to 15 minutes before giving up. If the repo has no CI (no CI file and no checks on the base branch), there are no checks: the runner reports it and the app warns that it merges and deploys without checking anything. With **Require checks** (Edit project, Team plan), no checks (or no GitHub/Bitbucket to read them from) means the runner won't merge or deploy. |
 | **Remote Control** | Only when you ask for it from the app: the runner pauses its turn and opens the same session with `claude --resume <session> --remote-control` in the worktree. That session runs with **your normal Claude Code permissions, outside the sandbox**. When you hand it back, the runner resumes the session in the sandbox and the usual checks (protected paths, secrets) apply before anything is published. While it's open there, the task says **In the Claude app**; if you finish it there and move it to “PR ready” by hand, the runner lets it go (your Claude session stays open) and links the open PR of its branch. |
 | **Panel** | Listens on `127.0.0.1` only, requires a per-user token and rejects foreign `Host`/`Origin` headers, so other users and websites can't use it. It never returns keys or tokens. |
 

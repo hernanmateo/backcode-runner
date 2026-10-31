@@ -8,11 +8,12 @@ import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
+import { waitForChecks } from "./wait-checks.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs } from "./ota.js";
-import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markDeployedTasks } from "./deploy-tasks.js";
+import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
@@ -21,6 +22,8 @@ import type { Store } from "./store.js";
 // decide Claude.
 
 export interface Action {
+  /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
+  id?: string;
   type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
@@ -98,10 +101,16 @@ export function requireGreen(checks: Checks, what: string): ActionResult | null 
   return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
 }
 
+/** Checks de `what` esperando a que termine la CI si aún está en curso (ver wait-checks.ts). */
+function checksWhenDone(read: () => Promise<Checks>, what: string): Promise<Checks> {
+  return waitForChecks(read, { onWait: () => console.log(`[action] ${t("act.waitingChecks", { what })}`) });
+}
+
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
 async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string): Promise<ActionResult | null> {
   if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
-  return requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
+  const what = `${cfg.baseBranch} (${commit.slice(0, 7)})`;
+  return requireGreen(await checksWhenDone(() => host.commitChecks(commit), what), what);
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
@@ -126,7 +135,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   }
   const done =
     action.type === "build"
-      ? await withTasks(cfg, store, "build", await publishBuild(cfg, host, action))
+      ? await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)))
       : action.type === "deploy"
         ? await withTasks(cfg, store, `deploy:${action.target ?? ""}`, await runDeploy(cfg, host, action.target ?? ""))
         : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true);
@@ -157,6 +166,26 @@ async function withTasks(cfg: RunnerConfig, store: Store, key: string, done: { o
     features = [...(features ?? []), ...marked.filter((m) => !features?.some((f) => f.id === m.id))].slice(0, MAX_DEPLOYED_TASKS);
   }
   return features ? { ...done, result: { ...done.result, features } } : done;
+}
+
+/**
+ * Tras una build para testers hecha bien: apunta en cada tarea que entró en ella (por plataforma, frente a la última build
+ * hecha bien de esa plataforma) la versión, la runtimeVersion y la acción. Si falla, la build sigue dándose por buena.
+ */
+async function withBuiltTasks(cfg: RunnerConfig, store: Store, action: Action, done: { ok: boolean; result: ActionResult }): Promise<{ ok: boolean; result: ActionResult }> {
+  const sha = done.result.sha;
+  const platforms = (["ios", "android"] as const).filter((p) => action.platforms?.includes(p));
+  if (!done.ok || !sha || !action.id || !platforms.length) return done;
+  try {
+    const last = await store.lastDeploys();
+    const previous: Partial<Record<(typeof platforms)[number], string>> = {};
+    for (const p of platforms) previous[p] = last.get(`build:${p}`);
+    const build = { version: action.version ?? "", runtimeVersion: action.runtimeVersion ?? "", actionId: action.id };
+    await markBuiltTasks(store, platforms, build, sha, previous, (a, c) => isAncestor(cfg.repoPath, a, c));
+  } catch {
+    // sin marcar: la build ya salió
+  }
+  return done;
 }
 
 /** Pone al día tu copia local de la rama base (solo si es seguro: ver syncLocalBase) e instala si cambiaron dependencias. */
@@ -209,7 +238,7 @@ async function mergeExternal(host: PrHost | undefined, prUrl: string) {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
   const pr = await openExternal(host, prUrl);
   if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
-  const blocked = requireGreen(await host.prChecks(pr.url), "PR");
+  const blocked = requireGreen(await checksWhenDone(() => host.prChecks(pr.url), "PR"), "PR");
   if (blocked) return { ok: false, result: blocked };
   const merged = await mergeUnlessConflict(host, pr.url);
   if (!merged) return { ok: false, result: { error: t("act.prConflictsExternal", { base: pr.base }), url: pr.url } };
@@ -242,7 +271,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   if (pr?.state === "closed") {
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl } };
   }
-  const checks = await host.prChecks(prUrl);
+  const checks = await checksWhenDone(() => host.prChecks(prUrl), "PR");
   const blocked = requireGreen(checks, "PR");
   // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
   if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked };
