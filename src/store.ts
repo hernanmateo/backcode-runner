@@ -558,6 +558,17 @@ export class Store {
     await Promise.all(ids.map((mid) => updateDoc(doc(this.project(), "chats", id, "messages", mid), { read: serverTimestamp() }).catch(() => undefined)));
   }
 
+  /** Tareas que lancé desde esta conversación (create_task), de la más antigua a la más nueva. */
+  async chatTasks(chatId: string): Promise<{ id: string; title: string; status: string; branch?: string; prUrl?: string; error?: string }[]> {
+    const snap = await getDocs(query(this.features(), where("chatId", "==", chatId), where("assignee", "==", this.uid)));
+    return snap.docs
+      .sort((a, b) => (a.get("createdAt")?.toMillis?.() ?? 0) - (b.get("createdAt")?.toMillis?.() ?? 0))
+      .map((d) => {
+        const f = d.data() as Feature;
+        return { id: d.id, title: f.title, status: f.status, branch: f.branch, prUrl: f.result?.prUrl, error: f.result?.error };
+      });
+  }
+
   /** Lo que dice o hace Claude en la conversación (texto, herramientas, errores). */
   async postChatMessage(id: string, kind: "say" | "tool" | "error" | "summary", text: string): Promise<void> {
     const clean = text.trim().slice(0, 4000);

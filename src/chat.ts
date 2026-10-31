@@ -18,6 +18,9 @@ import type { RunnerChat, Store } from "./store.js";
 // runner con dos herramientas: checkout_branch (a una rama existente del remoto, nunca la base) y commit_and_push (sin
 // forzar, sin ficheros protegidos ni secretos). La copia de trabajo es siempre la misma por conversación (_chat-<id>), así
 // la sesión de Claude se puede retomar; se borra al acabar cada vuelta si no quedan cambios sin subir.
+// Para trabajo completo («haz X»), create_task crea una tarea normal del tablero a su nombre (callable createChatTask, que
+// la acepta como acceptFeature) y la ejecuta este runner por su cola de siempre (rama propia, PR en borrador, mismos
+// límites que cualquier tarea); task_status dice cómo van. El chat no espera a que acaben: puede lanzar varias.
 
 /** Vueltas seguidas como mucho por cada recogida (mensajes que llegan mientras responde). */
 const MAX_ROUNDS = 10;
@@ -35,8 +38,54 @@ export function chatBranchOk(branch: string, baseBranch: string): boolean {
   );
 }
 
+/** Herramientas de la conversación: las de siempre más las del runner (MCP). Ni herramientas ni dominios de más. */
+export const CHAT_ALLOWED_TOOLS = [
+  "Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite",
+  "mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__task_status",
+];
+
+/** Lo que pide Claude con create_task, ya limpio (los límites los vuelve a comprobar createChatTask). */
+export interface ChatTaskInput {
+  title: string;
+  prompt: string;
+  acceptanceCriteria: string[];
+  planFirst?: boolean;
+}
+
+/** Una tarea lanzada desde la conversación, para task_status. */
+export interface ChatTask {
+  id: string;
+  title: string;
+  status: string;
+  branch?: string;
+  prUrl?: string;
+  error?: string;
+}
+
+/** Recorta y valida la entrada de create_task: null si falta título o encargo. */
+export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCriteria?: string[]; planFirst?: boolean }): ChatTaskInput | null {
+  const title = raw.title.replaceAll(/\s+/g, " ").trim().slice(0, 200);
+  const prompt = raw.prompt.trim().slice(0, 8000);
+  if (!title || !prompt) return null;
+  const acceptanceCriteria = (raw.acceptanceCriteria ?? []).map((c) => c.trim().slice(0, 500)).filter(Boolean).slice(0, 20);
+  return { title, prompt, acceptanceCriteria, ...(raw.planFirst ? { planFirst: true } : {}) };
+}
+
+/** Las tareas de la conversación, una por línea (para Claude). */
+export function describeChatTasks(tasks: ChatTask[]): string {
+  if (!tasks.length) return t("ch.noTasks");
+  const line = (s: string) => s.replaceAll(/[\r\n]+/g, " ");
+  return tasks
+    .map((f) => `- ${f.id} · ${line(f.title)} · ${f.status}${f.branch ? ` · ${f.branch}` : ""}${f.prUrl ? ` · ${f.prUrl}` : ""}${f.error ? ` · ${line(f.error).slice(0, 200)}` : ""}`)
+    .join("\n");
+}
+
 export interface ChatDeps {
   env: Record<string, string>;
+  /** Crea la tarea (createChatTask) y la deja en la cola de este runner. */
+  createTask: (input: ChatTaskInput) => Promise<{ featureId: string; branch: string }>;
+  /** Tareas lanzadas desde esta conversación. */
+  listTasks: () => Promise<ChatTask[]>;
   isProtected: (rel: string) => boolean;
   denyRead: string[];
   describeTool: (name: string, input: Record<string, unknown>, root: string) => string;
@@ -120,6 +169,40 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           return reply(text);
         },
       ),
+      tool(
+        "create_task",
+        `Create a real Backcode task for this member and queue it on this runner: it appears on the project board assigned to them and runs like any other task, in its own branch backcode/<handle>/<id> from ${remote}/${baseBranch}, ending with a draft pull request. Use it when they ask you to build or change something (not for questions). It returns at once and the task runs in the background, so you can create several. The prompt must be self-contained: the task does not see this conversation.`,
+        {
+          title: z.string().min(1).max(200),
+          prompt: z.string().min(1).max(8000),
+          acceptanceCriteria: z.array(z.string().max(500)).max(20).optional(),
+          planFirst: z.boolean().optional(),
+        },
+        async (raw) => {
+          const input = chatTaskInput(raw);
+          if (!input) return fail(t("ch.taskFailed", { error: "title/prompt" }));
+          try {
+            const { featureId, branch: taskBranch } = await deps.createTask(input);
+            const text = t("ch.taskCreated", { title: input.title, branch: taskBranch });
+            await store.postChatMessage(id, "tool", text);
+            return reply(`${text} (id ${featureId})`);
+          } catch (err) {
+            return fail(t("ch.taskFailed", { error: String((err as Error).message ?? err).slice(0, 500) }));
+          }
+        },
+      ),
+      tool(
+        "task_status",
+        "List the tasks created from this conversation with their status (execute = queued, running, waiting = Claude asked something or proposed a plan, done = draft pull request ready, failed), branch and pull request link.",
+        {},
+        async () => {
+          try {
+            return reply(describeChatTasks(await deps.listTasks()));
+          } catch (err) {
+            return fail(String((err as Error).message ?? err).slice(0, 500));
+          }
+        },
+      ),
     ],
   });
 
@@ -168,7 +251,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           // Los mismos límites que una tarea: sin settings del usuario ni del repo, dontAsk, guard y sandbox.
           settingSources: [],
           permissionMode: "dontAsk",
-          allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push"],
+          allowedTools: CHAT_ALLOWED_TOOLS,
           disallowedTools: ["WebFetch", "WebSearch", "Agent", "Task"],
           hooks: { PreToolUse: [{ hooks: [createGuardHook(path, deps.isProtected)] }] },
           sandbox: {
