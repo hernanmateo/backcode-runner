@@ -45,7 +45,10 @@ export interface Action {
   runtimeVersion?: string;
   /** OTA: si la copia que se publica queda con archivos sin commitear, commitearlos en la rama base y publicar igualmente. */
   commitDirty?: boolean;
-  /** OTA «Publicar sin comprobaciones»: sin prueba de arranque (ni la del runner ni la del script) y con --allow-native si el script lo admite. */
+  /**
+   * OTA «Publicar sin comprobaciones»: sin prueba de arranque (ni la del runner ni la del script) y con --allow-native si el
+   * script lo admite. En deployAll solo se aplica al paso OTA.
+   */
   skipSmoke?: boolean;
 }
 export interface StepResult {
@@ -102,7 +105,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
     return done;
   }
   if (action.type === "deployAll") {
-    const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "");
+    const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "", action.skipSmoke === true);
     await syncLocal(cfg);
     return done;
   }
@@ -416,9 +419,10 @@ const STEP_RE = /^(ota:(production|preview)|deploy:[A-Za-z0-9._/@-]{0,200}#[a-z0
 /**
  * «Desplegarlo todo»: los pasos pedidos, en el orden del plan (reglas → functions → resto → OTA), cada uno como si se
  * hubiera pedido suelto (mismos checks y la prueba de arranque de la OTA). Al primer fallo se para: no tiene sentido
- * publicar la app nueva si sus reglas o sus functions no han salido.
+ * publicar la app nueva si sus reglas o sus functions no han salido. skipSmoke (perfil «sin comprobaciones por defecto»)
+ * solo afecta al paso OTA.
  */
-async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefined, requested: string[], message: string): Promise<{ ok: boolean; result: ActionResult }> {
+async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefined, requested: string[], message: string, skipSmoke = false): Promise<{ ok: boolean; result: ActionResult }> {
   const wanted = [...new Set(requested)].filter((s) => STEP_RE.test(s)).slice(0, 10);
   if (!wanted.length) return { ok: false, result: { error: t("plan.noSteps") } };
   const order = (store.plan?.steps ?? []).map((s) => s.id);
@@ -431,7 +435,7 @@ async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefin
     const label = `${i + 1}. ${id.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`;
     console.log(`[action] deployAll ${label}`);
     const done = id.startsWith("ota:")
-      ? await publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode")
+      ? await publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode", undefined, false, skipSmoke)
       : await withTasks(cfg, store, id, await runDeploy(cfg, host, id.slice("deploy:".length)));
     const { ok, result } = await Promise.resolve(done).catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult }));
     for (const f of result.features ?? []) if (features.length < MAX_DEPLOYED_TASKS && !features.some((g) => g.id === f.id)) features.push(f);
