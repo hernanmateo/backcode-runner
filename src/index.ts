@@ -17,6 +17,7 @@ import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSessi
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
+import { stopWaitingForChecks } from "./wait-checks.js";
 import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
@@ -1101,6 +1102,7 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     console.log(`[backcode] ${t("main.stopping")}`);
+    stopWaitingForChecks();
     unsubscribe();
     stopLang();
     unsubscribeActions();
@@ -1142,6 +1144,8 @@ async function main(): Promise<void> {
     if (restarting || stopping) return;
     restarting = true;
     console.log(`[backcode] ${t("update.waiting")}`);
+    // Una acción esperando a la CI no retrasa el reinicio hasta 15 minutos: falla con los checks en curso.
+    stopWaitingForChecks();
     while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();

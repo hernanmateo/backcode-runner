@@ -199,6 +199,7 @@ const es = {
   "all.exited": "terminado ({code})",
   // acciones
   "act.notGreen": "{what}: los checks no están en verde ({state})",
+  "act.waitingChecks": "{what}: esperando a los checks…",
   "act.checksRequired": "{what}: no hay checks y el proyecto los exige (Editar proyecto › Exigir checks). Añade CI al repo o desactívalo.",
   "act.checksNoHost": "El proyecto exige checks y este runner no puede leerlos: conecta los PR con GitHub o Bitbucket (o desactiva Exigir checks en Editar proyecto).",
   "act.checksPending": "en curso",
@@ -789,6 +790,7 @@ const en: Record<Key, string> = {
   "all.starting": "Starting {n} runner(s): {list}",
   "all.exited": "exited ({code})",
   "act.notGreen": "{what}: checks aren't green ({state})",
+  "act.waitingChecks": "{what}: waiting for checks…",
   "act.checksRequired": "{what}: there are no checks and the project requires them (Edit project › Require checks). Add CI to the repo or turn it off.",
   "act.checksNoHost": "The project requires checks and this runner can't read them: connect PRs with GitHub or Bitbucket (or turn off Require checks in Edit project).",
   "act.checksPending": "in progress",
@@ -1368,6 +1370,7 @@ const ca: Record<Key, string> = {
   "all.starting": "Engegant {n} runner(s): {list}",
   "all.exited": "acabat ({code})",
   "act.notGreen": "{what}: els checks no estan en verd ({state})",
+  "act.waitingChecks": "{what}: esperant els checks…",
   "act.checksRequired": "{what}: no hi ha checks i el projecte els exigeix (Edita el projecte › Exigeix checks). Afegeix CI al repo o desactiva-ho.",
   "act.checksNoHost": "El projecte exigeix checks i aquest runner no els pot llegir: connecta els PR amb GitHub o Bitbucket (o desactiva Exigeix checks a Edita el projecte).",
   "act.checksPending": "en curs",

@@ -8,6 +8,7 @@ import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
+import { waitForChecks } from "./wait-checks.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
@@ -98,10 +99,16 @@ export function requireGreen(checks: Checks, what: string): ActionResult | null 
   return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
 }
 
+/** Checks de `what` esperando a que termine la CI si aún está en curso (ver wait-checks.ts). */
+function checksWhenDone(read: () => Promise<Checks>, what: string): Promise<Checks> {
+  return waitForChecks(read, { onWait: () => console.log(`[action] ${t("act.waitingChecks", { what })}`) });
+}
+
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
 async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string): Promise<ActionResult | null> {
   if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
-  return requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
+  const what = `${cfg.baseBranch} (${commit.slice(0, 7)})`;
+  return requireGreen(await checksWhenDone(() => host.commitChecks(commit), what), what);
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
@@ -209,7 +216,7 @@ async function mergeExternal(host: PrHost | undefined, prUrl: string) {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
   const pr = await openExternal(host, prUrl);
   if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
-  const blocked = requireGreen(await host.prChecks(pr.url), "PR");
+  const blocked = requireGreen(await checksWhenDone(() => host.prChecks(pr.url), "PR"), "PR");
   if (blocked) return { ok: false, result: blocked };
   const merged = await mergeUnlessConflict(host, pr.url);
   if (!merged) return { ok: false, result: { error: t("act.prConflictsExternal", { base: pr.base }), url: pr.url } };
@@ -242,7 +249,7 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
   if (pr?.state === "closed") {
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl } };
   }
-  const checks = await host.prChecks(prUrl);
+  const checks = await checksWhenDone(() => host.prChecks(prUrl), "PR");
   const blocked = requireGreen(checks, "PR");
   // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
   if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked };
