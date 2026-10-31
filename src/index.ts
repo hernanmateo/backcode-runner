@@ -16,7 +16,7 @@ import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSessi
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
-import { installIfNeeded, logLocalSync, otaMissing, runAction, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
@@ -833,6 +833,7 @@ async function main(): Promise<void> {
       console.warn(`[guard] ${(err as Error).message}`);
     }
   });
+  const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -1100,6 +1101,7 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
+    stopRequireChecks();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
@@ -1142,6 +1144,7 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     stopWorkspace();
     stopWorkflow();
+    stopRequireChecks();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);

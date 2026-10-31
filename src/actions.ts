@@ -84,10 +84,24 @@ const BUILD_PROFILE = "production";
 const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 const RUNTIME_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,39}$/;
 
-/** Solo se continúa con todo en verde (o sin checks configurados). */
-function requireGreen(checks: Checks, what: string): ActionResult | null {
-  if (checks.state === "green" || checks.state === "none") return null;
+// «Exigir checks» del proyecto (plan Equipo; lo cambian los admins en la app y lo sigue index.ts): sin checks, o sin
+// GitHub/Bitbucket donde leerlos, no se mergea ni se despliega.
+let requireChecks = false;
+export function setRequireChecks(on: boolean): void {
+  requireChecks = on;
+}
+
+/** Solo se continúa con todo en verde (o sin checks configurados, si el proyecto no los exige). */
+export function requireGreen(checks: Checks, what: string): ActionResult | null {
+  if (checks.state === "green" || (checks.state === "none" && !requireChecks)) return null;
+  if (checks.state === "none") return { error: t("act.checksRequired", { what }) };
   return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
+}
+
+/** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
+async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string): Promise<ActionResult | null> {
+  if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
+  return requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
@@ -267,8 +281,8 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   if (!app.ota) return { ok: false, result: { error: otaMissing() } };
   if (!app.channels.includes(channel)) return { ok: false, result: { error: t("act.noChannel", { channel }) } };
   // En un rollback no se esperan los checks: esa versión ya se publicó antes y hay prisa por deshacer.
-  if (host && !rollbackTo) {
-    const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
+  if (!rollbackTo) {
+    const blocked = await requireGreenBase(cfg, host, commit);
     if (blocked) return { ok: false, result: blocked };
   }
 
@@ -360,10 +374,8 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: t("build.notExpo") } };
   if (!app.buildProfiles.includes(BUILD_PROFILE)) return { ok: false, result: { error: t("build.noProfile", { p: BUILD_PROFILE }) } };
-  if (host) {
-    const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
-    if (blocked) return { ok: false, result: blocked };
-  }
+  const blocked = await requireGreenBase(cfg, host, commit);
+  if (blocked) return { ok: false, result: blocked };
 
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_build", commit);
   const dir = join(wt, app.appDir);
@@ -623,10 +635,8 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
   const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const target = (await findDeployTargets(cfg.repoPath, commit)).find((d) => d.id === targetId);
   if (!target) return { ok: false, result: { error: t("deploy.unknown", { target: targetId }) } };
-  if (host) {
-    const blocked = requireGreen(await host.commitChecks(commit), `${cfg.baseBranch} (${commit.slice(0, 7)})`);
-    if (blocked) return { ok: false, result: blocked };
-  }
+  const blocked = await requireGreenBase(cfg, host, commit);
+  if (blocked) return { ok: false, result: blocked };
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_deploy", commit);
   const dir = join(wt, target.dir);
   try {

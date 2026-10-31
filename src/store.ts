@@ -732,6 +732,11 @@ export class Store {
     return onSnapshot(this.project(), (d) => onChange(d.get("workflow")), () => undefined);
   }
 
+  /** «Exigir checks» del proyecto (plan Equipo; lo cambian los admins en la app). */
+  watchRequireChecks(onChange: (on: boolean) => void): () => void {
+    return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
+  }
+
   /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
   watchWorkspace(onChange: (w: { projectsDir?: string; keepAwake?: string }) => void): () => void {
     return onSnapshot(
