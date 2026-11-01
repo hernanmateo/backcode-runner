@@ -25,12 +25,16 @@ export function protectedMatcher(extra: string[]): (rel: string) => boolean {
   return (rel) => patterns.some((re) => re.test(rel));
 }
 
+// Comandos de red. curl y wget se pueden conceder (permisos personales, ver permissions.ts); el resto, nunca.
+const NET_COMMANDS = /(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\b/;
+const NET_COMMANDS_ALL = new RegExp(NET_COMMANDS.source, "g");
+
 // Denylist de comandos. Es una capa de comodidad (mensajes claros para Claude):
 // la barrera real es el sandbox del SO, el entorno sin secretos y que el push lo haga el runner.
 const BLOCKED_COMMANDS: Array<[RegExp, Key]> = [
   [/\bgit\s+(push|remote|config|commit|checkout|switch|branch|rebase|reset|merge|worktree|tag|stash|filter-branch|update-ref|gc)\b/, "guard.git"],
   [/(^|[\s;&|(])gh\s/, "guard.gh"],
-  [/(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\b/, "guard.net"],
+  [NET_COMMANDS, "guard.net"],
   [/(^|[\s;&|(])(sudo|su|doas|chmod\s+[0-7]*s|launchctl|crontab|osascript|security)\b/, "guard.system"],
   [/(^|[\s;&|(])(printenv|env)(\s|$)|\$\{?[A-Z_]*(TOKEN|SECRET|KEY|PASSWORD)/, "guard.env"],
   [/~\/\.|\$HOME\/\.|\/Users\/[^/\s]+\/\./, "guard.home"],
@@ -70,8 +74,19 @@ const PATH_FIELDS: Record<string, string> = {
 };
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
-export function createGuardHook(worktree: string, isProtected: (rel: string) => boolean): HookCallback {
+/**
+ * Extras de los permisos personales (solo en las tareas que creó y ejecuta quien tiene el runner): carpetas de otros
+ * proyectos que se pueden leer (nunca escribir) y comandos de red concedidos (curl, wget).
+ */
+export interface GuardExtras {
+  readRoots?: string[];
+  allowCommands?: string[];
+}
+
+export function createGuardHook(worktree: string, isProtected: (rel: string) => boolean, extras: GuardExtras = {}): HookCallback {
   const root = realpathSync(worktree);
+  const readRoots = (extras.readRoots ?? []).map((r) => realpathSync(r));
+  const allowed = new Set(extras.allowCommands ?? []);
 
   return async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
@@ -85,6 +100,8 @@ export function createGuardHook(worktree: string, isProtected: (rel: string) => 
       if (typeof raw !== "string") return deny(t("guard.badPath"));
       const abs = realpathLoose(isAbsolute(raw) ? raw : resolve(root, raw));
       if (abs !== root && !abs.startsWith(root + sep)) {
+        // Proyecto de referencia concedido: se lee, nunca se escribe.
+        if (!WRITE_TOOLS.has(tool) && readRoots.some((r) => abs === r || abs.startsWith(r + sep))) return {};
         return deny(t("guard.outside", { root }));
       }
       const rel = relative(root, abs).split(sep).join("/");
@@ -97,7 +114,10 @@ export function createGuardHook(worktree: string, isProtected: (rel: string) => 
     if (tool === "Bash") {
       const command = String(toolInput.command ?? "");
       for (const [re, reason] of BLOCKED_COMMANDS) {
-        if (re.test(command)) return deny(t(reason));
+        if (!re.test(command)) continue;
+        // Red: pasa solo si todos los comandos de red del comando están concedidos (curl sí, ssh nunca).
+        if (re === NET_COMMANDS && [...command.matchAll(NET_COMMANDS_ALL)].every((m) => allowed.has(m[2]))) continue;
+        return deny(t(reason));
       }
       return {};
     }

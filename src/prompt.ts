@@ -18,11 +18,13 @@ export function buildSystemAppend(vars: {
   remote: string;
   /** Idioma de quien ejecuta el runner (el de su perfil en la app), p. ej. "Spanish". */
   language: string;
+  /** Permisos personales de esta tarea (permissions.ts › permissionsPrompt); sin él, ninguno. */
+  permissions?: string;
 }): string {
   // settingSources está vacío, así que el CLAUDE.md del repo se inyecta aquí como contexto.
   const claudeMdPath = join(vars.worktree, "CLAUDE.md");
   const claudeMd = existsSync(claudeMdPath) ? `\n## Repository CLAUDE.md\n${readFileSync(claudeMdPath, "utf8").slice(0, 20_000)}\n` : "";
-  const values: Record<string, string> = { ...vars, projectContext: vars.projectContext || "(none)", claudeMd };
+  const values: Record<string, string> = { ...vars, projectContext: vars.projectContext || "(none)", claudeMd, permissions: vars.permissions || "None." };
   const template = readAsset("instructions/AGENT.md").toString("utf8");
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match);
 }
