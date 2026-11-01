@@ -91,6 +91,15 @@ export interface Feature {
 export interface LiveControl {
   stopRequest?: Timestamp;
   remote?: RemoteState;
+  /** Lo publica el runner: si la sesión de Claude Code sigue en su ordenador y cuántos días la guarda Claude Code. */
+  session?: SessionState;
+}
+
+export interface SessionState {
+  available: boolean;
+  /** cleanupPeriodDays del settings.json de Claude Code (30 por defecto). */
+  retentionDays: number;
+  checkedAt?: Timestamp;
 }
 
 /** Remote Control de la sesión de la tarea: lo pide la app (requested/return) y lo lleva el runner (open/failed). */
@@ -98,6 +107,8 @@ export interface RemoteState {
   state: "requested" | "open" | "return" | "failed";
   url?: string;
   error?: string;
+  /** sessionGone: el transcript de la sesión ya no está (Claude Code lo borró pasados cleanupPeriodDays días). */
+  code?: "sessionGone";
   at?: Timestamp;
 }
 
@@ -458,6 +469,23 @@ export class Store {
   async setRemote(id: string, remote: RemoteState | null): Promise<void> {
     // mergeFields: `remote` se sustituye entero (no se mezcla con lo que pidió la app).
     await setDoc(doc(this.feature(id), "control", "live"), { remote: remote ?? deleteField() }, { mergeFields: ["remote"] });
+  }
+
+  /** Mis tareas paradas con sesión de Claude Code (las que se pueden retomar o abrir en la app de Claude). */
+  async mySessionTasks(): Promise<{ id: string; sessionId: string }[]> {
+    const snap = await getDocs(query(this.features(), where("assignee", "==", this.uid), where("status", "in", ["waiting", "done", "failed"])));
+    return snap.docs.filter((d) => typeof d.get("sessionId") === "string").map((d) => ({ id: d.id, sessionId: String(d.get("sessionId")) }));
+  }
+
+  /**
+   * Publica si la sesión de la tarea sigue en este ordenador y cuántos días la guarda Claude Code. Solo escribe si cambia
+   * algo o la última comprobación tiene más de un día (`known`: lo ya publicado, si se tiene a mano).
+   */
+  async setSessionState(id: string, available: boolean, retentionDays: number, known?: LiveControl): Promise<void> {
+    const prev = (known ?? (await this.control(id))).session;
+    const fresh = (prev?.checkedAt?.toMillis() ?? 0) > Date.now() - 86_400_000;
+    if (prev && prev.available === available && prev.retentionDays === retentionDays && fresh) return;
+    await setDoc(doc(this.feature(id), "control", "live"), { session: { available, retentionDays, checkedAt: serverTimestamp() } }, { mergeFields: ["session"] });
   }
 
   // --- Acciones (mergear PR, publicar OTA): las pide un admin y las ejecuta su runner ---

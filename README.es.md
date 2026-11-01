@@ -377,6 +377,11 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   Claude Code, fuera del sandbox del runner**. La tarea sigue «Ejecutando» y su actividad se sigue viendo en Backcode. Al
   salir de la sesión o pulsar **Volver a Backcode**, el runner retoma la misma sesión en el sandbox: revisa lo hecho,
   publica los cambios (el mismo PR) o te pregunta.
+- **Sesiones borradas:** Claude Code guarda las sesiones en este ordenador `cleanupPeriodDays` días (30 por defecto, en
+  `~/.claude/settings.json`) y luego las borra. El runner comprueba si la sesión de cada tarea sigue ahí (al arrancar,
+  cada 6 h, al terminar una tarea y antes de retomarla o abrirla en la app de Claude) y lo publica para la app, que en ese
+  caso avisa y explica cómo guardarlas más días en vez de ofrecer abrirla o retomarla. El runner solo lee ese ajuste,
+  nunca lo cambia. El borrado de worktrees tras 14 días sin uso no afecta: se recrean en la misma ruta al retomar.
   Mientras está abierta allí, la tarjeta del tablero y la ficha dicen **En la app de Claude** (no avanza sola). Si la
   terminas allí, muévela a mano (p. ej. a «PR listo»): en unos minutos el runner la suelta (sin cerrar tu sesión de Claude) y
   enlaza el PR abierto de su rama.

@@ -13,7 +13,7 @@ import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.j
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
-import { adoptTranscript, followTranscript, startRemoteControl, type RemoteSession } from "./remote.js";
+import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
@@ -105,6 +105,17 @@ function diagnosticFor(action: Action, result: ActionResult, thrown: Error | und
   return buildReport({ action: action.type, error, log: thrown?.stack ?? result.log, provider: deploy?.provider, source, thrown: !!thrown }, diagCtx);
 }
 
+/**
+ * Publica si la sesión de Claude Code de la tarea sigue en este ordenador, para que la app avise en vez de ofrecer
+ * «Abrir en la app de Claude» o retomarla. El worktree borrado tras días sin uso no cuenta: se recrea en la misma ruta.
+ */
+async function publishSession(id: string, sessionId: string | undefined): Promise<boolean> {
+  if (!sessionId) return true;
+  const available = hasTranscript(join(cfg.worktreesDir, id), sessionId);
+  await store.setSessionState(id, available, retentionDays()).catch(() => undefined);
+  return available;
+}
+
 async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Hecha fuera de Backcode: el runner no tiene su sesión ni su encargo, y empezar de cero pisaría la rama del PR. Vuelve a
   // «PR listo» tal cual; los cambios se siguen haciendo en su worktree (backcode task pr actualiza el PR).
@@ -114,6 +125,16 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   }
   const acceptanceError = await store.verifyAcceptance(id, feature);
   if (acceptanceError) return { status: "failed", result: { error: acceptanceError } };
+  // Retomarla con su sesión ya borrada (Claude Code guarda las sesiones cleanupPeriodDays días): no se intenta; vuelve
+  // a como estaba (con su PR, si tiene) y la app muestra el aviso.
+  if (feature.sessionId && feature.origin !== "local" && !adoptTranscript(join(cfg.worktreesDir, id), feature.sessionId)) {
+    const error = t("session.gone", { days: retentionDays() });
+    await publishSession(id, feature.sessionId);
+    const control = await store.control(id).catch(() => ({}) as LiveControl);
+    if (control.remote?.state === "requested") await store.setRemote(id, { state: "failed", code: "sessionGone", error }).catch(() => undefined);
+    await store.event(id, "error", error);
+    return { status: feature.result?.prUrl ? "done" : "failed", result: { ...(feature.result ?? {}), error } };
+  }
 
   const project = await store.projectInfo();
   // Con sesión previa, es una conversación: se continúa la misma sesión en el mismo worktree y rama.
@@ -447,12 +468,25 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       await store.event(id, "error", t("remote.unavailable"));
       return false;
     }
+    // Sesión ya borrada del ordenador: el mismo aviso que en la app, sin lanzar claude.
+    const sessionGone = async () => {
+      const error = t("session.gone", { days: retentionDays() });
+      await store.setRemote(id, { state: "failed", code: "sessionGone", error }).catch(() => undefined);
+      await store.event(id, "error", error);
+      await publishSession(id, sessionId);
+      return false;
+    };
+    if (!adoptTranscript(wt.path, sessionId)) return sessionGone();
     clearTimeout(timeout);
     await store.event(id, "start", t("remote.opening"));
     try {
       remoteSession = await startRemoteControl({ bin, cwd: wt.path, sessionId, name: `${project.name} · ${feature.title}`.slice(0, 80) });
     } catch (err) {
       remoteSession = null;
+      if (isSessionGoneError((err as Error).message)) {
+        armTimeout();
+        return sessionGone();
+      }
       const error = t("remote.failed", { error: (err as Error).message.slice(0, 400) });
       await store.setRemote(id, { state: "failed", error }).catch(() => undefined);
       await store.event(id, "error", error);
@@ -629,6 +663,7 @@ async function drain(): Promise<void> {
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
         void refreshQuota();
+        void publishSession(id, sessionId ?? feature.sessionId);
       } catch (err) {
         console.error(`[error] ${id}`, err);
         await store.finish(id, "failed", { error: String(err).slice(0, 2000) });
@@ -887,6 +922,17 @@ async function main(): Promise<void> {
   void checkConflicts();
   const conflictsTimer = setInterval(() => void checkConflicts(), 5 * 60_000);
 
+  // Sesiones de Claude Code de mis tareas paradas, al arrancar y cada 6 h: si Claude Code ya las borró (pasados
+  // cleanupPeriodDays días), la app lo avisa en vez de ofrecer abrirlas en la app de Claude o retomarlas.
+  const checkSessions = async () => {
+    for (const f of await store.mySessionTasks().catch(() => [])) {
+      if (current?.id === f.id) continue;
+      await publishSession(f.id, f.sessionId);
+    }
+  };
+  void checkSessions();
+  const sessionsTimer = setInterval(() => void checkSessions(), 6 * 60 * 60_000);
+
   // Cuota del plan para el panel "Uso del equipo": al arrancar, tras cada tarea, cada 5 min y cuando alguien pulsa ↻
   // en la app. Leerla no llama al modelo ni consume. Nunca dos lecturas a la vez ni más de una cada 15 s.
   let quotaBusy = false;
@@ -1135,6 +1181,7 @@ async function main(): Promise<void> {
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
+    clearInterval(sessionsTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();
     current?.abort.abort();
@@ -1178,6 +1225,7 @@ async function main(): Promise<void> {
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(conflictsTimer);
+    clearInterval(sessionsTimer);
     clearInterval(updateTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();
