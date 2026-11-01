@@ -20,6 +20,9 @@ export interface PlanStep {
   status: "pending" | "upToDate" | "unknown";
   /** Commit del último despliegue de este paso. */
   lastSha?: string;
+  /** Versión del package.json de su carpeta en lastSha y en la punta de la rama base (p. ej. el runner: 1.0.60 → 1.0.61). */
+  version?: string;
+  nextVersion?: string;
   /** Ficheros cambiados desde entonces que le afectan. */
   changes?: number;
   /** Tareas mergeadas que traen esos cambios. */
@@ -116,7 +119,24 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
   const cli = app ? lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch).production : undefined;
   const fromApp = last.get("ota:production");
   if (cli && (!fromApp || (await isAncestor(cfg.repoPath, fromApp, cli)))) last.set("ota:production", cli);
-  const candidates: { id: string; kind: "deploy" | "ota"; name: string; scope: Scope }[] = deploys.map((d) => ({ id: `deploy:${d.id}`, kind: "deploy", name: d.name, scope: scopeOf(d) }));
+  const candidates: { id: string; kind: "deploy" | "ota"; name: string; scope: Scope; pkg?: string }[] = deploys.map((d) => ({
+    id: `deploy:${d.id}`,
+    kind: "deploy",
+    name: d.name,
+    scope: scopeOf(d),
+    // Solo un destino con script en su propia carpeta: la versión de la raíz no suele decir nada del destino.
+    pkg: !d.auto && d.dir ? `${d.dir}/package.json` : undefined,
+  }));
+  // Versión del package.json en un commit (sin ella, la app enseña los commits).
+  const versionAt = async (sha: string, pkg?: string): Promise<string | undefined> => {
+    if (!pkg) return undefined;
+    try {
+      const v = (JSON.parse(await git(cfg.repoPath, ["show", `${sha}:${pkg}`])) as { version?: unknown }).version;
+      return typeof v === "string" && v ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   if (app?.ota && app.channels.includes("production")) {
     const dir = app.appDir ? `${app.appDir}/` : "";
     candidates.push({ id: "ota:production", kind: "ota", name: "OTA production", scope: { covers: "app", rank: 3, match: (f) => !dir || f.startsWith(dir) } });
@@ -132,12 +152,14 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
     }
     const files = (await git(cfg.repoPath, ["diff", "--name-only", lastSha, base]).catch(() => "")).split("\n").filter(Boolean).filter(c.scope.match);
     if (!files.length) {
-      steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "upToDate", lastSha });
+      const version = await versionAt(lastSha, c.pkg);
+      steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "upToDate", lastSha, ...(version ? { version } : {}) });
       continue;
     }
     if (c.kind === "ota" && files.some((f) => NATIVE.test(f))) nativeHint = true;
     const features = await bringing(lastSha, c.scope.match);
-    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, changes: files.length, features });
+    const [version, nextVersion] = await Promise.all([versionAt(lastSha, c.pkg), versionAt(base, c.pkg)]);
+    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, ...(version ? { version } : {}), ...(nextVersion ? { nextVersion } : {}), changes: files.length, features });
   }
 
   // Builds: cambios nativos de la app desde la última build de cada plataforma (las dos suelen compartir commit).
