@@ -14,11 +14,12 @@ import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
-import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
-import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
@@ -27,6 +28,7 @@ import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
 import { appliesTo, GRANTABLE_COMMANDS, isEmpty, localRepos, merge, missing, NONE, normalizeDomain, permissionsPrompt, readRoots, sanitize, threadGrants } from "./permissions.js";
 import { fixChecks } from "./fix-checks.js";
+import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
@@ -89,6 +91,56 @@ let busy = false;
 /** Hay versión nueva: se termina lo que esté en marcha, no se coge nada más y se reinicia. */
 let restarting = false;
 let stopping = false;
+
+// «Modo auto» del proyecto (auto-merge.ts): las tareas que este runner termina con PR se mergean solas, de una en una
+// (y con el turno del proyecto, entre runners). Nunca se despliega ni se publica nada.
+const autoMergeSettings = { on: false, retries: clampRetries(undefined) };
+const autoMergeAbort = new AbortController();
+const autoMergeQueue: string[] = [];
+let autoMergeBusy = false;
+function queueAutoMerge(featureId: string): void {
+  if (!autoMergeSettings.on || !prHost || autoMergeQueue.includes(featureId)) return;
+  autoMergeQueue.push(featureId);
+  void drainAutoMerge();
+}
+async function drainAutoMerge(): Promise<void> {
+  if (autoMergeBusy) return;
+  autoMergeBusy = true;
+  try {
+    while (!stopping && !restarting && autoMergeQueue.length) {
+      const featureId = autoMergeQueue.shift()!;
+      if (!autoMergeSettings.on) continue;
+      const release = awake.hold();
+      const signal = autoMergeAbort.signal;
+      const final = await autoMerge({
+        featureId,
+        base: cfg.baseBranch,
+        retries: autoMergeSettings.retries,
+        hasCi: store.capabilities.ci,
+        merge: () => mergeTask(cfg, store, prHost, featureId, { auto: true }),
+        fixChecks: () => fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, signal, featureId),
+        fixConflicts: () => fixConflicts(cfg, store, prHost, agentEnv(), signal, featureId),
+        setState: (state) => store.setAutoMerge(featureId, state),
+        takeTurn: () => store.takeMergeTurn(TURN_LEASE_MS),
+        releaseTurn: () => store.releaseMergeTurn(),
+        log: (text) => console.log(`[auto] ${featureId} ${text}`),
+        // Con el code review automático del proyecto: no se mergea con fallos graves pendientes ni si el review falló.
+        beforeMerge: async () => {
+          const review = await store.reviewStateOf(featureId);
+          if (review.state === "findings" && review.majors) return { ok: false, reason: t("auto.reviewBlocked", { n: review.majors }) };
+          if (review.state === "error" || review.state === "reviewing") return { ok: false, reason: t("auto.reviewFailed") };
+          return { ok: true };
+        },
+        shouldStop: () => stopping || restarting || signal.aborted,
+      })
+        .catch((err: Error) => ({ state: "error", reason: err.message }))
+        .finally(release);
+      console.log(`[auto] ${featureId} ${final.state}${final.reason ? `: ${final.reason}` : ""}`);
+    }
+  } finally {
+    autoMergeBusy = false;
+  }
+}
 
 // "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
 type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
@@ -562,6 +614,89 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     return true;
   }
 
+  /** Suma el coste de una sesión aparte (el review) al de la tarea, como el resto de su trabajo. */
+  const reviewModels: ReviewSpend["models"] = {};
+  const addSpend = (s: ReviewSpend) => {
+    for (const [name, m] of Object.entries(s.models)) {
+      const prev = reviewModels[name];
+      reviewModels[name] = prev ? { costUsd: prev.costUsd + m.costUsd, tokens: prev.tokens + m.tokens, input: prev.input + m.input, output: prev.output + m.output, cache: prev.cache + m.cache } : { ...m };
+    }
+    const all = Object.values(s.models);
+    const sum = (k: "input" | "output" | "cache") => all.reduce((n, m) => n + m[k], 0);
+    result = {
+      ...result,
+      costUsd: (result.costUsd ?? 0) + s.costUsd,
+      turns: (result.turns ?? 0) + s.turns,
+      tokens: { input: (result.tokens?.input ?? 0) + sum("input"), output: (result.tokens?.output ?? 0) + sum("output"), cache: (result.tokens?.cache ?? 0) + sum("cache") },
+    };
+    spent = { costUsd: result.costUsd ?? 0, turns: result.turns ?? 0, input: result.tokens?.input ?? 0, output: result.tokens?.output ?? 0, cache: result.tokens?.cache ?? 0 };
+  };
+
+  /** Sube lo que arregló la sesión de la tarea tras el review (con las mismas comprobaciones que open_pull_request). */
+  async function pushReviewFix(before: string): Promise<boolean> {
+    const files = await stageAll(wt.path);
+    const blocked = files.filter(isProtected);
+    const secrets = blocked.length ? [] : await scanStagedForSecrets(wt.path);
+    if (blocked.length || secrets.length) {
+      // Se quita del índice y no se sube: queda en el worktree para revisarlo a mano.
+      await git(wt.path, ["restore", "--staged", "."]).catch(() => undefined);
+      await store.event(id, "error", blocked.length ? t("pr.protected", { files: blocked.join(", ") }) : t("pr.secrets", { list: secrets.join("; ") }));
+      return false;
+    }
+    if (files.length) await git(wt.path, ["commit", "--quiet", "--no-verify", "-m", t("review.commit")]);
+    if ((await git(wt.path, ["rev-parse", "HEAD"])) === before) return false;
+    await pushBranch(wt.path, cfg.remote, wt.branch);
+    return true;
+  }
+
+  /**
+   * Code review automático: una pasada en una sesión nueva (sin el contexto de la tarea); los fallos graves vuelven a la
+   * sesión de la tarea, el runner sube el arreglo y revisa una vez más. Lo que quede, en la tarea y en el PR.
+   */
+  async function reviewAndFix(level: ReviewLevel): Promise<void> {
+    let review: ReviewState = { state: "reviewing", level, passes: 0, findings: [], costUsd: 0 };
+    const save = () => store.setReview(id, review).catch((err: Error) => console.error("[review]", err.message));
+    const pass = async () => {
+      review = { ...review, state: "reviewing" };
+      await save();
+      await store.event(id, "start", t(review.passes ? "review.retry" : "review.start", { level }));
+      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}`, level, model, env: agentEnv(), isProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
+      addSpend(r.spend);
+      review = { ...review, passes: review.passes + 1, costUsd: review.costUsd + r.spend.costUsd, findings: r.findings ?? review.findings };
+      return r;
+    };
+    let r = await pass();
+    const major = majorOf(r.findings ?? []);
+    if (major.length && !stopRequested && !abort.signal.aborted) {
+      await store.event(id, "start", t("review.fixing", { n: major.length }));
+      const summary = result.summary;
+      const before = await git(wt.path, ["rev-parse", "HEAD"]);
+      await runPhase(reviewFixPrompt(r.findings!));
+      // El resumen de la tarea sigue siendo el de su implementación; el del arreglo va a la actividad.
+      if (result.summary && result.summary !== summary) await store.event(id, "say", result.summary.slice(0, 1000));
+      result = { ...result, summary, error: undefined };
+      const pushed = await pushReviewFix(before).catch(async (err: Error) => {
+        await store.event(id, "error", t("review.pushFailed", { error: err.message.slice(0, 300) }));
+        return false;
+      });
+      if (pushed && !stopRequested && !abort.signal.aborted) r = await pass();
+    }
+    // Coste por modelo: el de las sesiones del review se suma al de la tarea.
+    const models = { ...(result.models ?? {}) };
+    for (const [name, m] of Object.entries(reviewModels)) models[name] = { costUsd: (models[name]?.costUsd ?? 0) + m.costUsd, tokens: (models[name]?.tokens ?? 0) + m.tokens };
+    result = { ...result, models };
+
+    const left = majorOf(review.findings);
+    review = r.findings === null ? { ...review, state: "error", error: r.error ?? "review failed" } : { ...review, state: left.length ? "findings" : "approved" };
+    await save();
+    const text = review.state === "error" ? t("review.error", { error: review.error ?? "" }) : review.state === "approved" ? t("review.approved", { n: review.findings.length }) : t("review.findings", { n: left.length });
+    await store.event(id, review.state === "approved" ? "start" : "error", text);
+    if (review.findings.length && prHost?.comment && cfg.pullRequest !== "push-only") {
+      const body = reviewComment(review, { title: t("review.commentTitle"), approved: t("review.commentApproved"), blocking: t("review.commentBlocking"), minor: t("review.commentMinor") });
+      await prHost.comment(prUrl!, body).catch((err: Error) => store.event(id, "say", t("review.commentFailed", { error: err.message.slice(0, 300) })));
+    }
+  }
+
   try {
     const thread = history;
     // Lo que escribió quien la ejecuta y Claude aún no ha recibido. Las tareas de antes de los mensajes en directo no
@@ -600,6 +735,18 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       if (!(await runRemote())) break;
       if (stopRequested) break;
       await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!(prUrl ?? previousPr) }));
+    }
+    // Code review automático (ajuste del proyecto): solo si esta vuelta abrió o actualizó el PR y terminó sin más pendiente.
+    if (project.codeReview && prUrl && !planning && !stopRequested && !remoteWanted && !question && !permissionAsked && !released && !abort.signal.aborted) {
+      const level = project.codeReview;
+      // Un fallo inesperado no deja la tarea «revisando» para siempre: queda como no aprobada.
+      await reviewAndFix(level).catch(async (err: Error) => {
+        await store.setReview(id, { state: "error", level, passes: 0, findings: [], costUsd: 0, error: err.message }).catch(() => undefined);
+        await store.event(id, "error", t("review.error", { error: err.message.slice(0, 300) }));
+      });
+    } else if (!project.codeReview && prUrl && feature.review) {
+      // Desactivado desde la última revisión: el resultado anterior ya no describe los cambios de ahora.
+      await store.setReview(id, null).catch(() => undefined);
     }
   } catch (err) {
     result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
@@ -703,6 +850,7 @@ async function drain(): Promise<void> {
           const fallback = result.prUrl ? "done" : "waiting";
           await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
           await store.event(id, status, result.prUrl ?? result.error ?? "");
+          if (status === "done" && result.prUrl?.startsWith("https://")) queueAutoMerge(id);
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
         void refreshQuota();
@@ -922,6 +1070,10 @@ async function main(): Promise<void> {
     }
   });
   const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
+  const stopAutoMerge = store.watchAutoMerge(({ on, retries }) => {
+    autoMergeSettings.on = on;
+    autoMergeSettings.retries = clampRetries(retries);
+  });
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -1247,6 +1399,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopAutoMerge();
+    autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
@@ -1293,6 +1447,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopAutoMerge();
+    autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);

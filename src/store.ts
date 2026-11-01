@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
 import {
@@ -44,6 +45,7 @@ import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
+import { isShareOpen, type ShareScope } from "./runner-share.js";
 import { firestoreSource, LiveQuery } from "./live-query.js";
 
 /**
@@ -84,6 +86,8 @@ export interface Feature {
   model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
   /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
   conflicts?: string[];
+  /** Resultado del code review automático de la última vuelta con cambios (code-review.ts). */
+  review?: ReviewState;
   suggestedModel?: "haiku" | "sonnet" | "opus" | "fable";
   /** Modo plan: antes de tocar código, Claude propone un plan que quien la ejecuta refina en el hilo y aprueba. */
   planFirst?: boolean;
@@ -160,7 +164,10 @@ export interface RunnerChat {
   uid: string;
   /** Runner que la atiende si no es el de quien la abrió (el de un compañero que lo comparte). */
   runnerUid?: string;
+  /** Al crearla, el primer mensaje recortado (provisional); luego el que pone Claude con set_conversation_title. */
   title: string;
+  /** La persona la renombró a mano: el runner ya no cambia el título. */
+  titleManual?: boolean;
   status: "pending" | "running" | "idle" | "failed";
   sessionId?: string;
   /** Rama a la que se cambió con checkout_branch (la conversación sigue en ella). */
@@ -571,15 +578,28 @@ export class Store {
     return query(collection(this.project(), "refineJobs"), where("uid", "==", this.uid), where("status", "==", "pending"));
   }
 
+  /** Si tengo abierto (y sin caducar) el candado `scope` de mi runner en este proyecto (runnerShares/{uid}). */
+  async shareOpen(scope: ShareScope): Promise<boolean> {
+    const d = await getDoc(doc(this.project(), "runnerShares", this.uid)).catch(() => null);
+    return isShareOpen(d?.exists() ? d.data() : null, scope);
+  }
+
   /** pending -> running de forma atómica. Devuelve el encargo si lo reclamamos nosotros. */
   async claimRefine(id: string): Promise<RefineJob | null> {
     const ref = doc(this.project(), "refineJobs", id);
-    return runTransaction(this.db, async (tx) => {
+    const job = await runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || d.get("uid") !== this.uid) return null;
       tx.update(ref, { status: "running", updatedAt: serverTimestamp() });
       return d.data() as RefineJob;
     });
+    // La idea de un compañero (requestedBy), solo con el candado de «Nueva idea» abierto y sin caducar: si no, se rechaza.
+    const from = (job as { requestedBy?: string } | null)?.requestedBy;
+    if (job && from && from !== this.uid && !(await this.shareOpen("ideas"))) {
+      await this.finishRefine(id, { error: t("store.shareClosed") }).catch(() => undefined);
+      return null;
+    }
+    return job;
   }
 
   /** Lo que está haciendo Claude (p. ej. «Leyendo src/app.ts»): el servidor lo muestra en vivo en la app. */
@@ -614,6 +634,9 @@ export class Store {
   /** pending -> running de forma atómica. Devuelve la conversación si la reclamamos nosotros. */
   async claimChat(id: string): Promise<RunnerChat | null> {
     const ref = doc(this.project(), "chats", id);
+    // La de un compañero, solo con el candado del chat abierto y sin caducar (las reglas tampoco lo dejarían).
+    const pre = await getDoc(ref);
+    if (pre.exists() && pre.get("uid") !== this.uid && !(await this.shareOpen("chat"))) return null;
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || !this.serves(d.data() as RunnerChat)) return null;
@@ -672,6 +695,18 @@ export class Store {
     await updateDoc(doc(this.project(), "chats", id), { ...clean, updatedAt: serverTimestamp() });
   }
 
+  /** Título de la conversación (set_conversation_title), salvo si la persona la renombró a mano: entonces "manual" y no se toca. */
+  async setChatTitle(id: string, title: string): Promise<"set" | "manual"> {
+    const ref = doc(this.project(), "chats", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists()) throw new Error("chat not found");
+      if (d.get("titleManual") === true) return "manual";
+      if (d.get("title") !== title) tx.update(ref, { title, updatedAt: serverTimestamp() });
+      return "set";
+    });
+  }
+
   /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */
   async setSession(id: string, sessionId: string): Promise<void> {
     await updateDoc(this.feature(id), { sessionId }).catch(() => undefined);
@@ -726,8 +761,8 @@ export class Store {
     await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
   }
 
-  async markMerged(featureId: string, sha?: string): Promise<void> {
-    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "" } });
+  async markMerged(featureId: string, sha?: string, auto = false): Promise<void> {
+    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}) } });
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
@@ -855,6 +890,45 @@ export class Store {
     return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
   }
 
+  /** «Modo auto» del proyecto (mergear solo las tareas terminadas; lo cambian los admins en la app) y su máximo de reintentos. */
+  watchAutoMerge(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => onChange({ on: d.get("autoMerge") === true, retries: typeof d.get("autoMergeRetries") === "number" ? (d.get("autoMergeRetries") as number) : undefined }),
+      () => undefined,
+    );
+  }
+
+  /** Estado del modo auto en una tarea con PR listo (auto-merge.ts): lo enseña la app y avisa al agotar los reintentos. */
+  async setAutoMerge(featureId: string, state: { state: string; attempts: number; reason?: string }): Promise<void> {
+    await updateDoc(this.feature(featureId), { autoMerge: { state: state.state, attempts: state.attempts, ...(state.reason ? { reason: state.reason.slice(0, 500) } : {}), at: serverTimestamp() } });
+  }
+
+  /**
+   * Turno de merge del proyecto (projects/{pid}/locks/autoMerge): un solo merge automático a la vez entre todos los
+   * runners, para que uno no deje en conflicto al siguiente sin enterarse. Caduca solo (`until`) si el runner se cae.
+   * Devuelve false si lo tiene otro.
+   */
+  async takeMergeTurn(leaseMs: number): Promise<boolean> {
+    const ref = doc(this.project(), "locks", "autoMerge");
+    return runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      const holder = lock.get("holder") as string | undefined;
+      const until = (lock.get("until") as Timestamp | undefined)?.toMillis() ?? 0;
+      if (holder && holder !== this.uid && until > Date.now()) return false;
+      tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(Date.now() + leaseMs) });
+      return true;
+    }).catch(() => false);
+  }
+
+  async releaseMergeTurn(): Promise<void> {
+    const ref = doc(this.project(), "locks", "autoMerge");
+    await runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      if (lock.get("holder") === this.uid) tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(0) });
+    }).catch(() => undefined);
+  }
+
   /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
   watchWorkspace(onChange: (w: { projectsDir?: string; keepAwake?: string }) => void): () => void {
     return onSnapshot(
@@ -943,10 +1017,26 @@ export class Store {
     await Promise.all(groups.docs.map((g) => setDoc(doc(this.db, "groups", g.id, "quota", this.uid), { ...quota, updatedAt: serverTimestamp() })));
   }
 
-  async projectInfo(): Promise<{ name: string; context: string }> {
+  async projectInfo(): Promise<{ name: string; context: string; codeReview: ReviewLevel | null }> {
     const d = await getDoc(this.project());
     const oneLine = (s: unknown) => String(s ?? "").replaceAll(/[\r\n]+/g, " ").slice(0, 100);
-    return { name: oneLine(d.get("name")), context: String(d.get("context") ?? "").slice(0, 8000) };
+    return { name: oneLine(d.get("name")), context: String(d.get("context") ?? "").slice(0, 8000), codeReview: reviewLevel(d.get("codeReview")) };
+  }
+
+  /** Resultado guardado del code review automático de la tarea (el modo auto no mergea con fallos graves pendientes). */
+  async reviewStateOf(id: string): Promise<{ state?: string; majors: number }> {
+    const review = (await getDoc(this.feature(id))).get("review") as { state?: string; findings?: { severity?: string }[] } | undefined;
+    return { state: review?.state, majors: (review?.findings ?? []).filter((f) => f.severity === "major").length };
+  }
+
+  /** Estado del code review automático de la tarea (mientras se ejecuta); null lo quita. */
+  async setReview(id: string, review: ReviewState | null): Promise<void> {
+    if (!review) {
+      await updateDoc(this.feature(id), { review: deleteField() });
+      return;
+    }
+    const { error, ...rest } = review;
+    await updateDoc(this.feature(id), { review: { ...rest, ...(error ? { error: error.slice(0, 500) } : {}), findings: review.findings.slice(0, MAX_FINDINGS), at: serverTimestamp() } });
   }
 
   async extendLease(id: string): Promise<void> {

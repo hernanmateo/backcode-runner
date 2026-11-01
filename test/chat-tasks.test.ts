@@ -56,7 +56,7 @@ test("describeChatTasks: una línea por tarea con estado, rama y PR", () => {
 test("el chat solo añade sus herramientas MCP: ni web, ni subagentes, ni más", () => {
   for (const name of ["WebFetch", "WebSearch", "Agent", "Task"]) assert.equal(CHAT_ALLOWED_TOOLS.includes(name), false);
   const extra = CHAT_ALLOWED_TOOLS.filter((n) => n.startsWith("mcp__"));
-  assert.deepEqual(extra.sort(), ["mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__message_task", "mcp__backcode__task_status"]);
+  assert.deepEqual(extra.sort(), ["mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__message_task", "mcp__backcode__set_conversation_title", "mcp__backcode__task_status"]);
 });
 
 test("buildChatSystemAppend explica create_task y que el chat sigue siendo dato no fiable", () => {
