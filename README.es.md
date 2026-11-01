@@ -595,6 +595,9 @@ lockfile: la carpeta o la raíz del monorepo; con npm y sin `package-lock.json`,
 (solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 buscan en la rama principal al arrancar y cada 3 minutos: uno nuevo sale en la app poco después de mergearlo, sin reiniciar.
+La pestaña OTA solo aparece si el runner detecta canales OTA; si no detecta nada que publicar (ni despliegues, ni OTA, ni
+build, ni «Mi móvil»), la pantalla de publicar explica cómo añadir un `backcode:deploy:<nombre>` o un `backcode.toml` y, en
+apps Expo, la OTA y la build.
 
 **Sin JavaScript: `backcode.toml`** (o `backcode.json`), en la raíz o en cualquier carpeta, para repos de Python, Go, C…
 que no tienen `package.json`. El runner ejecuta el comando tal cual, **sin `npm ci` ni `npm run`**, así que ese ordenador no
