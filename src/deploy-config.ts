@@ -7,6 +7,7 @@
 //   dir = "server"               # opcional: carpeta, relativa al fichero; por defecto la del fichero
 //   kind = "service"             # migration (va primero) · functions · service (por defecto, después)
 //   paths = ["server/"]          # opcional: qué cambios lo dejan pendiente; por defecto, su carpeta
+//   description = "API en Fly"   # opcional: frase corta que la app enseña bajo el nombre del botón
 //
 // Si un nombre también está en un package.json (backcode:deploy:<nombre>) en la misma carpeta, gana este fichero.
 
@@ -20,6 +21,8 @@ export interface ConfigDeploy {
   cmd: string[];
   rank: number;
   paths: string[];
+  /** Frase corta para la app (a dónde va), si la hay. */
+  description?: string;
 }
 
 export interface ConfigResult {
@@ -133,7 +136,8 @@ export function readDeployConfig(fileDir: string, fileName: string, text: string
       continue;
     }
     const paths = Array.isArray(d.paths) && d.paths.every((p) => typeof p === "string") ? (d.paths as string[]).map((p) => norm([fileDir, p].filter(Boolean).join("/"))).filter(inside) : [dir];
-    deploys.push({ name, dir, cmd, rank: KINDS[kind as keyof typeof KINDS], paths });
+    const description = typeof d.description === "string" ? d.description.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+    deploys.push({ name, dir, cmd, rank: KINDS[kind as keyof typeof KINDS], paths, ...(description ? { description } : {}) });
   }
   return { deploys, errors };
 }

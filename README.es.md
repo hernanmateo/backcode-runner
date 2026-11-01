@@ -604,6 +604,7 @@ paths = ["api/"]                    # opcional: qué cambios lo dejan pendiente 
 [deploy.api]
 run = "make deploy"
 dir = "api"
+description = "API en Fly.io"       # opcional: frase corta que la app enseña bajo el nombre del botón
 ```
 
 Si un nombre está también en un `package.json` de la misma carpeta, gana `backcode.toml` (y el registro del runner lo avisa).
@@ -632,8 +633,9 @@ Y cuando una tarea (o `/backcode:feature`) añade algo que hay que desplegar en 
 
 Si el script llama a `firebase` (directamente, vía `npm run <otro>` o en un `.sh` del repo), el runner deduce sin ejecutarlo a
 qué va: proyecto (`-P`/`--project`, alias de `.firebaserc` o su `default`) y canal de Hosting (`hosting:channel:deploy <canal>`
-o el sitio principal con `firebase deploy`). La app lo enseña junto al botón, en la confirmación y en el historial, p. ej.
-«Firebase Hosting · proyecto derbi-admin-staging · canal staging (preview)». Para un staging de Firebase basta con:
+o el sitio principal con `firebase deploy`). La app lo enseña junto al botón, con una etiqueta **PRODUCCIÓN** (sitio principal o
+`firebase deploy` sin canal: reglas, functions…) o **STAGING** (canal de preview), p. ej. «STAGING · Firebase Hosting ·
+derbi-admin-staging · canal staging»; la carpeta y el comando salen en la confirmación. Para un staging de Firebase basta con:
 
 ```json
 "backcode:deploy:staging": "firebase hosting:channel:deploy staging -P staging --expires 7d --non-interactive"
