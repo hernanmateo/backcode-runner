@@ -67,10 +67,14 @@ const NOT_OURS = new RegExp(
   "i",
 );
 
+/** Salida de un comando que falló porque no encuentra módulos (tsc TS2307, Node «Cannot find module», webpack…). */
+export const MISSING_MODULES = /\bTS2307\b|Cannot find module ['"]|ERR_MODULE_NOT_FOUND|Module not found: (?:Error: )?Can't resolve/;
+
 /**
- * ¿Es de Backcode? `backcode`: una excepción del runner (no la salida de un comando del proyecto) o un error interno de
- * JavaScript; `unsure`: un despliegue cuyo comando eligió Backcode (detectado o de backcode.toml) y que falló al
- * ejecutarse; null: del proyecto o del ordenador, no se envía. Ante la duda entre del proyecto y nuestro, null.
+ * ¿Es de Backcode? `backcode`: una excepción del runner (no la salida de un comando del proyecto), un error interno de
+ * JavaScript o un despliegue detectado/de backcode.toml que no encuentra módulos (instalar sus dependencias antes de
+ * desplegar es cosa de Backcode); `unsure`: otro fallo de un despliegue cuyo comando eligió Backcode; null: del
+ * proyecto o del ordenador, no se envía. Ante la duda entre del proyecto y nuestro, null.
  */
 export function classify(error: string, ctx: DiagnosticContext): DiagnosticKind | null {
   const text = error.trim();
@@ -78,6 +82,7 @@ export function classify(error: string, ctx: DiagnosticContext): DiagnosticKind 
   const exec = EXEC_FAILED.test(text);
   if (!exec && INTERNAL.test(text)) return "backcode";
   if (!exec && ctx.thrown) return "backcode";
+  if (exec && (ctx.source === "detected" || ctx.source === "config") && MISSING_MODULES.test(text)) return "backcode";
   if (exec && (ctx.source === "detected" || ctx.source === "config")) return "unsure";
   return null;
 }
