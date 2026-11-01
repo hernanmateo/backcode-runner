@@ -248,7 +248,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     tools: [
       tool(
         "propose_plan",
-        "Plan mode only: send your implementation plan (Markdown) to the person who accepted this task. They review it in the app, ask for changes or approve it; once approved, this same session continues and implements it. Call it once per turn with the complete plan, then end your turn.",
+        "Plan mode only: send your implementation plan (Markdown) to the people steering this task (the person who accepted it, whoever manages it or a project admin). They review it in the app, ask for changes or approve it; once approved, this same session continues and implements it. Call it once per turn with the complete plan, then end your turn.",
         { plan: z.string().min(50).max(20_000) },
         async ({ plan }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
@@ -324,7 +324,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ),
       tool(
         "ask_user",
-        "Ask the person who accepted this task a blocking clarification question. They answer in the app and this same session continues with their reply. After calling it, end your turn without further changes.",
+        "Ask the people steering this task (the person who accepted it, whoever manages it or a project admin) a blocking clarification question. They answer in the app and this same session continues with their reply. After calling it, end your turn without further changes.",
         { question: z.string().min(5).max(2000) },
         async ({ question: q }) => {
           if (question) return { content: [{ type: "text" as const, text: t("ask.pending") }], isError: true };
@@ -777,11 +777,11 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   if ((question || permissionAsked) && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
   // Plan propuesto: espera a que lo aprueben o pidan cambios (como una pregunta).
   if (planned && !result.error) return { status: "waiting", result: { ...result, planReady: true, error: undefined }, sessionId };
-  if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan") }, sessionId };
+  if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan"), ...(result.error ? {} : { errorCode: "noPlan" as const }) }, sessionId };
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
-  return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr") }, sessionId };
+  return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr"), ...(result.error ? {} : { errorCode: "noPr" as const }) }, sessionId };
 }
 
 /** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */

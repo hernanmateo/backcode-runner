@@ -132,6 +132,8 @@ export interface Attachment {
 export interface ThreadMessage {
   id?: string;
   author: "user" | "claude";
+  /** Mensajes de una persona: quién lo escribió (el asignado, quien gestiona la tarea o un admin). */
+  by?: string;
   kind: "message" | "question" | "summary" | "plan" | "permission" | "grant";
   text: string;
   at?: Timestamp;
@@ -203,6 +205,8 @@ export interface FeatureResult {
   /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
   planReady?: boolean;
   error?: string;
+  /** Error conocido, para que la app lo muestre en el idioma de quien lo ve (error va en el del runner). */
+  errorCode?: "noPr" | "noPlan";
 }
 
 const LOCK_LEASE_MS = 60_000;
