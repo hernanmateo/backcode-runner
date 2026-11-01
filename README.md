@@ -306,6 +306,19 @@ remote and mode in `~/.backcode/guard/<project>.json`, and `backcode hook sessio
 runner (or with an older one), the plugin does nothing. It only acts inside Claude Code: to make the main branch reachable only
 through PRs from anywhere, turn on branch protection in GitHub or Bitbucket (the app links to the settings in Require mode).
 
+## Connect more projects from the app (no pasting)
+Since 1.0.88 every runner keeps `users/{uid}/machines/{machineId}` alive (every ~2 min; stable id in `~/.backcode/machine-id`):
+host, version, platform, whether Claude Code, git and `gh` are installed and signed in (and the `gh` account), whether a
+Bitbucket token is set (yes/no only) and the connected projects. Never tokens. With that, «Connect my Claude Code» shows the
+runner as already installed, doesn't generate a new key and offers **«Connect on <host>»**: the app writes a request to
+`users/{uid}/machines/{machineId}/requests/{id}` (project, base branch, PR mode and, optionally, the repo path or a folder to
+clone into). A runner on that computer claims it, validates every field (paths only inside your `$HOME`, no hidden folders or
+`~/.backcode`; a valid branch name; PR mode from the enum), checks you can read the project and writes
+`~/.backcode/config/<project>.env` with the key it already has, just like pasting the configuration. If the repo isn't there it
+answers `needsRepo` with a proposed folder (your projects folder + repo name) and the app offers «Clone on <host>»: it clones
+the project's `repoUrl` (never a URL from the request) with your git/gh credentials and never touches a non-empty folder. The
+supervisor starts the project within seconds.
+
 ## The panel
 
 Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.1:47474`:
