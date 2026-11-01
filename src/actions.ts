@@ -730,7 +730,7 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
     return { ok: true, result: { url, sha: commit, ...(version ? { version } : {}), log: out.slice(-1400) } };
   } catch (err) {
     const error = String((err as Error).message);
-    const hint = missingModulesHint(error, target.auto?.deps?.length ? target.auto.deps.map((d) => d.dir) : [target.dir]);
+    const hint = deployHint(error,target.auto?.deps?.length ? target.auto.deps.map((d) => d.dir) : [target.dir]);
     return { ok: false, result: { error: hint ? `${hint}\n${error.slice(-(3000 - hint.length - 1))}` : error.slice(-3000), sha: commit } };
   } finally {
     await removeWorktree(cfg.repoPath, wt);
@@ -746,6 +746,22 @@ export function missingModulesHint(error: string, dirs: string[]): string {
   if (!MISSING_MODULES.test(error)) return "";
   const list = [...new Set(dirs.map((d) => d || "."))].join(", ");
   return t("deploy.missingModules", { dir: list });
+}
+
+/**
+ * Pista para un despliegue de Firebase que falló porque el proyecto nunca activó Storage en la consola (firebase.json
+ * declara `storage` pero el bucket no existe). Incluye el enlace a la consola si viene en el error. Vacía si no va de eso.
+ */
+export function storageNotSetUpHint(error: string): string {
+  if (!/Firebase Storage has not been set up/i.test(error)) return "";
+  const url = error.match(/https:\/\/console\.firebase\.google\.com\/project\/[^\s"'<>)\]]+?\/storage\b/)?.[0];
+  const hint = t("deploy.storageNotSetUp");
+  return url ? `${hint} ${url}` : hint;
+}
+
+/** Las pistas de un despliegue fallido (módulos que faltan, Storage sin activar), unidas; vacía si no aplica ninguna. */
+export function deployHint(error: string, dirs: string[]): string {
+  return [missingModulesHint(error, dirs), storageNotSetUpHint(error)].filter(Boolean).join("\n");
 }
 
 /** Variables `env` del perfil de build de eas.json del canal (las que lleva el bundle publicado). */

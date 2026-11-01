@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { failureOutput, gradleFailure, installCommand, installDirFor, missingModulesHint, stripNpmUsage } from "../src/actions.js";
+import { deployHint, failureOutput, gradleFailure, installCommand, installDirFor, missingModulesHint, storageNotSetUpHint, stripNpmUsage } from "../src/actions.js";
 import { classify } from "../src/diagnostics.js";
 import { setLangOverride } from "../src/i18n.js";
 
@@ -155,4 +155,31 @@ test("deploy sin módulos (TS2307): pista con la carpeta en es/en/ca y diagnóst
   assert.equal(classify(out, { thrown: false, source: "detected" }), "backcode");
   // Un script del propio proyecto: sigue siendo cosa del proyecto.
   assert.equal(classify(out, { thrown: false, source: "script" }), null);
+});
+
+test("deploy con Storage sin activar: pista en es/en/ca con los dos caminos y el enlace a la consola si viene", () => {
+  const url = "https://console.firebase.google.com/project/mi-app-123/storage";
+  const out = `npx terminó con código 1:\nError: Firebase Storage has not been set up on project 'mi-app-123'. Go to ${url} and click 'Get Started' to set up Firebase Storage.`;
+  setLangOverride("es");
+  const es = storageNotSetUpHint(out);
+  assert.match(es, /Firebase Storage no está activado/);
+  assert.match(es, /Get Started/);
+  assert.match(es, /quita la clave "storage" de firebase\.json/);
+  assert.ok(es.endsWith(` ${url}`));
+  setLangOverride("en");
+  assert.match(storageNotSetUpHint(out), /isn't enabled on this Firebase project.*remove the "storage" key/);
+  setLangOverride("ca");
+  assert.match(storageNotSetUpHint(out), /no està activat.*treu la clau "storage"/);
+  // Sin URL: la pista sin enlace.
+  const bare = storageNotSetUpHint("Error: Firebase Storage has not been set up on project 'x'.");
+  assert.match(bare, /no està activat/);
+  assert.doesNotMatch(bare, /https:/);
+  // Otros errores: nada.
+  assert.equal(storageNotSetUpHint("npx terminó con código 1:\nError: HTTP Error: 400"), "");
+  assert.equal(deployHint("npx terminó con código 1:\nError: HTTP Error: 400", ["functions"]), "");
+  // deployHint agrupa ambas y mantiene la de módulos que faltan.
+  const modules = "error TS2307: Cannot find module 'firebase-functions/v2'";
+  setLangOverride("es");
+  assert.equal(deployHint(modules, ["functions"]), missingModulesHint(modules, ["functions"]));
+  assert.equal(deployHint(out, ["."]), storageNotSetUpHint(out));
 });
