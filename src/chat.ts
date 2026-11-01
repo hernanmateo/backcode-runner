@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { materializeAttachments } from "./attachments.js";
+import { materializeAttachments, type LocalAttachment } from "./attachments.js";
 import type { RunnerConfig } from "./config.js";
 import { hasMarkers } from "./conflicts.js";
 import { createDetachedWorktree, git, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
@@ -10,8 +10,8 @@ import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
 import { claudeExecutable } from "./preflight.js";
-import { buildChatPrompt, buildChatSystemAppend } from "./prompt.js";
-import type { RunnerChat, Store } from "./store.js";
+import { buildChatPrompt, buildChatSystemAppend, type ChatVideo } from "./prompt.js";
+import type { Attachment, ChatUserMessage, RunnerChat, Store } from "./store.js";
 
 // Conversación libre con mi runner (botón junto a «Proponer una idea»): projects/{pid}/chats/{id}. No hay tarea: la
 // persona pregunta o pide arreglos pequeños (p. ej. resolver un conflicto en la rama de un PR). Claude trabaja con los
@@ -31,6 +31,48 @@ import type { RunnerChat, Store } from "./store.js";
 
 /** Vueltas seguidas como mucho por cada recogida (mensajes que llegan mientras responde). */
 const MAX_ROUNDS = 10;
+
+// Vídeos (sesiones de revisión): el servidor los analiza como en el chat del proyecto (processRunnerChatVideo:
+// transcripción con tiempos y fotogramas, guardados en el mensaje). La vuelta espera a que esté (o falle) y Claude recibe
+// la transcripción en el prompt y los fotogramas como imágenes en la copia de trabajo.
+/** Cuánto se espera como mucho al análisis (la Function tiene 9 minutos). */
+export const VIDEO_WAIT_MS = 10 * 60_000;
+const VIDEO_POLL_MS = 3_000;
+
+/** Algún mensaje trae un vídeo que el servidor aún no ha terminado de analizar. */
+export function videosPending(messages: Pick<ChatUserMessage, "video" | "videoDone">[]): boolean {
+  return messages.some((m) => !!m.video && m.videoDone !== true);
+}
+
+/** Nombre de un fotograma con su minuto (como en el refinado de «Nueva idea»): fotograma-1m05s.jpg. */
+export function frameName(at: number): string {
+  const s = Math.max(0, Math.floor(at));
+  return `fotograma-${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s.jpg`;
+}
+
+/** Los fotogramas del análisis como adjuntos (imágenes) para descargarlos en la copia de trabajo. */
+export function frameAttachments(frames: ChatUserMessage["frames"]): Attachment[] {
+  return (Array.isArray(frames) ? frames : [])
+    .filter((f) => typeof f?.path === "string" && typeof f.at === "number")
+    .map((f) => ({ path: f.path, name: frameName(f.at), contentType: "image/jpeg", size: 0 }));
+}
+
+/**
+ * Lo que Claude recibe del vídeo de un mensaje: la transcripción y los fotogramas descargados (subcarpeta
+ * <mensaje>-video de .backcode-attachments) o, si el análisis falló o no llegó a tiempo, el motivo.
+ */
+async function chatVideo(store: Store, projectId: string, worktree: string, m: ChatUserMessage): Promise<ChatVideo> {
+  const durationMs = typeof m.video?.durationMs === "number" ? m.video.durationMs : undefined;
+  if (m.videoDone !== true) return { durationMs, frames: [], error: "the analysis did not finish in time" };
+  if (m.videoError) return { durationMs, frames: [], error: String(m.videoError).slice(0, 300) };
+  let frames: LocalAttachment[] = [];
+  try {
+    frames = await materializeAttachments(store, projectId, worktree, frameAttachments(m.frames), `${m.id ?? "msg"}-video`, 16);
+  } catch (err) {
+    console.warn(`[chat] ${(err as Error).message}`);
+  }
+  return { durationMs, transcript: typeof m.transcript === "string" ? m.transcript : "", frames };
+}
 
 /** Una rama a la que la conversación puede cambiar: existente en el remoto (se comprueba al hacer fetch) y no la base. */
 export function chatBranchOk(branch: string, baseBranch: string): boolean {
@@ -337,8 +379,15 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
   let error = "";
   try {
     for (let round = 0; round < MAX_ROUNDS && !abort.signal.aborted; round++) {
-      const unread = await store.unreadChatMessages(id);
+      let unread = await store.unreadChatMessages(id);
       if (!unread.length) break;
+      // Vídeos: se espera al análisis del servidor (o a que lo marque como fallido); si no llega, va sin él.
+      const waitStart = Date.now();
+      while (videosPending(unread) && Date.now() - waitStart < VIDEO_WAIT_MS && !abort.signal.aborted) {
+        activity(t("ch.analyzingVideo"));
+        await new Promise((resolve) => setTimeout(resolve, VIDEO_POLL_MS));
+        unread = await store.unreadChatMessages(id);
+      }
       await store.markChatRead(id, unread.map((m) => m.id!));
       activity(t("ch.thinking"));
       if (round > 0) permCtx = await loadPerms();
@@ -350,7 +399,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           unread.map(async (m) => ({
             text: m.text,
             files: m.attachments?.length ? await materializeAttachments(store, cfg.projectId, path, m.attachments, m.id) : [],
-            ...(typeof m.video?.durationMs === "number" ? { videoMs: m.video.durationMs } : {}),
+            ...(m.video ? { video: await chatVideo(store, cfg.projectId, path, m) } : {}),
             ...(m.voice === true ? { voice: true } : {}),
           })),
         ),

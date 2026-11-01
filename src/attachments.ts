@@ -15,8 +15,11 @@ export interface LocalAttachment {
   contentType: string;
 }
 
-/** `sub`: subcarpeta (p. ej. el id del mensaje en la conversación con el runner, donde cada mensaje trae los suyos). */
-export async function materializeAttachments(store: Store, projectId: string, worktree: string, attachments: Attachment[], sub?: string): Promise<LocalAttachment[]> {
+/**
+ * `sub`: subcarpeta (p. ej. el id del mensaje en la conversación con el runner, donde cada mensaje trae los suyos).
+ * `max`: cuántos como mucho (10; los fotogramas de un vídeo, hasta 16).
+ */
+export async function materializeAttachments(store: Store, projectId: string, worktree: string, attachments: Attachment[], sub?: string, max = 10): Promise<LocalAttachment[]> {
   if (!attachments.length) return [];
   if (sub !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(sub)) throw new Error(t("att.badPath", { path: sub }));
   await excludeFromGit(worktree, `/${ATTACHMENTS_DIR}/`);
@@ -24,7 +27,7 @@ export async function materializeAttachments(store: Store, projectId: string, wo
   const dir = join(worktree, base);
   mkdirSync(dir, { recursive: true });
   const out: LocalAttachment[] = [];
-  for (const [i, a] of attachments.slice(0, 10).entries()) {
+  for (const [i, a] of attachments.slice(0, max).entries()) {
     // Mismas restricciones que en las Functions: solo rutas de adjuntos de este proyecto.
     const m = new RegExp(`^projects/${projectId}/attachments/[A-Za-z0-9]+/([A-Za-z0-9._-]{1,120})$`).exec(a.path);
     if (!m) throw new Error(t("att.badPath", { path: a.path }));

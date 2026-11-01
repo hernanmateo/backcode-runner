@@ -51,6 +51,25 @@ test("sin CI no se mergea nunca", async () => {
   assert.equal((await autoMerge(none.d)).state, "stopped");
 });
 
+test("con CI y sin ningún check en el PR: motivo específico, no «sin CI»", async () => {
+  const { d, calls } = deps([{ ok: false, result: { error: "no checks" }, blocked: "ciNoChecks" }]);
+  const final = await autoMerge(d);
+  assert.equal(final.state, "stopped");
+  assert.deepEqual(calls, ["merge"]);
+  assert.doesNotMatch(final.reason ?? "", /no tiene CI|has no CI|no té CI/);
+  assert.match(final.reason ?? "", /CI/);
+  const legacy = deps([{ ok: false, result: { error: "no checks" }, blocked: "noChecks" }], { hasCi: true });
+  assert.doesNotMatch((await autoMerge(legacy.d)).reason ?? "", /no tiene CI|has no CI|no té CI/);
+});
+
+test("checks none porque el PR choca con la base: se arreglan los conflictos y se reintenta, no «sin CI»", async () => {
+  const { d, calls, states } = deps([conflict, green]);
+  const final = await autoMerge(d);
+  assert.equal(final.state, "merged");
+  assert.deepEqual(calls, ["merge", "fixConflicts", "merge"]);
+  assert.ok(states.every((s) => !/no tiene CI|has no CI|no té CI/.test(s.reason ?? "")));
+});
+
 test("checks en rojo o conflictos: Claude arregla (vuelve a En curso) y se reintenta", async () => {
   const { d, states, calls } = deps([red, conflict, green]);
   const final = await autoMerge(d);
