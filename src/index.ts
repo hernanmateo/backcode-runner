@@ -25,6 +25,7 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
+import { appliesTo, GRANTABLE_COMMANDS, isEmpty, localRepos, merge, missing, NONE, normalizeDomain, permissionsPrompt, readRoots, sanitize, threadGrants } from "./permissions.js";
 import { fixChecks } from "./fix-checks.js";
 import { computePlan } from "./pending.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
@@ -171,13 +172,27 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const attachments = await materializeAttachments(store, cfg.projectId, wt.path, feature.attachments ?? []);
   if (attachments.length && !resuming) await store.event(id, "start", t("run.attachments", { n: attachments.length }));
 
+  // Permisos personales (permissions.ts): los suyos del proyecto y lo concedido en el hilo, solo si la tarea la creó y
+  // la ejecuta quien tiene este runner. Se suman a los límites de siempre, nunca los quitan.
+  const history = resuming ? await store.thread(id) : [];
+  const applies = appliesTo(feature, store.uid);
+  const perms = applies ? merge(await store.permissions().catch(() => NONE), threadGrants(history)) : NONE;
+  const repos = applies ? localRepos() : new Map<string, string>();
+  const otherProjects = [...repos.keys()].filter((pid) => pid !== cfg.projectId);
+  const roots = await Promise.all(readRoots(perms, repos, cfg.projectId).map(async (r) => ({ ...r, name: await store.projectName(r.id) })));
+  const available = await Promise.all(otherProjects.filter((pid) => !perms.readProjects.includes(pid)).map(async (pid) => ({ id: pid, name: await store.projectName(pid) })));
+  const permissionsText = permissionsPrompt({ applies, perms, roots, available });
+  if (!isEmpty(perms)) await store.event(id, "start", t("run.permissions", { list: [...perms.domains, ...perms.commands, ...roots.map((r) => r.name)].join(", ") }));
+
   const previousPr = feature.result?.prUrl;
   let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
   let afterMerge: FeatureResult["afterMerge"]; // pasos tras mergear que declara Claude al abrir el PR
   // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
   const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
   let question: string | undefined; // pregunta de Claude (ask_user)
+  let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
+  const webFetch = perms.domains.map((d) => `WebFetch(domain:${d})`);
   const prServer = createSdkMcpServer({
     name: "backcode",
     version: "1.0.0",
@@ -241,6 +256,32 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           afterMerge = steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
+        },
+      ),
+      tool(
+        "request_permission",
+        "Ask the person running this task for an extra permission you truly need and don't have yet: read-only network access to specific domains (hostnames), the curl/wget commands, or reading another of their Backcode projects for examples of their own code (only the ids listed as available in your instructions). Give a short, concrete reason. They decide in the app (only this task, always, continue in their own Claude Code, or deny) and this same session continues with their decision. Don't try a blocked action first. After calling it, end your turn without further changes.",
+        {
+          reason: z.string().min(10).max(2000),
+          domains: z.array(z.string().max(300)).max(10).optional(),
+          commands: z.array(z.enum(GRANTABLE_COMMANDS)).max(2).optional(),
+          projects: z.array(z.string().max(64)).max(10).optional(),
+        },
+        async ({ reason, domains, commands, projects }) => {
+          const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+          if (question || permissionAsked) return fail(t("perm.pending"));
+          const bad = (domains ?? []).filter((d) => !normalizeDomain(d));
+          if (bad.length) return fail(t("perm.badDomain", { list: bad.join(", ") }));
+          const unknown = (projects ?? []).filter((p) => !otherProjects.includes(p));
+          if (unknown.length) return fail(t("perm.unknownProject", { list: unknown.join(", "), available: available.map((p) => `${p.name} (${p.id})`).join(", ") || "-" }));
+          const request = sanitize({ domains, commands, readProjects: projects });
+          if (isEmpty(request)) return fail(t("perm.empty"));
+          const need = missing(request, perms);
+          if (!need) return fail(t("perm.already"));
+          permissionAsked = true;
+          await store.postPermissionRequest(id, reason, need);
+          await store.event(id, "question", reason.slice(0, 300));
+          return { content: [{ type: "text" as const, text: t("perm.sent") }] };
         },
       ),
       tool(
@@ -368,7 +409,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: cfg.baseBranch, remote: cfg.remote, language: LANGUAGE_NAME[lang()] }),
+          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: cfg.baseBranch, remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
         settingSources: [],
@@ -376,16 +417,17 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         permissionMode: "dontAsk",
         // Planificando solo puede leer el repo y proponer el plan (o preguntar); sin editar ni ejecutar comandos.
         allowedTools: planning
-          ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user"]
-          : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user"],
-        disallowedTools: ["WebFetch", "WebSearch", "Agent", "Task"],
-        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected)] }] },
+          ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
+          : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
+        // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
+        disallowedTools: [...(webFetch.length ? [] : ["WebFetch"]), "WebSearch", "Agent", "Task"],
+        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected, { readRoots: roots.map((r) => r.path), allowCommands: perms.commands })] }] },
         sandbox: {
           enabled: true,
           failIfUnavailable: true,
           autoAllowBashIfSandboxed: true,
           allowUnsandboxedCommands: false,
-          network: { allowedDomains: cfg.allowedDomains, strictAllowlist: true },
+          network: { allowedDomains: [...new Set([...cfg.allowedDomains, ...perms.domains])], strictAllowlist: true },
           filesystem: { denyRead: DENY_READ, allowWrite: [wt.path] },
         },
         mcpServers: { backcode: prServer },
@@ -405,6 +447,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             read.forEach((u) => outstanding.delete(u));
             // Ha respondido (o pedido cambios) en esta misma vuelta: la pregunta o el plan anteriores ya no esperan.
             question = undefined;
+            permissionAsked = false;
             planned = false;
           }
           for (const block of msg.message.content) {
@@ -520,7 +563,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   }
 
   try {
-    const thread = resuming ? await store.thread(id) : [];
+    const thread = history;
     // Lo que escribió quien la ejecuta y Claude aún no ha recibido. Las tareas de antes de los mensajes en directo no
     // tienen marcas de leído: ahí cuenta lo escrito desde el último mensaje de Claude, y lo anterior se da por leído.
     const fromUser = thread.filter((m) => m.author === "user");
@@ -592,13 +635,13 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     return { status: "execute", result: { ...result, prUrl: prUrl ?? previousPr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   }
   // El resumen de cada vuelta queda en el hilo; si preguntó o propuso un plan, eso ya está publicado.
-  if (!question && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
+  if (!question && !permissionAsked && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
   // Mensajes que llegaron al final y Claude no llegó a leer: vuelve a la cola y la siguiente vuelta empieza por ellos.
   const unread = userMessages.some((m) => m.kind === "message" && !m.read && !handled.has(m.id ?? ""));
   if (unread && !result.error && !stopping) {
     return { status: "execute", result: { ...result, prUrl: prUrl ?? previousPr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   }
-  if (question && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
+  if ((question || permissionAsked) && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
   // Plan propuesto: espera a que lo aprueben o pidan cambios (como una pregunta).
   if (planned && !result.error) return { status: "waiting", result: { ...result, planReady: true, error: undefined }, sessionId };
   if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan") }, sessionId };

@@ -31,6 +31,7 @@ import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
+import { NONE, sanitize, type Permissions } from "./permissions.js";
 import type { DeployPlan } from "./pending.js";
 import type { DeployVia } from "./deploy-log.js";
 import type { TaskBuild } from "./deploy-tasks.js";
@@ -67,6 +68,8 @@ export interface Feature {
   refinedPrompt: string;
   acceptanceCriteria?: string[];
   status: FeatureStatus;
+  /** Quien la creó: los permisos personales solo se aplican si es también quien la ejecuta (permissions.ts). */
+  createdBy?: string;
   assignee?: string;
   branch?: string;
   promptHash?: string;
@@ -123,11 +126,15 @@ export interface Attachment {
 export interface ThreadMessage {
   id?: string;
   author: "user" | "claude";
-  kind: "message" | "question" | "summary" | "plan";
+  kind: "message" | "question" | "summary" | "plan" | "permission" | "grant";
   text: string;
   at?: Timestamp;
   /** Cuándo lo recibió Claude (mensajes de la persona). */
   read?: Timestamp;
+  /** kind "permission": lo que pide Claude. */
+  request?: Permissions;
+  /** kind "grant": lo que decidió la persona (once / always / deny) y lo concedido. */
+  grant?: Permissions & { decision: "once" | "always" | "deny" };
 }
 
 /** Encargo de refinado que prepara refineFeature: instrucciones, petición (con contexto) y adjuntos. */
@@ -431,6 +438,23 @@ export class Store {
   /** Añade un mensaje de Claude al hilo de la tarea (un plan puede ser bastante más largo que el resto). */
   async postMessage(id: string, kind: "question" | "summary" | "plan", text: string): Promise<void> {
     await addDoc(collection(this.feature(id), "messages"), { author: "claude", kind, text: text.slice(0, kind === "plan" ? 20_000 : 4000), at: serverTimestamp() });
+  }
+
+  /** Claude pide permisos (la tarea queda esperando, como con una pregunta; la persona decide en la app). */
+  async postPermissionRequest(id: string, reason: string, request: Permissions): Promise<void> {
+    await addDoc(collection(this.feature(id), "messages"), { author: "claude", kind: "permission", text: reason.slice(0, 4000), request, at: serverTimestamp() });
+  }
+
+  /** Mis permisos personales en este proyecto («Mis permisos» en la app); sin documento, ninguno. */
+  async permissions(): Promise<Permissions> {
+    const d = await getDoc(doc(this.project(), "permissions", this.uid));
+    return d.exists() ? sanitize(d.data()) : NONE;
+  }
+
+  /** Nombre de otro proyecto (para las instrucciones de Claude); el id si no se puede leer. */
+  async projectName(projectId: string): Promise<string> {
+    const d = await getDoc(doc(this.db, "projects", projectId)).catch(() => null);
+    return String(d?.get("name") ?? projectId).replaceAll(/[\r\n"]+/g, " ").slice(0, 80);
   }
 
   /** Hilo completo de la tarea, en orden. */
