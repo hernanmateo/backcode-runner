@@ -753,6 +753,37 @@ export function stripNpmUsage(out: string): string {
   return out.replace(/^npm (?:error|ERR!) Usage:\r?\n[\s\S]*?^npm (?:error|ERR!) Run "npm help [\w-]+" for more info\r?\n?/gm, "");
 }
 
+/**
+ * Causa de un fallo de Gradle: el bloque «* What went wrong:» (hasta «* Try:» o similar). En `eas build --local` sale
+ * mucho antes de la traza final de @expo/build-tools, así que al recortar la salida por el final se perdía. Las líneas
+ * pueden llevar prefijo (p. ej. `[RUN_GRADLEW]`). Vacío si no hay ninguno.
+ */
+export function gradleFailure(out: string, max = 1200): string {
+  const blocks: string[] = [];
+  const lines = out.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("* What went wrong:")) continue;
+    const block: string[] = [];
+    for (let j = i + 1; j < lines.length && block.length < 15; j++) {
+      if (/\* (?:Try|Exception is|Get more help(?: at)?)\b:?|BUILD FAILED|What went wrong:/.test(lines[j])) break;
+      if (lines[j].trim()) block.push(lines[j].trimEnd());
+    }
+    const text = block.join("\n");
+    if (text && !blocks.includes(text)) blocks.push(text);
+  }
+  return blocks.join("\n").slice(0, max);
+}
+
+/** Últimas `max` letras de la salida de un comando fallido; si hay un error de Gradle que se perdería, va delante. */
+export function failureOutput(out: string, max = 2800): string {
+  const clean = stripNpmUsage(out);
+  const tail = clean.slice(-max);
+  const cause = gradleFailure(clean);
+  if (!cause || tail.includes(cause)) return tail;
+  const head = `${t("act.gradleCause")}\n${cause}\n…\n`;
+  return head + clean.slice(-Math.max(0, max - head.length));
+}
+
 export const otaMissing = () => t("act.otaMissing");
 
 /** Copia ficheros locales ignorados por git (p. ej. .env con el token del servidor de OTA) a la copia limpia. */
@@ -898,7 +929,7 @@ export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record
       clearTimeout(timer);
       if (finished) return;
       if (code === 0) resolve(out);
-      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: stripNpmUsage(out).slice(-2800) })));
+      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: failureOutput(out) })));
     });
   });
 }
