@@ -16,6 +16,8 @@ import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke
 import { otaScriptArgs } from "./ota.js";
 import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
+import { scopeOf } from "./pending.js";
+import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from "./versions.js";
 
 // Acciones que pide un admin desde la app y ejecuta su runner con sus credenciales (gh / Bitbucket / EAS):
 // mergear el PR de una tarea, publicar un OTA de Expo (EAS Update o el script `ota:publish` del repo, p. ej. xprem) o
@@ -60,6 +62,8 @@ export interface StepResult {
   id: string;
   ok: boolean;
   sha?: string;
+  version?: string;
+  updateId?: string;
   url?: string;
   error?: string;
 }
@@ -68,6 +72,15 @@ export interface ActionResult {
   steps?: StepResult[];
   url?: string;
   sha?: string;
+  /**
+   * Versión de lo publicado (ver versions.ts): despliegue, la de su carpeta (runner 1.0.78, web 1.4.0); OTA, su
+   * runtimeVersion. Sin versión propia (reglas, functions…), ausente: la app enseña la fecha.
+   */
+  version?: string;
+  /** Build: número de build que asignó EAS (buildNumber / versionCode), si lo imprimió. */
+  buildNumber?: string;
+  /** OTA: id del grupo de update que imprime `eas update`. */
+  updateId?: string;
   error?: string;
   /** Checks que no están en verde (si se rechaza por eso). */
   checks?: string[];
@@ -374,7 +387,10 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
     // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback) y constan en el OTA.
     const features = rollbackTo ? [] : await markDeployedTasks(store, channel, commit, (a, c) => isAncestor(cfg.repoPath, a, c));
-    return { ok: true, result: { url, sha: commit, features, log: `${smoke ? `${smoke.detail}\n` : skipSmoke ? `${t("smoke.skipped")}\n` : ""}${out.slice(-1400)}` } };
+    // Versión del OTA: la runtimeVersion que imprime EAS o, si no, la de la app (runtimeVersion = versión de la app).
+    const ota = otaInfoFrom(out);
+    const version = ota.runtimeVersion ?? (await readVersion(readFrom(dir), ""));
+    return { ok: true, result: { url, sha: commit, ...(version ? { version } : {}), ...(ota.updateId ? { updateId: ota.updateId } : {}), features, log: `${smoke ? `${smoke.detail}\n` : skipSmoke ? `${t("smoke.skipped")}\n` : ""}${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -469,7 +485,8 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
         return { ok: false, result: { url, sha: commit, error: `${hint}${before}${platform}: ${message}`.slice(0, hint.length + before.length + 3000) } };
       }
     }
-    return { ok: true, result: { url, sha: commit, log: `${done.join(" + ")} · ${version} (runtime ${runtimeVersion})\n${log.slice(-1400)}` } };
+    const buildNumber = buildNumberFrom(log);
+    return { ok: true, result: { url, sha: commit, version, ...(buildNumber ? { buildNumber } : {}), log: `${done.join(" + ")} · ${version}${buildNumber ? ` (${buildNumber})` : ""} (runtime ${runtimeVersion})\n${log.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
   } finally {
@@ -504,7 +521,7 @@ async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefin
       : await withTasks(cfg, store, id, await runDeploy(cfg, host, id.slice("deploy:".length)));
     const { ok, result } = await Promise.resolve(done).catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult }));
     for (const f of result.features ?? []) if (features.length < MAX_DEPLOYED_TASKS && !features.some((g) => g.id === f.id)) features.push(f);
-    results.push({ id, ok, ...(result.sha ? { sha: result.sha } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
+    results.push({ id, ok, ...(result.sha ? { sha: result.sha } : {}), ...(result.version ? { version: result.version } : {}), ...(result.updateId ? { updateId: result.updateId } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
     log.push(`${ok ? "✓" : "✗"} ${label}${result.url ? ` · ${result.url}` : ""}`);
     if (!ok) {
       const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${s.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`);
@@ -699,7 +716,10 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
     const out = await exec(target.auto ? target.auto.cmd : [target.pm, "run", `${DEPLOY_PREFIX}${target.name}`], dir, { timeoutMs: DEPLOY_TIMEOUT_MS });
     // El enlace que suelen imprimir (URL de la web, del servicio…): el último que aparezca.
     const url = out.match(/https:\/\/[^\s"'<>)\]]+/g)?.pop();
-    return { ok: true, result: { url, sha: commit, log: out.slice(-1400) } };
+    // Versión de lo desplegado (runner 1.0.78, web la de la app); reglas, functions o una landing: ninguna.
+    const vdir = versionDir(target, scopeOf(target).rank);
+    const version = vdir === null ? undefined : await readVersion(readFrom(wt), vdir);
+    return { ok: true, result: { url, sha: commit, ...(version ? { version } : {}), log: out.slice(-1400) } };
   } catch (err) {
     const error = String((err as Error).message);
     const hint = missingModulesHint(error, target.auto?.deps?.length ? target.auto.deps.map((d) => d.dir) : [target.dir]);

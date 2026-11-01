@@ -58,7 +58,7 @@ test("plan: build pendiente por plataforma con cambios nativos desde su última 
   const built = commit({ "app/app.json": '{"expo":{}}', "app/package.json": JSON.stringify({ dependencies: { expo: "55" } }), "app/src/a.tsx": "1" }, "base");
   const app: ExpoApp = { appDir: "app", channels: [], ota: null, pm: "npm", buildProfiles: ["production"] };
   const cfg = { repoPath: repo, remote: "origin", baseBranch: "main" } as RunnerConfig;
-  const store = (last: Record<string, string>) => ({ lastDeploys: async () => new Map(Object.entries(last)), mergedFeatures: async () => [] }) as unknown as Store;
+  const store = (last: Record<string, string>) => ({ lastDeploysTimed: async () => new Map(Object.entries(last).map(([id, sha]) => [id, { sha, at: 0 }])), mergedFeatures: async () => [] }) as unknown as Store;
   const both = { "build:ios": built, "build:android": built };
 
   commit({ "app/src/a.tsx": "2", "app/package.json": JSON.stringify({ dependencies: { expo: "55", zod: "4" } }) }, "solo JS");
