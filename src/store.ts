@@ -761,8 +761,8 @@ export class Store {
     await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
   }
 
-  async markMerged(featureId: string, sha?: string): Promise<void> {
-    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "" } });
+  async markMerged(featureId: string, sha?: string, auto = false): Promise<void> {
+    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}) } });
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */
@@ -890,6 +890,45 @@ export class Store {
     return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
   }
 
+  /** «Modo auto» del proyecto (mergear solo las tareas terminadas; lo cambian los admins en la app) y su máximo de reintentos. */
+  watchAutoMerge(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => onChange({ on: d.get("autoMerge") === true, retries: typeof d.get("autoMergeRetries") === "number" ? (d.get("autoMergeRetries") as number) : undefined }),
+      () => undefined,
+    );
+  }
+
+  /** Estado del modo auto en una tarea con PR listo (auto-merge.ts): lo enseña la app y avisa al agotar los reintentos. */
+  async setAutoMerge(featureId: string, state: { state: string; attempts: number; reason?: string }): Promise<void> {
+    await updateDoc(this.feature(featureId), { autoMerge: { state: state.state, attempts: state.attempts, ...(state.reason ? { reason: state.reason.slice(0, 500) } : {}), at: serverTimestamp() } });
+  }
+
+  /**
+   * Turno de merge del proyecto (projects/{pid}/locks/autoMerge): un solo merge automático a la vez entre todos los
+   * runners, para que uno no deje en conflicto al siguiente sin enterarse. Caduca solo (`until`) si el runner se cae.
+   * Devuelve false si lo tiene otro.
+   */
+  async takeMergeTurn(leaseMs: number): Promise<boolean> {
+    const ref = doc(this.project(), "locks", "autoMerge");
+    return runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      const holder = lock.get("holder") as string | undefined;
+      const until = (lock.get("until") as Timestamp | undefined)?.toMillis() ?? 0;
+      if (holder && holder !== this.uid && until > Date.now()) return false;
+      tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(Date.now() + leaseMs) });
+      return true;
+    }).catch(() => false);
+  }
+
+  async releaseMergeTurn(): Promise<void> {
+    const ref = doc(this.project(), "locks", "autoMerge");
+    await runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      if (lock.get("holder") === this.uid) tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(0) });
+    }).catch(() => undefined);
+  }
+
   /** Ajustes de la app para crear proyectos (carpeta de proyectos, proveedor por defecto). Solo los escribe la app. */
   watchWorkspace(onChange: (w: { projectsDir?: string; keepAwake?: string }) => void): () => void {
     return onSnapshot(
@@ -982,6 +1021,12 @@ export class Store {
     const d = await getDoc(this.project());
     const oneLine = (s: unknown) => String(s ?? "").replaceAll(/[\r\n]+/g, " ").slice(0, 100);
     return { name: oneLine(d.get("name")), context: String(d.get("context") ?? "").slice(0, 8000), codeReview: reviewLevel(d.get("codeReview")) };
+  }
+
+  /** Resultado guardado del code review automático de la tarea (el modo auto no mergea con fallos graves pendientes). */
+  async reviewStateOf(id: string): Promise<{ state?: string; majors: number }> {
+    const review = (await getDoc(this.feature(id))).get("review") as { state?: string; findings?: { severity?: string }[] } | undefined;
+    return { state: review?.state, majors: (review?.findings ?? []).filter((f) => f.severity === "major").length };
   }
 
   /** Estado del code review automático de la tarea (mientras se ejecuta); null lo quita. */

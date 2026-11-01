@@ -109,8 +109,8 @@ export function setRequireChecks(on: boolean): void {
 }
 
 /** Solo se continúa con todo en verde (o sin checks configurados, si el proyecto no los exige). */
-export function requireGreen(checks: Checks, what: string): ActionResult | null {
-  if (checks.state === "green" || (checks.state === "none" && !requireChecks)) return null;
+export function requireGreen(checks: Checks, what: string, strict = requireChecks): ActionResult | null {
+  if (checks.state === "green" || (checks.state === "none" && !strict)) return null;
   if (checks.state === "none") return { error: t("act.checksRequired", { what }) };
   return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
 }
@@ -272,23 +272,31 @@ export async function mergeUnlessConflict(host: PrHost, prUrl: string): Promise<
   }
 }
 
-async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string) {
-  if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
+/** Por qué no se mergeó un PR (el modo auto lo usa para decidir si arregla y reintenta o se para: auto-merge.ts). */
+export type MergeBlock = "noHost" | "noPr" | "closed" | "noChecks" | "pending" | "checks" | "conflicts";
+
+/**
+ * Mergea (squash) el PR de una tarea si sus checks están en verde. `auto`: lo hace el modo auto del proyecto, que nunca
+ * mergea sin checks (aunque el proyecto no los exija) y deja la marca `merged.auto` para el aviso.
+ */
+export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, opts: { auto?: boolean } = {}): Promise<{ ok: boolean; result: ActionResult; blocked?: MergeBlock }> {
+  if (!host) return { ok: false, result: { error: t("act.noHostMerge") }, blocked: "noHost" };
   const prUrl = await store.prUrlOf(featureId);
-  if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: t("act.noPr") } };
+  if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: t("act.noPr") }, blocked: "noPr" };
   // Antes, el estado real del PR: puede haberse mergeado o cerrado a mano en GitHub/Bitbucket.
   const pr = await host.prState(prUrl).catch(() => null);
   if (pr?.state === "merged") {
-    await store.markMerged(featureId, pr.sha);
+    await store.markMerged(featureId, pr.sha, opts.auto);
     return { ok: true, result: { url: prUrl, sha: pr.sha } };
   }
   if (pr?.state === "closed") {
-    return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl } };
+    return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "closed" };
   }
   const checks = await checksWhenDone(() => host.prChecks(prUrl), "PR");
-  const blocked = requireGreen(checks, "PR");
+  const blocked = requireGreen(checks, "PR", requireChecks || opts.auto === true);
+  const why: MergeBlock = checks.state === "failing" ? "checks" : checks.state === "pending" ? "pending" : "noChecks";
   // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
-  if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked };
+  if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked, blocked: why };
   const merged = await mergeUnlessConflict(host, prUrl);
   if (!merged) {
     // Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca
@@ -301,10 +309,10 @@ async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, 
       : [];
     if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
     const error = files.length ? t("act.prConflictsFiles", { base: cfg.baseBranch, files: files.join(", ") }) : t("act.prConflicts", { base: cfg.baseBranch });
-    return { ok: false, result: { error, url: prUrl } };
+    return { ok: false, result: { error, url: prUrl }, blocked: "conflicts" };
   }
   const { sha } = merged;
-  await store.markMerged(featureId, sha);
+  await store.markMerged(featureId, sha, opts.auto);
   // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
   await syncLocal(cfg);
   // La rama ya no existe: la copia de trabajo de la tarea sobra.

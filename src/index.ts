@@ -18,7 +18,8 @@ import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployC
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
-import { installIfNeeded, logLocalSync, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
@@ -90,6 +91,56 @@ let busy = false;
 /** Hay versión nueva: se termina lo que esté en marcha, no se coge nada más y se reinicia. */
 let restarting = false;
 let stopping = false;
+
+// «Modo auto» del proyecto (auto-merge.ts): las tareas que este runner termina con PR se mergean solas, de una en una
+// (y con el turno del proyecto, entre runners). Nunca se despliega ni se publica nada.
+const autoMergeSettings = { on: false, retries: clampRetries(undefined) };
+const autoMergeAbort = new AbortController();
+const autoMergeQueue: string[] = [];
+let autoMergeBusy = false;
+function queueAutoMerge(featureId: string): void {
+  if (!autoMergeSettings.on || !prHost || autoMergeQueue.includes(featureId)) return;
+  autoMergeQueue.push(featureId);
+  void drainAutoMerge();
+}
+async function drainAutoMerge(): Promise<void> {
+  if (autoMergeBusy) return;
+  autoMergeBusy = true;
+  try {
+    while (!stopping && !restarting && autoMergeQueue.length) {
+      const featureId = autoMergeQueue.shift()!;
+      if (!autoMergeSettings.on) continue;
+      const release = awake.hold();
+      const signal = autoMergeAbort.signal;
+      const final = await autoMerge({
+        featureId,
+        base: cfg.baseBranch,
+        retries: autoMergeSettings.retries,
+        hasCi: store.capabilities.ci,
+        merge: () => mergeTask(cfg, store, prHost, featureId, { auto: true }),
+        fixChecks: () => fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, signal, featureId),
+        fixConflicts: () => fixConflicts(cfg, store, prHost, agentEnv(), signal, featureId),
+        setState: (state) => store.setAutoMerge(featureId, state),
+        takeTurn: () => store.takeMergeTurn(TURN_LEASE_MS),
+        releaseTurn: () => store.releaseMergeTurn(),
+        log: (text) => console.log(`[auto] ${featureId} ${text}`),
+        // Con el code review automático del proyecto: no se mergea con fallos graves pendientes ni si el review falló.
+        beforeMerge: async () => {
+          const review = await store.reviewStateOf(featureId);
+          if (review.state === "findings" && review.majors) return { ok: false, reason: t("auto.reviewBlocked", { n: review.majors }) };
+          if (review.state === "error" || review.state === "reviewing") return { ok: false, reason: t("auto.reviewFailed") };
+          return { ok: true };
+        },
+        shouldStop: () => stopping || restarting || signal.aborted,
+      })
+        .catch((err: Error) => ({ state: "error", reason: err.message }))
+        .finally(release);
+      console.log(`[auto] ${featureId} ${final.state}${final.reason ? `: ${final.reason}` : ""}`);
+    }
+  } finally {
+    autoMergeBusy = false;
+  }
+}
 
 // "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
 type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
@@ -799,6 +850,7 @@ async function drain(): Promise<void> {
           const fallback = result.prUrl ? "done" : "waiting";
           await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
           await store.event(id, status, result.prUrl ?? result.error ?? "");
+          if (status === "done" && result.prUrl?.startsWith("https://")) queueAutoMerge(id);
         }
         console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
         void refreshQuota();
@@ -1018,6 +1070,10 @@ async function main(): Promise<void> {
     }
   });
   const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
+  const stopAutoMerge = store.watchAutoMerge(({ on, retries }) => {
+    autoMergeSettings.on = on;
+    autoMergeSettings.retries = clampRetries(retries);
+  });
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -1343,6 +1399,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopAutoMerge();
+    autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
@@ -1389,6 +1447,8 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopAutoMerge();
+    autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
     clearInterval(updateNoticeTimer);
