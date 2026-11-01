@@ -7,7 +7,8 @@ import { projectFiles } from "./paths.js";
 // tareas. Dos fuentes: los suyos del proyecto (projects/{pid}/permissions/{uid}, «Mis permisos» en la app) y lo que
 // concede en el hilo cuando Claude lo pide (mensajes kind "grant": once = solo esta tarea, always = también se guardó
 // en sus permisos). Solo se aplican si la tarea la creó y la ejecuta la misma persona: una tarea que te pasan o te
-// propone otro se ejecuta con los límites de siempre (si pide algo, la app solo ofrece seguir en tu Claude Code o denegar).
+// propone otro se ejecuta con los límites de siempre (si pide algo, la app ofrece denegarlo y,
+// si la sesión está en tu ordenador, seguir en tu Claude Code; en el runner compartido de otro, solo denegarlo).
 //
 // Lo que nunca cambia: escribir solo en el worktree, las carpetas sensibles bloqueadas, la red solo a la lista cerrada
 // (estos dominios se suman a BACKCODE_ALLOWED_DOMAINS, nunca «toda la red») y git/gh/ssh/sudo bloqueados.

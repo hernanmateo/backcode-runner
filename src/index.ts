@@ -26,6 +26,7 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
+import { prepareTaskDependencies } from "./task-deps.js";
 import { appliesTo, checkPermissionRequest, isEmpty, loadPermissionContext, REQUEST_PERMISSION_INPUT, sessionPermissions, threadGrants } from "./permissions.js";
 import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
@@ -221,6 +222,15 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     } else if (sync?.status === "conflicts") {
       conflicts = sync.files;
       await store.event(id, "start", t("run.conflicts", { base: `${cfg.remote}/${cfg.baseBranch}`, files: conflicts.join(", ") }));
+    }
+  }
+  // Dependencias listas antes de Claude (task-deps.ts): dentro del sandbox, instalarlas a menudo no acaba. Planificando
+  // solo lee, así que se dejan para cuando se apruebe el plan.
+  if (!planning) {
+    const deps = await prepareTaskDependencies({ worktree: wt.path, base: `${cfg.remote}/${cfg.baseBranch}` });
+    for (const d of deps) {
+      const where = d.dir || t("act.root");
+      await store.event(id, "start", d.ok ? t("run.deps", { cmd: d.cmd.join(" "), dir: where }) : t("run.depsFail", { cmd: d.cmd.join(" "), dir: where, error: d.error ?? "" }));
     }
   }
   const attachments = await materializeAttachments(store, cfg.projectId, wt.path, feature.attachments ?? []);
@@ -783,7 +793,19 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
+  // Acabó sin PR pero con trabajo hecho (p. ej. no pudo pasar los tests y pregunta cómo seguir en su resumen): espera a
+  // quien la ejecuta, que puede contestarle en el hilo, en vez de darla por fallida.
+  if (!result.error && sessionId && (await hasWork(wt.path))) {
+    await store.event(id, "say", t("run.noPrWaiting"));
+    return { status: "waiting", result: { ...result, error: undefined }, sessionId };
+  }
   return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr"), ...(result.error ? {} : { errorCode: "noPr" as const }) }, sessionId };
+}
+
+/** ¿Hay cambios sin publicar en el worktree (sin commitear o commits por delante de la base)? */
+async function hasWork(worktree: string): Promise<boolean> {
+  const dirty = await git(worktree, ["status", "--porcelain"]).then((o) => o.trim().length > 0, () => false);
+  return dirty || (await commitsAhead(worktree, cfg.remote, cfg.baseBranch).catch(() => 0)) > 0;
 }
 
 /** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */

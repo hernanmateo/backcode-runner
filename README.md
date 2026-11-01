@@ -131,9 +131,10 @@ For every task you accept, the runner:
 
 1. **Claims it** and checks that it's yours, that you're still in the group and that the brief hasn't changed since you accepted it.
 2. **Creates an isolated worktree** on its own branch (`backcode/<you>/<task>`) from the latest base branch. Your working copy is never touched.
+   It installs the dependencies there first (outside the sandbox, with the repo's lockfile and package manager: `bun install --frozen-lockfile`, `npm ci`…, only where `node_modules` is git-ignored and the dependency files are still the base branch's), so Claude can run tests, type checks and lint right away.
 3. **Runs Claude Code** with the brief and its attachments, sandboxed to that worktree. If something essential is unclear, Claude
    **asks in the task thread** and the same session continues with your answer. With **plan mode**, it first proposes a plan
-   (read-only) that you refine and approve.
+   (read-only) that you refine and approve. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
