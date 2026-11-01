@@ -30,6 +30,8 @@ export interface PrHost {
   listOpen(): Promise<OpenPr[]>;
   /** Cierra el PR sin mergear; con `deleteBranch`, borra también su rama del remoto. */
   close(prUrl: string, deleteBranch: boolean): Promise<void>;
+  /** Deja un comentario en el PR (p. ej. el resultado del code review automático); ausente si el host no lo admite. */
+  comment?(prUrl: string, body: string): Promise<void>;
 }
 
 export interface OpenPr {
@@ -144,6 +146,9 @@ export function githubHost(repoPath: string): PrHost {
         const state = await gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => "");
         if (state !== "CLOSED") throw e;
       });
+    },
+    async comment(prUrl, body) {
+      await gh(["pr", "comment", prUrl, "--body", body]);
     },
   };
 }

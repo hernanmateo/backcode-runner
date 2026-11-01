@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
 import {
@@ -84,6 +85,8 @@ export interface Feature {
   model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
   /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
   conflicts?: string[];
+  /** Resultado del code review automático de la última vuelta con cambios (code-review.ts). */
+  review?: ReviewState;
   suggestedModel?: "haiku" | "sonnet" | "opus" | "fable";
   /** Modo plan: antes de tocar código, Claude propone un plan que quien la ejecuta refina en el hilo y aprueba. */
   planFirst?: boolean;
@@ -943,10 +946,20 @@ export class Store {
     await Promise.all(groups.docs.map((g) => setDoc(doc(this.db, "groups", g.id, "quota", this.uid), { ...quota, updatedAt: serverTimestamp() })));
   }
 
-  async projectInfo(): Promise<{ name: string; context: string }> {
+  async projectInfo(): Promise<{ name: string; context: string; codeReview: ReviewLevel | null }> {
     const d = await getDoc(this.project());
     const oneLine = (s: unknown) => String(s ?? "").replaceAll(/[\r\n]+/g, " ").slice(0, 100);
-    return { name: oneLine(d.get("name")), context: String(d.get("context") ?? "").slice(0, 8000) };
+    return { name: oneLine(d.get("name")), context: String(d.get("context") ?? "").slice(0, 8000), codeReview: reviewLevel(d.get("codeReview")) };
+  }
+
+  /** Estado del code review automático de la tarea (mientras se ejecuta); null lo quita. */
+  async setReview(id: string, review: ReviewState | null): Promise<void> {
+    if (!review) {
+      await updateDoc(this.feature(id), { review: deleteField() });
+      return;
+    }
+    const { error, ...rest } = review;
+    await updateDoc(this.feature(id), { review: { ...rest, ...(error ? { error: error.slice(0, 500) } : {}), findings: review.findings.slice(0, MAX_FINDINGS), at: serverTimestamp() } });
   }
 
   async extendLease(id: string): Promise<void> {
