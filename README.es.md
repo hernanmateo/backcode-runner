@@ -437,6 +437,12 @@ En el **modo conversación por voz** de la app, tus mensajes llegan marcados com
 runner le pide a Claude que responda como en una conversación hablada (corto, sin Markdown, código ni rutas), porque la app
 lo lee en voz alta. Lo que hace y edita sigue igual, con los mismos límites.
 
+**Títulos tipo épica** (desde la versión 1.0.81): cada conversación es como una épica, así que Claude le pone con
+`set_conversation_title` un título muy corto del tema (2–5 palabras, máx. 60 caracteres, sin punto final; p. ej. «Historial
+del chat») en su primera respuesta y solo lo cambia si el tema general cambia o se amplía. Hasta entonces la app muestra el
+primer mensaje recortado. Si la renombras a mano en el historial (*Renombrar*), queda `titleManual: true` y el runner ya no la
+retitula (las reglas de Firestore tampoco se lo dejan).
+
 ## Acciones desde la app (las ejecuta tu runner)
 Cuando pides algo de esto en la app, lo ejecuta **el runner de quien lo pide**, con sus credenciales; el servidor nunca tiene tus
 tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Claude.

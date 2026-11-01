@@ -164,7 +164,10 @@ export interface RunnerChat {
   uid: string;
   /** Runner que la atiende si no es el de quien la abrió (el de un compañero que lo comparte). */
   runnerUid?: string;
+  /** Al crearla, el primer mensaje recortado (provisional); luego el que pone Claude con set_conversation_title. */
   title: string;
+  /** La persona la renombró a mano: el runner ya no cambia el título. */
+  titleManual?: boolean;
   status: "pending" | "running" | "idle" | "failed";
   sessionId?: string;
   /** Rama a la que se cambió con checkout_branch (la conversación sigue en ella). */
@@ -690,6 +693,18 @@ export class Store {
     if (typeof clean.activity === "string") clean.activity = clean.activity.slice(0, 300);
     if (typeof clean.error === "string") clean.error = clean.error.slice(0, 1000);
     await updateDoc(doc(this.project(), "chats", id), { ...clean, updatedAt: serverTimestamp() });
+  }
+
+  /** Título de la conversación (set_conversation_title), salvo si la persona la renombró a mano: entonces "manual" y no se toca. */
+  async setChatTitle(id: string, title: string): Promise<"set" | "manual"> {
+    const ref = doc(this.project(), "chats", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists()) throw new Error("chat not found");
+      if (d.get("titleManual") === true) return "manual";
+      if (d.get("title") !== title) tx.update(ref, { title, updatedAt: serverTimestamp() });
+      return "set";
+    });
   }
 
   /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */

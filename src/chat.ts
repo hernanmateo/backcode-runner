@@ -44,8 +44,31 @@ export function chatBranchOk(branch: string, baseBranch: string): boolean {
 export const CHAT_ALLOWED_TOOLS = [
   "Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite",
   "mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__task_status",
-  "mcp__backcode__message_task",
+  "mcp__backcode__message_task", "mcp__backcode__set_conversation_title",
 ];
+
+/** Largo máximo del título de una conversación (el que pone Claude con set_conversation_title o la persona al renombrarla). */
+export const CHAT_TITLE_MAX = 60;
+
+/**
+ * Limpia el título que propone Claude para la conversación (tipo épica: 2–5 palabras): un solo renglón, sin comillas ni
+ * punto final alrededor y hasta CHAT_TITLE_MAX caracteres. null si queda vacío.
+ */
+export function conversationTitle(raw: string): string | null {
+  const title = raw
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .replace(/^["'«“\s]+/, "")
+    .replace(/["'»”.。…\s]+$/, "")
+    .slice(0, CHAT_TITLE_MAX)
+    .trim();
+  return title || null;
+}
+
+/** Si el runner puede cambiar el título: no cuando la persona la renombró a mano (titleManual). */
+export function canRetitle(chat: { titleManual?: boolean }): boolean {
+  return chat.titleManual !== true;
+}
 
 /** Lo que pide Claude con create_task, ya limpio (los límites los vuelve a comprobar createChatTask). */
 export interface ChatTaskInput {
@@ -237,6 +260,22 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
         },
       ),
       tool(
+        "set_conversation_title",
+        `Set the title of this conversation as shown in the member's history: a very short, descriptive summary of its overall topic, like an epic (2-5 words, at most ~40 characters, in their language, no final period). Hard limit ${CHAT_TITLE_MAX} characters. It fails if the member renamed the conversation by hand.`,
+        { title: z.string().min(1).max(200) },
+        async (raw) => {
+          const title = conversationTitle(raw.title);
+          if (!title) return fail(t("ch.titleFailed", { error: "title" }));
+          try {
+            const result = await store.setChatTitle(id, title);
+            if (result === "manual") return fail(t("ch.titleManual"));
+            return reply(t("ch.titleSet", { title }));
+          } catch (err) {
+            return fail(t("ch.titleFailed", { error: String((err as Error).message ?? err).slice(0, 500) }));
+          }
+        },
+      ),
+      tool(
         "task_status",
         "List the tasks created from this conversation with their status (execute = queued, running, waiting = Claude asked something or proposed a plan, done = draft pull request ready, failed), branch and pull request link.",
         {},
@@ -291,7 +330,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
-            append: buildChatSystemAppend({ projectName: deps.project.name, projectContext: deps.project.context, worktree: path, baseBranch, remote, language: LANGUAGE_NAME[lang()] }),
+            append: buildChatSystemAppend({ projectName: deps.project.name, projectContext: deps.project.context, worktree: path, baseBranch, remote, language: LANGUAGE_NAME[lang()], titleManual: !canRetitle(chat) }),
           },
           // Los mismos límites que una tarea: sin settings del usuario ni del repo, dontAsk, guard y sandbox.
           settingSources: [],
