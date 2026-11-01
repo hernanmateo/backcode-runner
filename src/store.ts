@@ -71,6 +71,8 @@ export interface Feature {
   /** Quien la creó: los permisos personales solo se aplican si es también quien la ejecuta (permissions.ts). */
   createdBy?: string;
   assignee?: string;
+  /** Runner que la ejecuta si no es el del asignado (el de un compañero que lo comparte; lo pone el servidor). */
+  runnerUid?: string;
   branch?: string;
   promptHash?: string;
   attempts?: number;
@@ -156,6 +158,8 @@ export interface ChatUserMessage extends ThreadMessage {
 /** Conversación libre con mi runner (projects/{pid}/chats/{id}). */
 export interface RunnerChat {
   uid: string;
+  /** Runner que la atiende si no es el de quien la abrió (el de un compañero que lo comparte). */
+  runnerUid?: string;
   title: string;
   status: "pending" | "running" | "idle" | "failed";
   sessionId?: string;
@@ -304,6 +308,16 @@ export class Store {
     return query(this.features(), where("status", "==", "execute"), where("assignee", "==", this.uid));
   }
 
+  /** Tareas de compañeros que se aceptaron con mi runner (runnerUid): van a su nombre, pero las ejecuto yo. */
+  sharedQueue() {
+    return query(this.features(), where("status", "==", "execute"), where("runnerUid", "==", this.uid));
+  }
+
+  /** Si la tarea la ejecuta este runner: la que lleva mi runnerUid o, sin runnerUid, la que acepté yo. */
+  executes(f: { assignee?: string; runnerUid?: string }): boolean {
+    return (f.runnerUid ?? f.assignee) === this.uid;
+  }
+
   /**
    * Móviles de este ordenador para «Instalar en mi móvil» (projects/{pid}/runners/{uid}/private/devices): solo los lee
    * su dueño. Nombre, modelo, sistema y si está listo; nada más.
@@ -379,8 +393,12 @@ export class Store {
 
   /** Con el lock en mano, mis tareas en 'running' son huérfanas de un runner anterior (salvo las hechas fuera: orphanFate). */
   async recoverOrphans(): Promise<void> {
-    const snap = await getDocs(query(this.features(), where("status", "==", "running"), where("assignee", "==", this.uid)));
-    for (const d of snap.docs) {
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("status", "==", "running"), where("assignee", "==", this.uid))),
+      getDocs(query(this.features(), where("status", "==", "running"), where("runnerUid", "==", this.uid))),
+    ]);
+    for (const d of [...mine.docs, ...shared.docs]) {
+      if (!this.executes(d.data() as Feature)) continue;
       const fate = orphanFate(d.data() as { origin?: string; attempts?: number; runnerId?: string }, this.cfg.maxAttempts);
       if (fate === "keep") continue;
       const retry = fate === "execute";
@@ -396,7 +414,7 @@ export class Store {
     const ref = this.feature(id);
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
-      if (!d.exists() || d.get("status") !== "execute" || d.get("assignee") !== this.uid) return null;
+      if (!d.exists() || d.get("status") !== "execute" || !this.executes(d.data() as Feature)) return null;
       const attempts = ((d.get("attempts") as number | undefined) ?? 0) + 1;
       // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
       const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
@@ -420,7 +438,7 @@ export class Store {
    * ejecuta), el prompt no cambió desde que la acepté y la rama tiene el formato que genera acceptFeature.
    */
   async verifyAcceptance(id: string, feature: Feature): Promise<string | null> {
-    if (feature.assignee !== this.uid) return t("store.notAssigned");
+    if (!this.executes(feature)) return t("store.notAssigned");
     const project = await getDoc(this.project());
     const guest = ((project.get("guests") ?? {}) as Record<string, string>)[this.uid];
     if (guest !== "execute" && guest !== "decree") {
@@ -497,8 +515,11 @@ export class Store {
 
   /** Mis tareas paradas con sesión de Claude Code (las que se pueden retomar o abrir en la app de Claude). */
   async mySessionTasks(): Promise<{ id: string; sessionId: string }[]> {
-    const snap = await getDocs(query(this.features(), where("assignee", "==", this.uid), where("status", "in", ["waiting", "done", "failed"])));
-    return snap.docs.filter((d) => typeof d.get("sessionId") === "string").map((d) => ({ id: d.id, sessionId: String(d.get("sessionId")) }));
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("assignee", "==", this.uid), where("status", "in", ["waiting", "done", "failed"]))),
+      getDocs(query(this.features(), where("runnerUid", "==", this.uid), where("status", "in", ["waiting", "done", "failed"]))),
+    ]);
+    return [...mine.docs, ...shared.docs].filter((d) => this.executes(d.data() as Feature) && typeof d.get("sessionId") === "string").map((d) => ({ id: d.id, sessionId: String(d.get("sessionId")) }));
   }
 
   /**
@@ -580,12 +601,22 @@ export class Store {
     return query(collection(this.project(), "chats"), where("uid", "==", this.uid), where("status", "==", "pending"));
   }
 
+  /** Conversaciones de compañeros dirigidas a mi runner (runnerUid), con mensajes por atender. */
+  sharedChats() {
+    return query(collection(this.project(), "chats"), where("runnerUid", "==", this.uid), where("status", "==", "pending"));
+  }
+
+  /** Si la conversación la atiende este runner: la dirigida a mí o, sin runnerUid, una mía (las de antes). */
+  serves(c: { uid?: string; runnerUid?: string }): boolean {
+    return (c.runnerUid ?? c.uid) === this.uid;
+  }
+
   /** pending -> running de forma atómica. Devuelve la conversación si la reclamamos nosotros. */
   async claimChat(id: string): Promise<RunnerChat | null> {
     const ref = doc(this.project(), "chats", id);
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
-      if (!d.exists() || d.get("status") !== "pending" || d.get("uid") !== this.uid) return null;
+      if (!d.exists() || d.get("status") !== "pending" || !this.serves(d.data() as RunnerChat)) return null;
       tx.update(ref, { status: "running", activity: "", updatedAt: serverTimestamp() });
       return d.data() as RunnerChat;
     });
@@ -593,8 +624,12 @@ export class Store {
 
   /** Al arrancar: las conversaciones mías que se quedaron respondiendo (el runner se cayó) se pueden volver a usar. */
   async recoverChats(): Promise<void> {
-    const snap = await getDocs(query(collection(this.project(), "chats"), where("uid", "==", this.uid), where("status", "==", "running")));
-    for (const d of snap.docs) await updateDoc(d.ref, { status: "failed", activity: "", error: t("store.actionInterrupted"), updatedAt: serverTimestamp() }).catch(() => undefined);
+    const chats = collection(this.project(), "chats");
+    const [mine, shared] = await Promise.all([
+      getDocs(query(chats, where("uid", "==", this.uid), where("status", "==", "running"))),
+      getDocs(query(chats, where("runnerUid", "==", this.uid), where("status", "==", "running"))).catch(() => ({ docs: [] })),
+    ]);
+    for (const d of [...mine.docs, ...shared.docs].filter((x) => this.serves(x.data() as RunnerChat))) await updateDoc(d.ref, { status: "failed", activity: "", error: t("store.actionInterrupted"), updatedAt: serverTimestamp() }).catch(() => undefined);
   }
 
   /** Mensajes de la persona que Claude aún no ha leído, en orden. */
@@ -613,7 +648,8 @@ export class Store {
 
   /** Tareas que lancé desde esta conversación (create_task), de la más antigua a la más nueva. */
   async chatTasks(chatId: string): Promise<{ id: string; title: string; status: string; branch?: string; prUrl?: string; error?: string }[]> {
-    const snap = await getDocs(query(this.features(), where("chatId", "==", chatId), where("assignee", "==", this.uid)));
+    // A nombre de quien escribe (yo, o el compañero que usa mi runner): las de esta conversación.
+    const snap = await getDocs(query(this.features(), where("chatId", "==", chatId)));
     return snap.docs
       .sort((a, b) => (a.get("createdAt")?.toMillis?.() ?? 0) - (b.get("createdAt")?.toMillis?.() ?? 0))
       .map((d) => {

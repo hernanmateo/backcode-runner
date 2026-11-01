@@ -156,7 +156,9 @@ tab instead of "Everything deployed", and warns that an OTA isn't enough. Deploy
 the button's name in the app), plus what the runner detects by itself: Cloudflare Workers (and their D1
 migrations), Supabase (migrations and edge functions) and Firebase (rules and functions); the “i” next to each one says what to
 check if it fails (signing in to wrangler, supabase, firebase…). The runner reads them from the main branch at startup and every
-3 minutes, so a new one shows up in the app shortly after it's merged, without restarting.
+3 minutes, so a new one shows up in the app shortly after it's merged, without restarting. The OTA tab only appears when the
+runner detects OTA channels; if it detects nothing to publish (no deploys, OTA, build or "My phone"), the publish screen
+explains how to add a `backcode:deploy:<name>` script or a `backcode.toml` and, for Expo apps, OTA and a build.
 
 ## Features
 

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { exitSupervised, RESTART_CODE, SUPERVISED, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { onSnapshot } from "firebase/firestore";
+import { onSnapshot, type QueryDocumentSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
@@ -39,7 +39,7 @@ import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { buildReport, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
-import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type ThreadMessage } from "./store.js";
+import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
 
@@ -996,21 +996,40 @@ async function main(): Promise<void> {
   const stopQuotaRequests = await store.watchQuotaRequests(() => void refreshQuota()).catch(() => () => undefined);
 
   // Solo las tareas que este usuario aceptó en este proyecto, por prioridad y orden de aceptación.
-  const unsubscribe = onSnapshot(
+  // Más las de compañeros que se aceptaron con mi runner (runnerUid); las mías con el runner de otro, no.
+  const queued = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[] };
+  const requeue = () => {
+    pending = [...queued.mine, ...queued.shared]
+      .filter((d) => store.executes(d.data() as Feature))
+      .map((d) => ({ id: d.id, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
+      .sort((a, b) => a.priority - b.priority || a.at - b.at)
+      .map((d) => d.id);
+    if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
+    void drain();
+  };
+  const unsubscribeMine = onSnapshot(
     store.myQueue(),
     (snap) => {
-      pending = snap.docs
-        .map((d) => ({ id: d.id, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
-        .sort((a, b) => a.priority - b.priority || a.at - b.at)
-        .map((d) => d.id);
-      if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
-      void drain();
+      queued.mine = snap.docs;
+      requeue();
     },
     (err) => {
       console.error("[snapshot] error:", err.message);
       process.exit(1);
     },
   );
+  const unsubscribeShared = onSnapshot(
+    store.sharedQueue(),
+    (snap) => {
+      queued.shared = snap.docs;
+      requeue();
+    },
+    (err) => console.warn("[snapshot] shared:", err.message),
+  );
+  const unsubscribe = () => {
+    unsubscribeMine();
+    unsubscribeShared();
+  };
 
   // Acciones pedidas desde la app por este usuario (mergear PR, publicar OTA), de una en una.
   let actionsBusy = false;
@@ -1120,14 +1139,33 @@ async function main(): Promise<void> {
       chatBusy = false;
     }
   };
-  const unsubscribeChats = onSnapshot(
+  // Las mías (sin runnerUid o con el mío) y las de compañeros dirigidas a mi runner. Sus mensajes siguen siendo datos no
+  // fiables: el chat tiene los mismos límites para todos (prompt.ts, guard, sandbox).
+  const chatDocs = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[] };
+  const rechat = () => {
+    pendingChats = [...new Set([...chatDocs.mine, ...chatDocs.shared].filter((d) => store.serves(d.data() as RunnerChat)).map((d) => d.id))];
+    void drainChats();
+  };
+  const unsubscribeMyChats = onSnapshot(
     store.myChats(),
     (snap) => {
-      pendingChats = snap.docs.map((d) => d.id);
-      void drainChats();
+      chatDocs.mine = snap.docs;
+      rechat();
     },
     (err) => console.warn(`[chat] ${err.message}`),
   );
+  const unsubscribeSharedChats = onSnapshot(
+    store.sharedChats(),
+    (snap) => {
+      chatDocs.shared = snap.docs;
+      rechat();
+    },
+    (err) => console.warn(`[chat] ${err.message}`),
+  );
+  const unsubscribeChats = () => {
+    unsubscribeMyChats();
+    unsubscribeSharedChats();
+  };
 
   // Lo que este ordenador ofrece para crear proyectos (carpeta, cuentas de GitHub y Bitbucket): al arrancar, cada hora y
   // cuando cambian los ajustes en la app. Con varios proyectos conectados lo publican todos (es lo mismo); si falla, da igual.

@@ -595,6 +595,9 @@ lockfile: la carpeta o la raíz del monorepo; con npm y sin `package-lock.json`,
 (solo si git los ignora; de la raíz y de la carpeta) y ejecuta `<pm> run backcode:deploy:<nombre>` en esa carpeta, sin
 interacción (`CI=1`, máx. 30 min). El último enlace `https://…` que imprima se muestra en la app como «Abrir». Los destinos se
 buscan en la rama principal al arrancar y cada 3 minutos: uno nuevo sale en la app poco después de mergearlo, sin reiniciar.
+La pestaña OTA solo aparece si el runner detecta canales OTA; si no detecta nada que publicar (ni despliegues, ni OTA, ni
+build, ni «Mi móvil»), la pantalla de publicar explica cómo añadir un `backcode:deploy:<nombre>` o un `backcode.toml` y, en
+apps Expo, la OTA y la build.
 
 **Sin JavaScript: `backcode.toml`** (o `backcode.json`), en la raíz o en cualquier carpeta, para repos de Python, Go, C…
 que no tienen `package.json`. El runner ejecuta el comando tal cual, **sin `npm ci` ni `npm run`**, así que ese ordenador no
@@ -741,6 +744,14 @@ una Release con `SHA256SUMS` e `install.sh`, y publica `backcode` en npm si el r
 El ejecutable es el mismo código TypeScript con el panel, las instrucciones y el `package.json` incrustados (`src/embedded.ts`
 solo se rellena en la copia de compilación).
 Variables útiles para probar sin tocar tu configuración: `BACKCODE_HOME=/tmp/bc` y `BACKCODE_PANEL_PORT=47999`.
+
+## Atender a compañeros (runner compartido)
+
+Si en la app activas «Dejar que mis compañeros usen mi runner en este proyecto» (desactivado por defecto), tu runner
+recoge también las conversaciones y los refinados que te dirigen tus compañeros (`runnerUid` = tú) y ejecuta las tareas
+que salen de ahí: van a nombre de quien escribe, pero corren en tu ordenador con tu Claude Code (y su coste). Sus
+mensajes son datos no fiables, con los mismos límites de siempre (guard, sandbox, sin secretos). Si lo desactivas, las
+reglas dejan de permitir que te encolen nada.
 
 ## Licencia
 [Apache-2.0](LICENSE). Ver [NOTICE](NOTICE).
