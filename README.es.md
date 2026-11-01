@@ -742,5 +742,13 @@ El ejecutable es el mismo código TypeScript con el panel, las instrucciones y e
 solo se rellena en la copia de compilación).
 Variables útiles para probar sin tocar tu configuración: `BACKCODE_HOME=/tmp/bc` y `BACKCODE_PANEL_PORT=47999`.
 
+## Atender a compañeros (runner compartido)
+
+Si en la app activas «Dejar que mis compañeros usen mi runner en este proyecto» (desactivado por defecto), tu runner
+recoge también las conversaciones y los refinados que te dirigen tus compañeros (`runnerUid` = tú) y ejecuta las tareas
+que salen de ahí: van a nombre de quien escribe, pero corren en tu ordenador con tu Claude Code (y su coste). Sus
+mensajes son datos no fiables, con los mismos límites de siempre (guard, sandbox, sin secretos). Si lo desactivas, las
+reglas dejan de permitir que te encolen nada.
+
 ## Licencia
 [Apache-2.0](LICENSE). Ver [NOTICE](NOTICE).
