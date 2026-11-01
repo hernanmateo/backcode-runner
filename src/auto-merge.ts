@@ -87,7 +87,9 @@ export async function autoMerge(d: AutoMergeDeps): Promise<AutoMergeState> {
     }
     if (done.ok) return finish({ state: "merged", attempts, reason: t("auto.merged") });
     const error = done.result.error ?? "";
-    if (done.blocked === "noChecks") return finish({ state: "stopped", attempts, reason: t("auto.noCi") });
+    // «Sin CI» solo si de verdad no la hay: con CI, merge() devuelve ciNoChecks (o conflicts) cuando no aparece ningún check.
+    if (done.blocked === "noChecks") return finish({ state: "stopped", attempts, reason: t(d.hasCi === true ? "auto.ciNoChecks" : "auto.noCi") });
+    if (done.blocked === "ciNoChecks") return finish({ state: "stopped", attempts, reason: t("auto.ciNoChecks") });
     if (done.blocked !== "checks" && done.blocked !== "conflicts") {
       return finish({ state: "stopped", attempts, reason: t("auto.stopped", { reason: done.blocked === "pending" ? t("auto.pending") : error }) });
     }

@@ -9,7 +9,8 @@ import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type PrHost } from "./hosts.js";
 import { t } from "./i18n.js";
-import { waitForChecks } from "./wait-checks.js";
+import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-checks.js";
+import { ciConfigAt } from "./ci.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
@@ -115,16 +116,23 @@ export function requireGreen(checks: Checks, what: string, strict = requireCheck
   return { error: t("act.notGreen", { what, state: t(checks.state === "pending" ? "act.checksPending" : "act.checksFailing") }), checks: checks.pending };
 }
 
-/** Checks de `what` esperando a que termine la CI si aún está en curso (ver wait-checks.ts). */
-function checksWhenDone(read: () => Promise<Checks>, what: string): Promise<Checks> {
-  return waitForChecks(read, { onWait: () => console.log(`[action] ${t("act.waitingChecks", { what })}`) });
+/**
+ * Checks de `what` esperando a que termine la CI si aún está en curso (ver wait-checks.ts). Con `noneGraceMs` (el repo
+ * tiene CI), si aún no hay ningún check se espera también a que aparezcan.
+ */
+function checksWhenDone(read: () => Promise<Checks>, what: string, noneGraceMs = 0): Promise<Checks> {
+  return waitForChecks(read, { noneGraceMs, onWait: () => console.log(`[action] ${t("act.waitingChecks", { what })}`) });
 }
 
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
 async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string): Promise<ActionResult | null> {
   if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
   const what = `${cfg.baseBranch} (${commit.slice(0, 7)})`;
-  return requireGreen(await checksWhenDone(() => host.commitChecks(commit), what), what);
+  // Justo tras un push a la rama base sus checks pueden tardar unos segundos en aparecer: si hay CI, se les da margen.
+  const grace = (await ciConfigAt(cfg.repoPath, commit)) ? BASE_CHECKS_APPEAR_MS : 0;
+  const checks = await checksWhenDone(() => host.commitChecks(commit), what, grace);
+  if (checks.state === "none" && grace && requireChecks) return { error: t("act.ciNoChecks", { what }) };
+  return requireGreen(checks, what);
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
@@ -272,8 +280,23 @@ export async function mergeUnlessConflict(host: PrHost, prUrl: string): Promise<
   }
 }
 
+/** Ficheros de la rama de la tarea que chocan con la rama base (vacío si no chocan o no se pudo saber). */
+async function conflictFiles(cfg: RunnerConfig, branch: string | undefined): Promise<string[]> {
+  if (!branch) return [];
+  return fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, branch)
+    .then(() => findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, branch))
+    .catch(() => [] as string[]);
+}
+
+/** El PR choca con la base. Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca «Arreglar con Claude». */
+async function conflictsBlock(cfg: RunnerConfig, store: Store, featureId: string, prUrl: string, files: string[]): Promise<{ ok: false; result: ActionResult; blocked: MergeBlock }> {
+  if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
+  const error = files.length ? t("act.prConflictsFiles", { base: cfg.baseBranch, files: files.join(", ") }) : t("act.prConflicts", { base: cfg.baseBranch });
+  return { ok: false, result: { error, url: prUrl }, blocked: "conflicts" };
+}
+
 /** Por qué no se mergeó un PR (el modo auto lo usa para decidir si arregla y reintenta o se para: auto-merge.ts). */
-export type MergeBlock = "noHost" | "noPr" | "closed" | "noChecks" | "pending" | "checks" | "conflicts";
+export type MergeBlock = "noHost" | "noPr" | "closed" | "noChecks" | "ciNoChecks" | "pending" | "checks" | "conflicts";
 
 /**
  * Mergea (squash) el PR de una tarea si sus checks están en verde. `auto`: lo hace el modo auto del proyecto, que nunca
@@ -292,25 +315,29 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   if (pr?.state === "closed") {
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "closed" };
   }
-  const checks = await checksWhenDone(() => host.prChecks(prUrl), "PR");
-  const blocked = requireGreen(checks, "PR", requireChecks || opts.auto === true);
+  const strict = requireChecks || opts.auto === true;
+  const branch = (await store.featureInfo(featureId).catch(() => null))?.branch;
+  // Con CI en el repo, un PR sin checks no es «sin CI»: o GitHub aún no los ha registrado (se espera a que aparezcan) o
+  // no los lanzó porque el PR choca con la base (no puede crear el merge ref), y entonces se trata como conflictos.
+  const ciExpected =
+    store.capabilities.ci === true ||
+    (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${cfg.baseBranch}`)) ||
+    (!!branch && (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${branch}`)));
+  const gate = await gatePrChecks({
+    read: () => host.prChecks(prUrl),
+    conflicts: () => conflictFiles(cfg, branch),
+    ciExpected,
+    wait: { onWait: () => console.log(`[action] ${t("act.waitingChecks", { what: "PR" })}`) },
+  });
+  if (gate.conflicts) return conflictsBlock(cfg, store, featureId, prUrl, gate.conflicts);
+  if (gate.ciNoChecks && strict) return { ok: false, result: { error: t("act.ciNoChecks", { what: "PR" }), url: prUrl }, blocked: "ciNoChecks" };
+  const { checks } = gate;
+  const blocked = requireGreen(checks, "PR", strict);
   const why: MergeBlock = checks.state === "failing" ? "checks" : checks.state === "pending" ? "pending" : "noChecks";
   // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
   if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked, blocked: why };
   const merged = await mergeUnlessConflict(host, prUrl);
-  if (!merged) {
-    // Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca
-    // «Arreglar con Claude».
-    const branch = (await store.featureInfo(featureId).catch(() => null))?.branch;
-    const files = branch
-      ? await fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, branch)
-          .then(() => findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, branch))
-          .catch(() => [] as string[])
-      : [];
-    if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
-    const error = files.length ? t("act.prConflictsFiles", { base: cfg.baseBranch, files: files.join(", ") }) : t("act.prConflicts", { base: cfg.baseBranch });
-    return { ok: false, result: { error, url: prUrl }, blocked: "conflicts" };
-  }
+  if (!merged) return conflictsBlock(cfg, store, featureId, prUrl, await conflictFiles(cfg, branch));
   const { sha } = merged;
   await store.markMerged(featureId, sha, opts.auto);
   // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
