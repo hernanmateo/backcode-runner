@@ -707,6 +707,11 @@ export class Store {
    * qué tareas entran en el siguiente.
    */
   async lastDeploys(): Promise<Map<string, string>> {
+    return new Map([...(await this.lastDeploysTimed())].map(([id, v]) => [id, v.sha]));
+  }
+
+  /** Como lastDeploys, con cuándo se hizo cada uno (ms, requestedAt; 0 si no se sabe). */
+  async lastDeploysTimed(): Promise<Map<string, { sha: string; at: number }>> {
     const [actions, log] = await Promise.all([this.doneActions.get(), this.deployLog.get().catch(() => null)]);
     const best = new Map<string, { at: number; sha: string }>();
     const note = (id: string, at: number, sha: unknown) => {
@@ -728,7 +733,7 @@ export class Store {
     }
     // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.
     for (const d of log ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
-    return new Map([...best].map(([id, v]) => [id, v.sha]));
+    return best;
   }
 
   /** Tareas mergeadas (con el commit del merge, su título y las plataformas de las builds en las que ya entró). */

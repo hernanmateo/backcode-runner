@@ -494,8 +494,12 @@ en el orden correcto: primero las reglas (Firestore/Storage), luego las function
 al final, para que la app nueva no llegue antes que lo que necesita en el servidor. El runner lo calcula al arrancar, cada 3 min
 y tras cada acción: compara la rama principal con el commit del último despliegue hecho desde Backcode de cada paso (qué ficheros
 cubre cada uno lo saca del `--only` de Firebase del script o de su carpeta) y dice qué tareas mergeadas traen cada cambio.
-Si el destino tiene script en su propia carpeta con `version` en su `package.json`, el plan lleva también esa versión en el
-último despliegue y en la rama principal, y la app la enseña como «1.0.60 → 1.0.61» en vez de los commits.
+Cada paso lleva también su **número de versión** en el último despliegue y en la rama principal (la app lo enseña como
+«1.0.77 → 1.0.78», nunca el commit): el `expo.version` del `app.json` de su carpeta si es una app de Expo (la web, la OTA) o
+si no la `version` de su `package.json` (el runner, por su carpeta en `backcode.toml`). Las reglas, las functions y lo que no
+tiene versión propia (una landing estática) no llevan: el plan guarda cuándo fue su último despliegue y la app enseña la fecha.
+Al terminar, el runner guarda igual la versión en el resultado: el despliegue, la de su carpeta; la OTA, su runtimeVersion y
+el id del update que imprime `eas update`; la build, el número de build que asigna EAS (`buildNumber`/`versionCode`).
 Las tareas terminadas, las acciones y el registro de despliegues los sigue con un listener de Firestore: cada documento se lee
 una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los lee como antes).
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se

@@ -4,6 +4,7 @@ import { type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./
 import { includedTasks } from "./deploy-tasks.js";
 import { BUILD_PLATFORMS, type BuildPlatform, nativeDependencyChanges, nativeFilesByPlatform } from "./native-changes.js";
 import type { Store } from "./store.js";
+import { readVersion, versionDir } from "./versions.js";
 
 // «Pendiente de desplegar»: qué hay en la rama base que aún no ha salido por cada vía (reglas, functions, web… y la OTA),
 // en el orden en que hay que desplegarlo (primero lo que la app nueva necesita en el servidor: reglas, luego functions,
@@ -20,9 +21,14 @@ export interface PlanStep {
   status: "pending" | "upToDate" | "unknown";
   /** Commit del último despliegue de este paso. */
   lastSha?: string;
-  /** Versión del package.json de su carpeta en lastSha y en la punta de la rama base (p. ej. el runner: 1.0.60 → 1.0.61). */
+  /**
+   * Versión de su carpeta (expo.version de app.json o version de package.json; ver versions.ts) en lastSha y en la punta
+   * de la rama base (p. ej. el runner: 1.0.77 → 1.0.78; la web y la OTA, la de la app). Sin versión propia, ausentes.
+   */
   version?: string;
   nextVersion?: string;
+  /** Cuándo se hizo el último despliegue (ms): lo que la app enseña de las partes sin versión. */
+  lastAt?: number;
   /** Ficheros cambiados desde entonces que le afectan. */
   changes?: number;
   /** Tareas mergeadas que traen esos cambios. */
@@ -114,52 +120,43 @@ const NATIVE = /(^|\/)(app\.json|app\.config\.[cm]?[jt]s|eas\.json|ios\/|android
 /** `fetched`: punta de la rama principal recién traída (refreshPlan ya hace el fetch, uno por cálculo); sin ella, se trae aquí. */
 export async function computePlan(cfg: RunnerConfig, store: Store, deploys: DeployTarget[], app: ExpoApp | null, fetched?: string): Promise<DeployPlan> {
   const base = fetched ?? (await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch));
-  const [last, merged] = await Promise.all([store.lastDeploys(), store.mergedFeatures()]);
+  const [lastTimed, merged] = await Promise.all([store.lastDeploysTimed(), store.mergedFeatures()]);
+  const last = new Map([...lastTimed].map(([id, v]) => [id, v.sha]));
   // Un OTA publicado desde la terminal también cuenta (el script deja el commit en <app>/.expo): el más reciente gana.
   const cli = app ? lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch).production : undefined;
   const fromApp = last.get("ota:production");
   if (cli && (!fromApp || (await isAncestor(cfg.repoPath, fromApp, cli)))) last.set("ota:production", cli);
-  const candidates: { id: string; kind: "deploy" | "ota"; name: string; scope: Scope; pkg?: string }[] = deploys.map((d) => ({
-    id: `deploy:${d.id}`,
-    kind: "deploy",
-    name: d.name,
-    scope: scopeOf(d),
-    // Solo un destino con script en su propia carpeta: la versión de la raíz no suele decir nada del destino.
-    pkg: !d.auto && d.dir ? `${d.dir}/package.json` : undefined,
-  }));
-  // Versión del package.json en un commit (sin ella, la app enseña los commits).
-  const versionAt = async (sha: string, pkg?: string): Promise<string | undefined> => {
-    if (!pkg) return undefined;
-    try {
-      const v = (JSON.parse(await git(cfg.repoPath, ["show", `${sha}:${pkg}`])) as { version?: unknown }).version;
-      return typeof v === "string" && v ? v : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  const candidates: { id: string; kind: "deploy" | "ota"; name: string; scope: Scope; vdir: string | null }[] = deploys.map((d) => {
+    const scope = scopeOf(d);
+    return { id: `deploy:${d.id}`, kind: "deploy", name: d.name, scope, vdir: versionDir(d, scope.rank) };
+  });
+  // Versión de una carpeta en un commit (sin ella, la app enseña la fecha del despliegue).
+  const versionAt = (sha: string, dir: string | null): Promise<string | undefined> =>
+    dir === null ? Promise.resolve(undefined) : readVersion((path) => git(cfg.repoPath, ["show", `${sha}:${path}`]).catch(() => undefined), dir);
   if (app?.ota && app.channels.includes("production")) {
     const dir = app.appDir ? `${app.appDir}/` : "";
-    candidates.push({ id: "ota:production", kind: "ota", name: "OTA production", scope: { covers: "app", rank: 3, match: (f) => !dir || f.startsWith(dir) } });
+    candidates.push({ id: "ota:production", kind: "ota", name: "OTA production", scope: { covers: "app", rank: 3, match: (f) => !dir || f.startsWith(dir) }, vdir: app.appDir });
   }
 
   const steps: PlanStep[] = [];
   let nativeHint = false;
   for (const c of candidates.sort((a, b) => a.scope.rank - b.scope.rank || a.name.localeCompare(b.name))) {
     const lastSha = last.get(c.id);
+    const lastAt = lastTimed.get(c.id)?.at || undefined;
     if (!lastSha) {
       steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "unknown" });
       continue;
     }
     const files = (await git(cfg.repoPath, ["diff", "--name-only", lastSha, base]).catch(() => "")).split("\n").filter(Boolean).filter(c.scope.match);
     if (!files.length) {
-      const version = await versionAt(lastSha, c.pkg);
-      steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "upToDate", lastSha, ...(version ? { version } : {}) });
+      const version = await versionAt(lastSha, c.vdir);
+      steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "upToDate", lastSha, ...(lastAt ? { lastAt } : {}), ...(version ? { version } : {}) });
       continue;
     }
     if (c.kind === "ota" && files.some((f) => NATIVE.test(f))) nativeHint = true;
     const features = await bringing(lastSha, c.scope.match);
-    const [version, nextVersion] = await Promise.all([versionAt(lastSha, c.pkg), versionAt(base, c.pkg)]);
-    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, ...(version ? { version } : {}), ...(nextVersion ? { nextVersion } : {}), changes: files.length, features });
+    const [version, nextVersion] = await Promise.all([versionAt(lastSha, c.vdir), versionAt(base, c.vdir)]);
+    steps.push({ id: c.id, kind: c.kind, name: c.name, covers: c.scope.covers, status: "pending", lastSha, ...(lastAt ? { lastAt } : {}), ...(version ? { version } : {}), ...(nextVersion ? { nextVersion } : {}), changes: files.length, features });
   }
 
   // Builds: cambios nativos de la app desde la última build de cada plataforma (las dos suelen compartir commit).
