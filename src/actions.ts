@@ -383,6 +383,23 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   }
 }
 
+// La tienda rechaza un número de build repetido: App Store Connect (-19232, «already been used», «must be higher than
+// the previously uploaded version») y Google Play («Version code N has already been used»).
+const IOS_DUPLICATE_RE = /-19232|attribute with a value that has already been used|must be (higher|greater) than the previously uploaded|debe ser posterior a la versión cargada/i;
+const ANDROID_DUPLICATE_RE = /version code \d+ has already been used|versionCode.{0,40}already (been )?used/i;
+
+/**
+ * Aviso cuando la tienda rechaza el número de build por repetido. Con `appVersionSource: remote` + `autoIncrement`, EAS
+ * lleva su propio contador y solo cuenta sus builds: si otra build llegó a la tienda por otro camino (Transporter, Xcode,
+ * otro proyecto con el mismo bundle id), la tienda va por delante. Se arregla subiendo el contador de EAS a mano.
+ */
+export function buildNumberHint(platform: "ios" | "android", output: string, appDir: string): string {
+  const dir = appDir && appDir !== "." ? appDir : ".";
+  if (platform === "ios" && IOS_DUPLICATE_RE.test(output)) return t("build.duplicateIos", { dir }) + "\n";
+  if (platform === "android" && ANDROID_DUPLICATE_RE.test(output)) return t("build.duplicateAndroid", { dir }) + "\n";
+  return "";
+}
+
 /**
  * Build LOCAL con EAS (`eas build --local`, en este ordenador) y envío a testers con `eas submit`: iOS va a TestFlight
  * y Android al track `internal` de Google Play (Internal Testing). Usa el perfil `production` de eas.json y la sesión
@@ -445,7 +462,10 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
         done.push(platform);
       } catch (err) {
         const before = done.length ? t("build.alreadySent", { list: done.join(", ") }) : "";
-        return { ok: false, result: { url, sha: commit, error: `${before}${platform}: ${String((err as Error).message)}`.slice(-3000) } };
+        const message = String((err as Error).message);
+        // El aviso va delante: el error se recorta por el final y no debe perderse.
+        const hint = buildNumberHint(platform, message, app.appDir);
+        return { ok: false, result: { url, sha: commit, error: `${hint}${before}${platform}: ${message}`.slice(0, hint.length + before.length + 3000) } };
       }
     }
     return { ok: true, result: { url, sha: commit, log: `${done.join(" + ")} · ${version} (runtime ${runtimeVersion})\n${log.slice(-1400)}` } };

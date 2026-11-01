@@ -568,6 +568,10 @@ En la misma pantalla de publicar, pestaña **Build** (solo admins y owner; se of
 
 Usa tu sesión de EAS y las credenciales de las tiendas que tengas en EAS (`eas credentials`); no se copia ningún `.env` local ni
 se toca `ios/`/`android/`. El número de build lo gestiona EAS (`appVersionSource: remote` + `autoIncrement`).
+Ese contador solo cuenta las builds de EAS: si a App Store Connect o Google Play les llega otra por otro camino (Transporter,
+Xcode, otro proyecto con el mismo bundle id), la tienda va por delante y rechaza el número repetido (en iOS, `-19232`). El
+runner lo detecta y lo explica en el error: sube el contador con `eas build:version:set -p ios|android` en la carpeta de la
+app, por encima del último de la tienda, y vuelve a lanzar la build.
 
 ### Despliegues del repo (monorepos: web, api, scripts…)
 Pestaña **Despliegues** de la pantalla de publicar (solo admins y owner). El runner busca en todos los `package.json` del repo
