@@ -377,6 +377,11 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   Claude Code, fuera del sandbox del runner**. La tarea sigue «Ejecutando» y su actividad se sigue viendo en Backcode. Al
   salir de la sesión o pulsar **Volver a Backcode**, el runner retoma la misma sesión en el sandbox: revisa lo hecho,
   publica los cambios (el mismo PR) o te pregunta.
+- **Sesiones borradas:** Claude Code guarda las sesiones en este ordenador `cleanupPeriodDays` días (30 por defecto, en
+  `~/.claude/settings.json`) y luego las borra. El runner comprueba si la sesión de cada tarea sigue ahí (al arrancar,
+  cada 6 h, al terminar una tarea y antes de retomarla o abrirla en la app de Claude) y lo publica para la app, que en ese
+  caso avisa y explica cómo guardarlas más días en vez de ofrecer abrirla o retomarla. El runner solo lee ese ajuste,
+  nunca lo cambia. El borrado de worktrees tras 14 días sin uso no afecta: se recrean en la misma ruta al retomar.
   Mientras está abierta allí, la tarjeta del tablero y la ficha dicen **En la app de Claude** (no avanza sola). Si la
   terminas allí, muévela a mano (p. ej. a «PR listo»): en unos minutos el runner la suelta (sin cerrar tu sesión de Claude) y
   enlaza el PR abierto de su rama.
@@ -493,6 +498,10 @@ Las tareas terminadas, las acciones y el registro de despliegues los sigue con u
 una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los lee como antes).
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
   para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
+- Al acabar bien un despliegue, el runner recalcula el plan en el momento (si ya estaba calculando, lo repite al terminar). Ese
+  cálculo trae la rama principal del remoto y la compara, así que tarda unos segundos: mientras tanto la app sigue enseñando el
+  paso como **Desplegando…** (sin botón) hasta que el plan apunta ese commit, con un tope de 90 s. Si falla, se ve el error y
+  vuelve el botón.
 - Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
 - **Lo desplegado fuera de la app también cuenta** (registro `projects/{pid}/deployLog`: paso, commit, cuándo, quién y vía):
   - lo que despliega **Claude Code** con el plugin (ver «Despliegues que hace Claude Code» arriba);
@@ -559,6 +568,10 @@ En la misma pantalla de publicar, pestaña **Build** (solo admins y owner; se of
 
 Usa tu sesión de EAS y las credenciales de las tiendas que tengas en EAS (`eas credentials`); no se copia ningún `.env` local ni
 se toca `ios/`/`android/`. El número de build lo gestiona EAS (`appVersionSource: remote` + `autoIncrement`).
+Ese contador solo cuenta las builds de EAS: si a App Store Connect o Google Play les llega otra por otro camino (Transporter,
+Xcode, otro proyecto con el mismo bundle id), la tienda va por delante y rechaza el número repetido (en iOS, `-19232`). El
+runner lo detecta y lo explica en el error: sube el contador con `eas build:version:set -p ios|android` en la carpeta de la
+app, por encima del último de la tienda, y vuelve a lanzar la build.
 
 ### Despliegues del repo (monorepos: web, api, scripts…)
 Pestaña **Despliegues** de la pantalla de publicar (solo admins y owner). El runner busca en todos los `package.json` del repo

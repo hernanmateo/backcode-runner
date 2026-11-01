@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readSync, closeSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -122,7 +122,41 @@ export function followTranscript(cwd: string, sessionId: string, onEntry: (entry
   return () => clearInterval(timer);
 }
 
-const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+const claudeDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+const projectsDir = () => join(claudeDir(), "projects");
+
+/** Días que Claude Code guarda el historial de las sesiones si no se cambia `cleanupPeriodDays`. */
+export const DEFAULT_RETENTION_DAYS = 30;
+
+/**
+ * Cuántos días guarda Claude Code las sesiones en este ordenador: `cleanupPeriodDays` del settings.json de Claude Code
+ * de la persona (o 30). Solo se lee ese ajuste, y el runner no lo cambia nunca.
+ */
+export function retentionDays(): number {
+  try {
+    const value = (JSON.parse(readFileSync(join(claudeDir(), "settings.json"), "utf8")) as { cleanupPeriodDays?: unknown }).cleanupPeriodDays;
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) return Math.min(value, 36500);
+  } catch {
+    // Sin settings.json o no es JSON: el valor por defecto.
+  }
+  return DEFAULT_RETENTION_DAYS;
+}
+
+/** El error de Claude Code al retomar una sesión cuyo transcript ya no está. */
+export const isSessionGoneError = (message: string) => /no conversation found/i.test(message);
+
+/**
+ * Si la sesión de una tarea sigue en este ordenador (en la carpeta del worktree o en cualquier otra de
+ * ~/.claude/projects, como la busca adoptTranscript), sin copiar nada.
+ */
+export function hasTranscript(cwd: string, sessionId: string): boolean {
+  if (existsSync(transcriptPath(cwd, sessionId))) return true;
+  try {
+    return readdirSync(projectsDir()).some((dir) => existsSync(join(projectsDir(), dir, `${sessionId}.jsonl`)));
+  } catch {
+    return false;
+  }
+}
 /** Dónde guarda Claude Code la conversación de una sesión: por carpeta de trabajo. */
 export function transcriptPath(cwd: string, sessionId: string): string {
   return join(projectsDir(), cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);

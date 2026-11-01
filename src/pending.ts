@@ -108,9 +108,9 @@ export function scopeOf(target: DeployTarget): Scope {
 
 const NATIVE = /(^|\/)(app\.json|app\.config\.[cm]?[jt]s|eas\.json|ios\/|android\/|plugins\/|modules\/)/;
 
-export async function computePlan(cfg: RunnerConfig, store: Store, deploys: DeployTarget[], app: ExpoApp | null): Promise<DeployPlan> {
-  await git(cfg.repoPath, ["fetch", "--quiet", cfg.remote, cfg.baseBranch]).catch(() => undefined);
-  const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+/** `fetched`: punta de la rama principal recién traída (refreshPlan ya hace el fetch, uno por cálculo); sin ella, se trae aquí. */
+export async function computePlan(cfg: RunnerConfig, store: Store, deploys: DeployTarget[], app: ExpoApp | null, fetched?: string): Promise<DeployPlan> {
+  const base = fetched ?? (await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch));
   const [last, merged] = await Promise.all([store.lastDeploys(), store.mergedFeatures()]);
   // Un OTA publicado desde la terminal también cuenta (el script deja el commit en <app>/.expo): el más reciente gana.
   const cli = app ? lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch).production : undefined;
