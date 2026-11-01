@@ -7,6 +7,13 @@ import { test } from "node:test";
 import { readDeployConfig } from "../src/deploy-config.js";
 import { findDeployTargets } from "../src/git.js";
 
+test("backcode.toml: description opcional (una línea, recortada) para la app", () => {
+  const { deploys, errors } = readDeployConfig("", "backcode.toml", `[deploy.landing]\nrun = "./deploy.sh"\ndescription = "  Cloudflare   Pages "\n\n[deploy.api]\nrun = "make"\ndescription = 3\n`);
+  assert.deepEqual(errors, []);
+  assert.equal(deploys[0].description, "Cloudflare Pages");
+  assert.equal("description" in deploys[1], false);
+});
+
 test("backcode.toml: comando con o sin shell, carpeta, tipo (orden) y rutas", () => {
   const { deploys, errors } = readDeployConfig(
     "",

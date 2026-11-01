@@ -285,13 +285,15 @@ export interface DeployTarget {
   auto?: { cmd: string[]; rank: number; paths: string[]; local?: string[]; install?: boolean; deps?: { dir: string; pm: PackageManager }[] };
   /** De dónde sale: un script `backcode:deploy:*`, backcode.toml/json o detectado solo. */
   source?: "script" | "config" | "detected";
+  /** `description` de backcode.toml/json: frase corta que la app enseña bajo el nombre. */
+  description?: string;
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
 
 /** Lo que la app ve de cada destino (un botón por destino): sin comandos, solo de dónde sale y a qué apunta. */
 export function deployCapabilities(targets: DeployTarget[]) {
-  return targets.map(({ id, name, dir, env, provider, source }) => ({ id, name, dir, ...(env ? { env } : {}), ...(provider ? { provider } : {}), ...(source === "detected" ? { detected: true } : source === "config" ? { config: true } : {}) }));
+  return targets.map(({ id, name, dir, env, provider, source, description }) => ({ id, name, dir, ...(env ? { env } : {}), ...(provider ? { provider } : {}), ...(description ? { description } : {}),...(source === "detected" ? { detected: true } : source === "config" ? { config: true } : {}) }));
 }
 const DEPLOY_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
@@ -338,7 +340,7 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
         warnOnce(t("deploy.configWins", { name: d.name, file }));
         out.splice(i, 1);
       }
-      out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm: "npm", source: "config", auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, install: false } });
+      out.push({ id: `${d.dir}#${d.name}`, name: d.name, dir: d.dir, pm: "npm", source: "config", ...(d.description ? { description: d.description } : {}), auto: { cmd: d.cmd, rank: d.rank, paths: d.paths, install: false } });
     }
   }
   // Lo que se reconoce solo (Cloudflare Workers, Supabase, Firebase), salvo plataformas que el repo ya declara.
