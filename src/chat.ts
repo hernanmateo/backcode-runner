@@ -8,6 +8,7 @@ import { hasMarkers } from "./conflicts.js";
 import { createDetachedWorktree, git, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
+import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
 import { claudeExecutable } from "./preflight.js";
 import { buildChatPrompt, buildChatSystemAppend } from "./prompt.js";
 import type { RunnerChat, Store } from "./store.js";
@@ -23,6 +24,10 @@ import type { RunnerChat, Store } from "./store.js";
 // límites que cualquier tarea); task_status dice cómo van. El chat no espera a que acaben: puede lanzar varias.
 // message_task corrige una de esas tareas (callable messageChatTask): en cola cambia el encargo; si no, el texto va a su
 // hilo como un mensaje de la persona (marcado «desde el chat») y el runner se lo pasa a su sesión o la retoma.
+// Permisos personales (permissions.ts), con la misma lógica que en las tareas: si quien escribe es quien tiene el runner
+// (chatAppliesTo), se aplican los suyos más lo concedido en esta conversación, y Claude puede pedir más con
+// request_permission (la app muestra la misma tarjeta que en el hilo de una tarea). En la de un compañero que usa mi
+// runner compartido, ninguno y sin request_permission.
 
 /** Vueltas seguidas como mucho por cada recogida (mensajes que llegan mientras responde). */
 const MAX_ROUNDS = 10;
@@ -46,6 +51,14 @@ export const CHAT_ALLOWED_TOOLS = [
   "mcp__backcode__checkout_branch", "mcp__backcode__commit_and_push", "mcp__backcode__create_task", "mcp__backcode__task_status",
   "mcp__backcode__message_task", "mcp__backcode__set_conversation_title",
 ];
+
+/**
+ * Herramientas de una vuelta de la conversación: las de siempre, request_permission solo si se aplican los permisos
+ * personales (quien escribe es quien tiene el runner) y WebFetch solo hacia los dominios concedidos.
+ */
+export function chatAllowedTools(ctx: Pick<PermissionContext, "applies" | "perms" | "roots">): string[] {
+  return [...CHAT_ALLOWED_TOOLS, ...(ctx.applies ? ["mcp__backcode__request_permission"] : []), ...sessionPermissions(ctx, []).allowedTools];
+}
 
 /** Largo máximo del título de una conversación (el que pone Claude con set_conversation_title o la persona al renombrarla). */
 export const CHAT_TITLE_MAX = 60;
@@ -153,6 +166,13 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
     else await git(cfg.repoPath, ["fetch", "--quiet", remote, baseBranch]).catch(() => undefined);
     await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, name, `${remote}/${branch ?? baseBranch}`);
   }
+
+  // Permisos: se recalculan en cada vuelta (lo concedido en la tarjeta entra en la siguiente).
+  const applies = chatAppliesTo(chat, store.uid);
+  const loadPerms = async () =>
+    loadPermissionContext({ applies, store, grants: applies ? await store.chatGrants(id).catch(() => NONE) : NONE, projectId: cfg.projectId, scope: "chat" });
+  let permCtx = await loadPerms();
+  let permissionAsked = false; // Claude pidió permiso en esta vuelta: se espera a la decisión
 
   const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
   const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
@@ -276,6 +296,20 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
         },
       ),
       tool(
+        "request_permission",
+        "Ask the member (who owns this runner) for an extra permission you truly need and don't have yet: read-only network access to specific domains (hostnames), the curl/wget commands, or reading another of their Backcode projects for examples of their own code (only the ids listed as available in your instructions). Give a short, concrete reason. They decide in this same conversation in the app (only this conversation, add it to their personal permissions, or deny) and you continue with their decision. Don't try a blocked action first. After calling it, end your turn without further changes.",
+        REQUEST_PERMISSION_INPUT,
+        async ({ reason, ...input }) => {
+          if (!permCtx.applies) return fail(t("ch.permNotOwner"));
+          if (permissionAsked) return fail(t("perm.pending"));
+          const checked = checkPermissionRequest(input, permCtx);
+          if ("error" in checked) return fail(checked.error);
+          permissionAsked = true;
+          await store.postChatPermissionRequest(id, reason, checked.need);
+          return reply(t("perm.sent"));
+        },
+      ),
+      tool(
         "task_status",
         "List the tasks created from this conversation with their status (execute = queued, running, waiting = Claude asked something or proposed a plan, done = draft pull request ready, failed), branch and pull request link.",
         {},
@@ -307,6 +341,9 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       if (!unread.length) break;
       await store.markChatRead(id, unread.map((m) => m.id!));
       activity(t("ch.thinking"));
+      if (round > 0) permCtx = await loadPerms();
+      permissionAsked = false;
+      const session = sessionPermissions(permCtx, cfg.allowedDomains);
       // Las imágenes de cada mensaje se descargan en su subcarpeta de .backcode-attachments (excluida de git y protegida).
       const prompt = buildChatPrompt(
         await Promise.all(
@@ -330,20 +367,21 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
-            append: buildChatSystemAppend({ projectName: deps.project.name, projectContext: deps.project.context, worktree: path, baseBranch, remote, language: LANGUAGE_NAME[lang()], titleManual: !canRetitle(chat) }),
+            append: buildChatSystemAppend({ projectName: deps.project.name, projectContext: deps.project.context, worktree: path, baseBranch, remote, language: LANGUAGE_NAME[lang()], titleManual: !canRetitle(chat), permissions: permCtx.prompt }),
           },
           // Los mismos límites que una tarea: sin settings del usuario ni del repo, dontAsk, guard y sandbox.
           settingSources: [],
           permissionMode: "dontAsk",
-          allowedTools: CHAT_ALLOWED_TOOLS,
-          disallowedTools: ["WebFetch", "WebSearch", "Agent", "Task"],
-          hooks: { PreToolUse: [{ hooks: [createGuardHook(path, deps.isProtected)] }] },
+          allowedTools: chatAllowedTools(permCtx),
+          // Como en las tareas: WebFetch solo a los dominios concedidos; curl/wget y las carpetas de solo lectura, en el guard.
+          disallowedTools: session.disallowedTools,
+          hooks: { PreToolUse: [{ hooks: [createGuardHook(path, deps.isProtected, session.guard)] }] },
           sandbox: {
             enabled: true,
             failIfUnavailable: true,
             autoAllowBashIfSandboxed: true,
             allowUnsandboxedCommands: false,
-            network: { allowedDomains: cfg.allowedDomains, strictAllowlist: true },
+            network: { allowedDomains: session.allowedDomains, strictAllowlist: true },
             filesystem: { denyRead: deps.denyRead, allowWrite: [path] },
           },
           mcpServers: { backcode: server },
@@ -374,6 +412,8 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
         error = t("ch.timeout");
         await store.postChatMessage(id, "error", error);
       }
+      // Pidió permiso: se espera a la decisión (al responder en la tarjeta, la conversación vuelve a la cola).
+      if (permissionAsked) break;
     }
   } catch (err) {
     error = String((err as Error).message ?? err);

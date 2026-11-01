@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { z } from "zod";
+import { t } from "./i18n.js";
 import { projectFiles } from "./paths.js";
 
 // Permisos personales: lo que quien ejecuta una tarea deja hacer a Claude además de lo de siempre, en sus propias
@@ -55,7 +57,15 @@ export function appliesTo(feature: { createdBy?: string; assignee?: string }, ui
   return !!uid && feature.createdBy === uid && feature.assignee === uid;
 }
 
-/** Lo concedido en el hilo de la tarea (once y always; deny no suma nada). */
+/**
+ * ¿Se aplican permisos personales a esta conversación con el runner? Solo si la abrió (y escribe en ella) quien tiene
+ * este runner. La de un compañero que usa mi runner compartido no hereda mis permisos ni puede pedir más (yo no la veo).
+ */
+export function chatAppliesTo(chat: { uid?: string; runnerUid?: string }, uid: string): boolean {
+  return !!uid && chat.uid === uid && (chat.runnerUid ?? chat.uid) === uid;
+}
+
+/** Lo concedido en el hilo de la tarea o de la conversación (once y always; deny no suma nada). */
 export function threadGrants(thread: { author: string; kind: string; grant?: unknown }[]): Permissions {
   return merge(
     ...thread
@@ -95,16 +105,22 @@ export function readRoots(perms: Permissions, repos: Map<string, string>, curren
   return perms.readProjects.filter((id) => id !== currentProject && repos.has(id)).map((id) => ({ id, path: repos.get(id)! }));
 }
 
-/** Sección para las instrucciones de Claude: qué tiene concedido en esta tarea y qué puede pedir. */
+/** Sección para las instrucciones de Claude: qué tiene concedido en esta tarea (o conversación) y qué puede pedir. */
 export function permissionsPrompt(opts: {
   applies: boolean;
   perms: Permissions;
   roots: { id: string; name: string; path: string }[];
   /** Otros proyectos conectados aquí que puede pedir leer (id y nombre). */
   available: { id: string; name: string }[];
+  /** Conversación con el runner (chat.ts) en vez de una tarea: cambia el texto cuando no se aplican. */
+  scope?: "task" | "chat";
 }): string {
   const lines: string[] = [];
-  if (!opts.applies) {
+  if (!opts.applies && opts.scope === "chat") {
+    lines.push(
+      "None. This conversation is from a teammate using someone else's runner, so the runner owner's personal permissions don't apply and `request_permission` isn't available. If something needs network access, curl/wget or another project, say so and suggest creating a task or doing it in their own Claude Code.",
+    );
+  } else if (!opts.applies) {
     lines.push(
       "None. This task wasn't created by the person running it, so their personal permissions don't apply here. If you truly need network access, curl/wget or another project, you can still call `request_permission`: they can continue the task in their own Claude Code or deny it.",
     );
@@ -124,4 +140,82 @@ export function permissionsPrompt(opts: {
     lines.push(`Other projects of this person connected on this computer, which you can ask to read: ${opts.available.map((p) => `"${p.name}" (${p.id})`).join(", ")}.`);
   }
   return lines.join("\n");
+}
+
+// --- Compartido entre tareas (index.ts) y conversaciones con el runner (chat.ts): misma lógica en los dos sitios ---
+
+/** Lo que hace falta para aplicar los permisos a una sesión de Claude y para atender request_permission. */
+export interface PermissionContext {
+  applies: boolean;
+  perms: Permissions;
+  /** Proyectos concedidos que están en este ordenador (carpeta real y nombre). */
+  roots: { id: string; name: string; path: string }[];
+  /** Ids de los otros proyectos conectados aquí (los que se pueden pedir). */
+  otherProjects: string[];
+  /** Los que aún no tiene concedidos, con su nombre (para las instrucciones y los errores). */
+  available: { id: string; name: string }[];
+  /** Sección «Extra permissions» de las instrucciones de Claude. */
+  prompt: string;
+}
+
+/**
+ * Permisos de una sesión: los personales de quien tiene el runner (solo si `applies`) más lo concedido en el hilo
+ * (`grants`, de threadGrants), con las carpetas de los proyectos de referencia y el texto para Claude.
+ */
+export async function loadPermissionContext(opts: {
+  applies: boolean;
+  store: { permissions(): Promise<Permissions>; projectName(id: string): Promise<string> };
+  grants: Permissions;
+  projectId: string;
+  scope?: "task" | "chat";
+  /** Para tests: los repos conectados aquí (por defecto, localRepos()). */
+  repos?: Map<string, string>;
+}): Promise<PermissionContext> {
+  const { applies, store, projectId } = opts;
+  const perms = applies ? merge(await store.permissions().catch(() => NONE), opts.grants) : NONE;
+  const repos = applies ? (opts.repos ?? localRepos()) : new Map<string, string>();
+  const otherProjects = [...repos.keys()].filter((pid) => pid !== projectId);
+  const roots = await Promise.all(readRoots(perms, repos, projectId).map(async (r) => ({ ...r, name: await store.projectName(r.id) })));
+  const available = await Promise.all(otherProjects.filter((pid) => !perms.readProjects.includes(pid)).map(async (pid) => ({ id: pid, name: await store.projectName(pid) })));
+  const prompt = permissionsPrompt({ applies, perms, roots, available, scope: opts.scope });
+  return { applies, perms, roots, otherProjects, available, prompt };
+}
+
+/**
+ * Cómo se traducen los permisos a las opciones de Claude Code: WebFetch solo a los dominios concedidos (y deshabilitado
+ * si no hay), la red del sandbox con esos dominios además de la lista de siempre y el guard con curl/wget y las carpetas
+ * de solo lectura. Nunca quita límites: secretos, git que cambia estado, gh, sudo o ssh siguen bloqueados en el guard.
+ */
+export function sessionPermissions(ctx: Pick<PermissionContext, "perms" | "roots">, baseDomains: string[]) {
+  const webFetch = ctx.perms.domains.map((d) => `WebFetch(domain:${d})`);
+  return {
+    /** Se añaden a allowedTools. */
+    allowedTools: webFetch,
+    disallowedTools: [...(webFetch.length ? [] : ["WebFetch"]), "WebSearch", "Agent", "Task"],
+    guard: { readRoots: ctx.roots.map((r) => r.path), allowCommands: [...ctx.perms.commands] as string[] },
+    allowedDomains: [...new Set([...baseDomains, ...ctx.perms.domains])],
+  };
+}
+
+/** Entrada de la herramienta request_permission (igual en tareas y conversaciones). */
+export const REQUEST_PERMISSION_INPUT = {
+  reason: z.string().min(10).max(2000),
+  domains: z.array(z.string().max(300)).max(10).optional(),
+  commands: z.array(z.enum(GRANTABLE_COMMANDS)).max(2).optional(),
+  projects: z.array(z.string().max(64)).max(10).optional(),
+};
+
+/** Valida una petición de request_permission: lo que falta por conceder, o el error para Claude. */
+export function checkPermissionRequest(
+  input: { domains?: string[]; commands?: GrantableCommand[]; projects?: string[] },
+  ctx: Pick<PermissionContext, "perms" | "otherProjects" | "available">,
+): { need: Permissions } | { error: string } {
+  const bad = (input.domains ?? []).filter((d) => !normalizeDomain(d));
+  if (bad.length) return { error: t("perm.badDomain", { list: bad.join(", ") }) };
+  const unknown = (input.projects ?? []).filter((p) => !ctx.otherProjects.includes(p));
+  if (unknown.length) return { error: t("perm.unknownProject", { list: unknown.join(", "), available: ctx.available.map((p) => `${p.name} (${p.id})`).join(", ") || "-" }) };
+  const request = sanitize({ domains: input.domains, commands: input.commands, readProjects: input.projects });
+  if (isEmpty(request)) return { error: t("perm.empty") };
+  const need = missing(request, ctx.perms);
+  return need ? { need } : { error: t("perm.already") };
 }
