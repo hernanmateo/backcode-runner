@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { installCommand, stripNpmUsage } from "../src/actions.js";
+import { failureOutput, gradleFailure, installCommand, stripNpmUsage } from "../src/actions.js";
 import { classify } from "../src/diagnostics.js";
 
 test("npm sin lockfile: npm install en vez de npm ci; con lockfile u otro gestor, el congelado", () => {
@@ -55,4 +55,28 @@ test("quita la ayuda de uso de npm y deja el error que la explica", () => {
   assert.equal(classify(`npm ci terminó con código 1:\n${stripped}`, { thrown: false, source: "detected" }), null);
   // Sin ayuda de uso, no cambia nada.
   assert.equal(stripNpmUsage("npm error code E404\nnpm error 404 Not Found"), "npm error code E404\nnpm error 404 Not Found");
+});
+
+test("fallo de Gradle: el «What went wrong» va delante aunque la traza final lo deje fuera del recorte", () => {
+  const out = [
+    "[RUN_GRADLEW] > Task :app:bundleRelease FAILED",
+    "[RUN_GRADLEW] FAILURE: Build failed with an exception.",
+    "[RUN_GRADLEW] * What went wrong:",
+    "[RUN_GRADLEW] Could not determine the dependencies of task ':app:bundleRelease'.",
+    "[RUN_GRADLEW] > SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable.",
+    "[RUN_GRADLEW] * Try:",
+    "[RUN_GRADLEW] > Run with --stacktrace option to get the stack trace.",
+    "[RUN_GRADLEW] BUILD FAILED in 12s",
+    ...Array.from({ length: 200 }, (_, i) => `    at buildAsync (node_modules/@expo/build-tools/dist/android.js:47:${i})`),
+    "Error: build command failed.",
+  ].join("\n");
+  assert.equal(gradleFailure(out), "[RUN_GRADLEW] Could not determine the dependencies of task ':app:bundleRelease'.\n[RUN_GRADLEW] > SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable.");
+  const shown = failureOutput(out, 2800);
+  assert.ok(shown.length <= 2800);
+  assert.match(shown, /SDK location not found/);
+  assert.match(shown, /build command failed\.$/);
+  // Sin Gradle, o si la causa ya cabe en el recorte, igual que antes.
+  assert.equal(failureOutput("npm error code E404", 2800), "npm error code E404");
+  const short = out.split("\n").slice(0, 8).join("\n");
+  assert.equal(failureOutput(short, 2800), short);
 });
