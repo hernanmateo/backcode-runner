@@ -36,7 +36,9 @@ import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
 import { runChat, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
-import { machineInfo } from "./machine.js";
+import { machineInfo, resolveProjectsDir } from "./machine.js";
+import { linkProject, machineId, machineStatus, MACHINE_BEAT_MS, parseLinkRequest } from "./machines.js";
+import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
@@ -1371,6 +1373,70 @@ async function main(): Promise<void> {
     (err) => console.warn(`[scaffold] ${err.message}`),
   );
 
+  // Este ordenador en la app (users/{uid}/machines/{id}): latido y qué tiene instalado, para que «Conectar mi Claude Code»
+  // sepa que el runner ya está aquí. Con varios proyectos conectados lo publican todos (es lo mismo).
+  const thisMachine = machineId();
+  const beat = () =>
+    void machineStatus(cfg.bitbucket)
+      .then((status) => store.saveMachineStatus(thisMachine, status))
+      .catch((err) => console.warn(`[machine] ${(err as Error).message}`));
+  beat();
+  const beatTimer = setInterval(beat, MACHINE_BEAT_MS);
+
+  // «Conectar en <host>» / «Clonar en <host>» desde la app: solo peticiones de mi uid (las reglas solo dejan crearlas a
+  // mí y para proyectos de los que soy miembro) y se vuelve a comprobar que puedo leer el proyecto. La llave no viaja:
+  // se usa la de este ordenador.
+  let linkBusy = false;
+  let pendingLinks: string[] = [];
+  const drainLinks = async () => {
+    if (linkBusy) return;
+    linkBusy = true;
+    try {
+      while (!stopping && !restarting && pendingLinks.length) {
+        const id = pendingLinks.shift()!;
+        const raw = await store.claimLinkRequest(thisMachine, id, t("link.connecting")).catch(() => null);
+        if (!raw) continue;
+        const job = parseLinkRequest(raw);
+        if ("error" in job) {
+          await store.finishLinkRequest(thisMachine, id, "failed", { error: job.error }).catch(() => undefined);
+          continue;
+        }
+        const project = await store.projectForLink(job.projectId);
+        if (!project) {
+          await store.finishLinkRequest(thisMachine, id, "failed", { error: t("link.noAccess") }).catch(() => undefined);
+          continue;
+        }
+        console.log(`[link] ${job.projectId}${job.clonePath ? ` (clone)` : ""}`);
+        const release = awake.hold();
+        const outcome = await linkProject(cfg.envFile, job, { ...project, projectsDir: resolveProjectsDir((await store.workspace().catch(() => ({}) as { projectsDir?: string })).projectsDir).dir }, (text) => {
+          console.log(`[link] ${text}`);
+          void store.linkRequestActivity(thisMachine, id, text);
+        })
+          .catch((err): Awaited<ReturnType<typeof linkProject>> => ({ status: "failed", error: String((err as Error).message ?? err).slice(0, 1500) }))
+          .finally(release);
+        if (outcome.status === "done") {
+          // El supervisor arranca los nuevos solo (cada 10 s); uno que ya estaba conectado se reinicia con lo nuevo.
+          if (outcome.restart) await panelCall("POST", `/api/projects/${job.projectId}/restart`).catch(() => undefined);
+          await store.finishLinkRequest(thisMachine, id, "done", { repoPath: outcome.repoPath.slice(0, 300) }).catch((err) => console.warn(`[link] ${(err as Error).message}`));
+          beat();
+        } else if (outcome.status === "needsRepo") {
+          await store.finishLinkRequest(thisMachine, id, "needsRepo", { clonePath: outcome.clonePath.slice(0, 300), canClone: outcome.canClone }).catch(() => undefined);
+        } else await store.finishLinkRequest(thisMachine, id, "failed", { error: outcome.error }).catch(() => undefined);
+        console.log(`[link] ${job.projectId} -> ${outcome.status}`);
+      }
+    } finally {
+      linkBusy = false;
+    }
+  };
+  const unsubscribeLinks = onSnapshot(
+    store.myLinkRequests(thisMachine),
+    (snap) => {
+      pendingLinks = snap.docs.map((d) => d.id);
+      void drainLinks();
+    },
+    (err) => console.warn(`[link] ${err.message}`),
+  );
+
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
@@ -1382,6 +1448,8 @@ async function main(): Promise<void> {
     unsubscribeRefines();
     unsubscribeChats();
     unsubscribeScaffolds();
+    unsubscribeLinks();
+    clearInterval(beatTimer);
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
@@ -1422,7 +1490,7 @@ async function main(): Promise<void> {
     console.log(`[backcode] ${t("update.waiting")}`);
     // Una acción esperando a la CI no retrasa el reinicio hasta 15 minutos: falla con los checks en curso.
     stopWaitingForChecks();
-    while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy) await new Promise((r) => setTimeout(r, 1000));
+    while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy || linkBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();
     stopLang();
@@ -1430,6 +1498,8 @@ async function main(): Promise<void> {
     unsubscribeRefines();
     unsubscribeChats();
     unsubscribeScaffolds();
+    unsubscribeLinks();
+    clearInterval(beatTimer);
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();

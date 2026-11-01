@@ -970,6 +970,44 @@ export class Store {
     await setDoc(doc(this.db, "users", this.uid, "private", "machine"), { ...report, updatedAt: serverTimestamp() });
   }
 
+  /** Latido y estado de este ordenador (users/{uid}/machines/{machineId}): solo booleanos y metadatos, nunca tokens. */
+  async saveMachineStatus(machineId: string, status: Record<string, unknown>): Promise<void> {
+    await setDoc(doc(this.db, "users", this.uid, "machines", machineId), { ...status, lastSeen: serverTimestamp() });
+  }
+
+  /** «Conectar en <host>» / «Clonar en <host>» pedidos desde la app a este ordenador. */
+  myLinkRequests(machineId: string) {
+    return query(collection(this.db, "users", this.uid, "machines", machineId, "requests"), where("status", "==", "pending"));
+  }
+
+  /** pending -> running de forma atómica: con varios proyectos conectados en este ordenador, solo uno la atiende. */
+  async claimLinkRequest(machineId: string, id: string, activity: string): Promise<Record<string, unknown> | null> {
+    const ref = doc(this.db, "users", this.uid, "machines", machineId, "requests", id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "pending") return null;
+      tx.update(ref, { status: "running", activity, updatedAt: serverTimestamp() });
+      return d.data();
+    });
+  }
+
+  async linkRequestActivity(machineId: string, id: string, activity: string): Promise<void> {
+    await updateDoc(doc(this.db, "users", this.uid, "machines", machineId, "requests", id), { activity: activity.slice(0, 300), updatedAt: serverTimestamp() }).catch(() => undefined);
+  }
+
+  async finishLinkRequest(machineId: string, id: string, status: "done" | "failed" | "needsRepo", result: { error?: string; repoPath?: string; clonePath?: string; canClone?: boolean }): Promise<void> {
+    const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
+    await updateDoc(doc(this.db, "users", this.uid, "machines", machineId, "requests", id), { status, result: clean, updatedAt: serverTimestamp() });
+  }
+
+  /** Nombre y repo de un proyecto para conectarlo; null si este usuario no puede leerlo (no es miembro). */
+  async projectForLink(projectId: string): Promise<{ name: string; repoUrl?: string } | null> {
+    const d = await getDoc(doc(this.db, "projects", projectId)).catch(() => null);
+    if (!d?.exists()) return null;
+    const repoUrl = d.get("repoUrl");
+    return { name: String(d.get("name") ?? projectId), repoUrl: typeof repoUrl === "string" && /^(https:\/\/|git@)[^\s]+$/.test(repoUrl) ? repoUrl : undefined };
+  }
+
   myScaffolds() {
     return query(collection(this.db, "users", this.uid, "scaffolds"), where("status", "==", "pending"));
   }

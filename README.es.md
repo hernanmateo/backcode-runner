@@ -341,6 +341,19 @@ crea **tu** runner (cualquiera de los tuyos que esté encendido) con **tus** cre
 Para que la app sepa qué ofrecer, cada runner publica en tu perfil privado (`users/{uid}/private/machine`) la carpeta de
 proyectos, tu usuario de `gh` y sus organizaciones, y tus workspaces de Bitbucket, al arrancar y cada hora. Nunca tokens.
 
+## Este ordenador en la app: «Conectar en <host>» sin pegar nada
+Desde la 1.0.88 cada runner mantiene vivo (cada ~2 min) `users/{uid}/machines/{machineId}` (id estable en
+`~/.backcode/machine-id`): host, versión, plataforma, si Claude Code, git y `gh` están instalados y con sesión (y la cuenta de
+`gh`), si hay token de Bitbucket (solo sí/no) y los proyectos conectados. Nunca tokens. Con eso, «Conectar mi Claude Code» da
+el runner por instalado, no genera otra llave y ofrece **«Conectar en <host>»**: la app deja una petición en
+`users/{uid}/machines/{machineId}/requests/{id}` (proyecto, rama base, modo PR y, opcional, ruta del repo o carpeta donde
+clonarlo) y un runner de este ordenador la reclama, valida cada campo (rutas solo dentro de tu `$HOME`, sin carpetas ocultas
+ni `~/.backcode`; rama válida; modo PR del enum), comprueba que puedes leer el proyecto y escribe
+`~/.backcode/config/<proyecto>.env` con la llave que ya tiene, como al pegar la configuración. Si no encuentra el repo,
+responde `needsRepo` con una carpeta propuesta (tu carpeta de proyectos + nombre del repo) y la app ofrece «Clonar en <host>»:
+clona desde el `repoUrl` del proyecto (nunca una URL de la petición) con tus credenciales de git/gh y no pisa nunca una carpeta
+con contenido. El supervisor arranca el proyecto en unos segundos.
+
 
 ## Qué hace con cada tarea
 1. La reclama (`execute → running`) y verifica que es tuya, que sigues en el grupo y que el encargo y los adjuntos no han cambiado
