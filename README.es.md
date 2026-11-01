@@ -360,13 +360,14 @@ con contenido. El supervisor arranca el proyecto en unos segundos.
    desde que la aceptaste (huella).
 2. Crea una copia aislada (worktree) en `~/.backcode/worktrees/<proyecto>/<tarea>` sobre su rama, partiendo de `<remoto>/<base>`.
    Tu carpeta de trabajo no se toca. Los adjuntos (capturas, PDFs…) se descargan en `.backcode-attachments/`, excluida de git.
+   Antes de lanzar a Claude instala ahí las dependencias, fuera del sandbox y con el lockfile y el gestor del repo (`bun install --frozen-lockfile`, `npm ci`…), solo donde `node_modules` está ignorado por git y los ficheros de dependencias siguen como en la base: así Claude puede pasar tests, typecheck y lint sin esperar una instalación que dentro del sandbox a menudo no acaba. En modo plan, al aprobarlo.
 3. Lanza Claude Code con [`instructions/AGENT.md`](instructions/AGENT.md): trabajar solo en esa rama, ejecutar los tests, preguntar
    (`ask_user`) si algo esencial es ambiguo y llamar a `open_pull_request` al terminar.
    En **modo plan** (`planFirst`), hasta que se aprueba el plan Claude solo puede leer (Read, Glob, Grep: sin editar ni ejecutar
    comandos) y entrega el plan con `propose_plan`; la tarea pasa a `waiting` con `result.planReady`. Cada comentario en el hilo
    le hace rehacerlo; al aprobarlo (`planApproved`), la misma sesión lo implementa con las herramientas de siempre.
 4. Revisa el resultado (rechaza cambios en rutas protegidas y diffs con secretos), hace commit y push y abre el **PR en borrador**.
-5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó o propuso un plan) o `failed` (con el motivo). La app muestra la actividad
+5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó, pidió un permiso, propuso un plan o paró sin PR pero con cambios hechos, para que le contestes en el hilo) o `failed` (con el motivo). La app muestra la actividad
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
 
 ## Modelo de cada tarea
