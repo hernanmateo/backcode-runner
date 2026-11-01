@@ -437,6 +437,16 @@ En el **modo conversación por voz** de la app, tus mensajes llegan marcados com
 runner le pide a Claude que responda como en una conversación hablada (corto, sin Markdown, código ni rutas), porque la app
 lo lee en voz alta. Lo que hace y edita sigue igual, con los mismos límites.
 
+**Vídeos** (desde la versión 1.0.84): una grabación de pantalla comentada que envías al chat se analiza en el servidor igual
+que en el chat del equipo (`processRunnerChatVideo` → `functions/src/video.ts`: transcripción con tiempos `[m:ss]` y un
+fotograma de cada cosa que comentas). El runner espera a que el mensaje tenga `videoDone` (hasta 10 minutos; mientras, la
+actividad dice «Analizando el vídeo…»), descarga los fotogramas en `.backcode-attachments/<mid>-video/` (excluida de git,
+nombrados `fotograma-<m>m<ss>s.jpg`) y le pasa a Claude la transcripción en el prompt. Así puede describir el vídeo y
+proponer o crear tareas con `create_task`. Si el análisis falla (`videoError`, p. ej. sin plan Pro Full/Equipo) o no llega a
+tiempo, Claude solo sabe que hay una grabación que no puede ver y te pedirá que la describas. Funciona también en la
+conversación de un compañero con tu runner compartido (los fotogramas quedan en su carpeta de adjuntos del proyecto, que tu
+runner puede leer).
+
 **Títulos tipo épica** (desde la versión 1.0.81): cada conversación es como una épica, así que Claude le pone con
 `set_conversation_title` un título muy corto del tema (2–5 palabras, máx. 60 caracteres, sin punto final; p. ej. «Historial
 del chat») en su primera respuesta y solo lo cambia si el tema general cambia o se amplía. Hasta entonces la app muestra el

@@ -155,6 +155,13 @@ export interface RefineJob {
 export interface ChatUserMessage extends ThreadMessage {
   attachments?: Attachment[];
   video?: { path: string; durationMs: number };
+  /** Análisis del vídeo que deja el servidor (processRunnerChatVideo, el mismo que el del chat del proyecto). */
+  videoDone?: boolean;
+  videoError?: string;
+  /** Lo que se dice en el vídeo, por tramos con su tiempo ([m:ss]). */
+  transcript?: string;
+  /** Fotogramas de los momentos que se comentan (`at`: segundo del vídeo), en la carpeta de adjuntos de quien escribe. */
+  frames?: { path: string; at: number }[];
   /** Dicho en el modo conversación por voz de la app: la respuesta se escucha, no se lee. */
   voice?: boolean;
 }
