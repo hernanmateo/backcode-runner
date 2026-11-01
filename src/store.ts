@@ -32,7 +32,7 @@ import type { RunnerConfig } from "./config.js";
 import type { FirebaseDeployEnv } from "./firebase-env.js";
 import type { RepoWarning } from "./git.js";
 import type { DevState } from "./dev-server.js";
-import { NONE, sanitize, type Permissions } from "./permissions.js";
+import { NONE, sanitize, threadGrants, type Permissions } from "./permissions.js";
 import type { DeployPlan } from "./pending.js";
 import type { DeployVia } from "./deploy-log.js";
 import type { TaskBuild } from "./deploy-tasks.js";
@@ -686,6 +686,17 @@ export class Store {
     const clean = text.trim().slice(0, 4000);
     if (!clean) return;
     await addDoc(collection(this.project(), "chats", id, "messages"), { author: "claude", kind, text: clean, at: serverTimestamp() }).catch((err: Error) => console.warn(`[chat] ${err.message}`));
+  }
+
+  /** Claude pide permisos en la conversación (request_permission): la app muestra la misma tarjeta que en las tareas. */
+  async postChatPermissionRequest(id: string, reason: string, request: Permissions): Promise<void> {
+    await addDoc(collection(this.project(), "chats", id, "messages"), { author: "claude", kind: "permission", text: reason.slice(0, 4000), request, at: serverTimestamp() });
+  }
+
+  /** Lo concedido en la conversación (mensajes "grant" de quien la abrió): vale solo para ella, como en el hilo de una tarea. */
+  async chatGrants(id: string): Promise<Permissions> {
+    const snap = await getDocs(query(collection(this.project(), "chats", id, "messages"), where("author", "==", "user"), where("kind", "==", "grant")));
+    return threadGrants(snap.docs.map((d) => d.data() as { author: string; kind: string; grant?: unknown }));
   }
 
   async updateChat(id: string, data: { status?: "pending" | "running" | "idle" | "failed"; activity?: string; sessionId?: string; branch?: string; costUsd?: number; error?: string }): Promise<void> {

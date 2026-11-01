@@ -26,7 +26,7 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
-import { appliesTo, GRANTABLE_COMMANDS, isEmpty, localRepos, merge, missing, NONE, normalizeDomain, permissionsPrompt, readRoots, sanitize, threadGrants } from "./permissions.js";
+import { appliesTo, checkPermissionRequest, isEmpty, loadPermissionContext, REQUEST_PERMISSION_INPUT, sessionPermissions, threadGrants } from "./permissions.js";
 import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
@@ -227,13 +227,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // Permisos personales (permissions.ts): los suyos del proyecto y lo concedido en el hilo, solo si la tarea la creó y
   // la ejecuta quien tiene este runner. Se suman a los límites de siempre, nunca los quitan.
   const history = resuming ? await store.thread(id) : [];
-  const applies = appliesTo(feature, store.uid);
-  const perms = applies ? merge(await store.permissions().catch(() => NONE), threadGrants(history)) : NONE;
-  const repos = applies ? localRepos() : new Map<string, string>();
-  const otherProjects = [...repos.keys()].filter((pid) => pid !== cfg.projectId);
-  const roots = await Promise.all(readRoots(perms, repos, cfg.projectId).map(async (r) => ({ ...r, name: await store.projectName(r.id) })));
-  const available = await Promise.all(otherProjects.filter((pid) => !perms.readProjects.includes(pid)).map(async (pid) => ({ id: pid, name: await store.projectName(pid) })));
-  const permissionsText = permissionsPrompt({ applies, perms, roots, available });
+  const permCtx = await loadPermissionContext({ applies: appliesTo(feature, store.uid), store, grants: threadGrants(history), projectId: cfg.projectId });
+  const { perms, roots } = permCtx;
+  const permissionsText = permCtx.prompt;
+  const session = sessionPermissions(permCtx, cfg.allowedDomains);
   if (!isEmpty(perms)) await store.event(id, "start", t("run.permissions", { list: [...perms.domains, ...perms.commands, ...roots.map((r) => r.name)].join(", ") }));
 
   const previousPr = feature.result?.prUrl;
@@ -244,7 +241,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let question: string | undefined; // pregunta de Claude (ask_user)
   let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
-  const webFetch = perms.domains.map((d) => `WebFetch(domain:${d})`);
+  const webFetch = session.allowedTools;
   const prServer = createSdkMcpServer({
     name: "backcode",
     version: "1.0.0",
@@ -313,25 +310,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       tool(
         "request_permission",
         "Ask the person running this task for an extra permission you truly need and don't have yet: read-only network access to specific domains (hostnames), the curl/wget commands, or reading another of their Backcode projects for examples of their own code (only the ids listed as available in your instructions). Give a short, concrete reason. They decide in the app (only this task, always, continue in their own Claude Code, or deny) and this same session continues with their decision. Don't try a blocked action first. After calling it, end your turn without further changes.",
-        {
-          reason: z.string().min(10).max(2000),
-          domains: z.array(z.string().max(300)).max(10).optional(),
-          commands: z.array(z.enum(GRANTABLE_COMMANDS)).max(2).optional(),
-          projects: z.array(z.string().max(64)).max(10).optional(),
-        },
-        async ({ reason, domains, commands, projects }) => {
+        REQUEST_PERMISSION_INPUT,
+        async ({ reason, ...input }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
           if (question || permissionAsked) return fail(t("perm.pending"));
-          const bad = (domains ?? []).filter((d) => !normalizeDomain(d));
-          if (bad.length) return fail(t("perm.badDomain", { list: bad.join(", ") }));
-          const unknown = (projects ?? []).filter((p) => !otherProjects.includes(p));
-          if (unknown.length) return fail(t("perm.unknownProject", { list: unknown.join(", "), available: available.map((p) => `${p.name} (${p.id})`).join(", ") || "-" }));
-          const request = sanitize({ domains, commands, readProjects: projects });
-          if (isEmpty(request)) return fail(t("perm.empty"));
-          const need = missing(request, perms);
-          if (!need) return fail(t("perm.already"));
+          const checked = checkPermissionRequest(input, permCtx);
+          if ("error" in checked) return fail(checked.error);
           permissionAsked = true;
-          await store.postPermissionRequest(id, reason, need);
+          await store.postPermissionRequest(id, reason, checked.need);
           await store.event(id, "question", reason.slice(0, 300));
           return { content: [{ type: "text" as const, text: t("perm.sent") }] };
         },
@@ -472,14 +458,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
           : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
         // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
-        disallowedTools: [...(webFetch.length ? [] : ["WebFetch"]), "WebSearch", "Agent", "Task"],
-        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected, { readRoots: roots.map((r) => r.path), allowCommands: perms.commands })] }] },
+        disallowedTools: session.disallowedTools,
+        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected, session.guard)] }] },
         sandbox: {
           enabled: true,
           failIfUnavailable: true,
           autoAllowBashIfSandboxed: true,
           allowUnsandboxedCommands: false,
-          network: { allowedDomains: [...new Set([...cfg.allowedDomains, ...perms.domains])], strictAllowlist: true },
+          network: { allowedDomains: session.allowedDomains, strictAllowlist: true },
           filesystem: { denyRead: DENY_READ, allowWrite: [wt.path] },
         },
         mcpServers: { backcode: prServer },
