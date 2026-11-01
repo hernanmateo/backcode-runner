@@ -180,7 +180,7 @@ explains how to add a `backcode:deploy:<name>` script or a `backcode.toml` and, 
     </td>
     <td valign="top">
       <h4>Conversations, not one-shots</h4>
-      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back. From the chat with your runner, Claude can launch tasks and correct them later: it rewrites the brief of a queued task, or sends your correction to a running or finished one, which picks it up in the same session and updates its PR.
+      Claude asks in the task thread, you answer from your phone, the same session continues and the same PR updates. Watch it <b>live</b> and write to it while it works, stop it, or open the session in the Claude app (Remote Control) and hand it back. From the chat with your runner, Claude can launch tasks and correct them later: it rewrites the brief of a queued task, or sends your correction to a running or finished one, which picks it up in the same session and updates its PR. You can also open your runner to teammates for a while (1–24 h or until you close it) with the lock in the chat and in «New idea»; once it expires or you close it, your runner stops picking up their new messages and ideas.
     </td>
   </tr>
   <tr>

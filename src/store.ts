@@ -45,6 +45,7 @@ import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
+import { isShareOpen, type ShareScope } from "./runner-share.js";
 import { firestoreSource, LiveQuery } from "./live-query.js";
 
 /**
@@ -574,15 +575,28 @@ export class Store {
     return query(collection(this.project(), "refineJobs"), where("uid", "==", this.uid), where("status", "==", "pending"));
   }
 
+  /** Si tengo abierto (y sin caducar) el candado `scope` de mi runner en este proyecto (runnerShares/{uid}). */
+  async shareOpen(scope: ShareScope): Promise<boolean> {
+    const d = await getDoc(doc(this.project(), "runnerShares", this.uid)).catch(() => null);
+    return isShareOpen(d?.exists() ? d.data() : null, scope);
+  }
+
   /** pending -> running de forma atómica. Devuelve el encargo si lo reclamamos nosotros. */
   async claimRefine(id: string): Promise<RefineJob | null> {
     const ref = doc(this.project(), "refineJobs", id);
-    return runTransaction(this.db, async (tx) => {
+    const job = await runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || d.get("uid") !== this.uid) return null;
       tx.update(ref, { status: "running", updatedAt: serverTimestamp() });
       return d.data() as RefineJob;
     });
+    // La idea de un compañero (requestedBy), solo con el candado de «Nueva idea» abierto y sin caducar: si no, se rechaza.
+    const from = (job as { requestedBy?: string } | null)?.requestedBy;
+    if (job && from && from !== this.uid && !(await this.shareOpen("ideas"))) {
+      await this.finishRefine(id, { error: t("store.shareClosed") }).catch(() => undefined);
+      return null;
+    }
+    return job;
   }
 
   /** Lo que está haciendo Claude (p. ej. «Leyendo src/app.ts»): el servidor lo muestra en vivo en la app. */
@@ -617,6 +631,9 @@ export class Store {
   /** pending -> running de forma atómica. Devuelve la conversación si la reclamamos nosotros. */
   async claimChat(id: string): Promise<RunnerChat | null> {
     const ref = doc(this.project(), "chats", id);
+    // La de un compañero, solo con el candado del chat abierto y sin caducar (las reglas tampoco lo dejarían).
+    const pre = await getDoc(ref);
+    if (pre.exists() && pre.get("uid") !== this.uid && !(await this.shareOpen("chat"))) return null;
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || !this.serves(d.data() as RunnerChat)) return null;
