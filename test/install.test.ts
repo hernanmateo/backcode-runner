@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { failureOutput, gradleFailure, installCommand, stripNpmUsage } from "../src/actions.js";
+import { failureOutput, gradleFailure, installCommand, installDirFor, missingModulesHint, stripNpmUsage } from "../src/actions.js";
 import { classify } from "../src/diagnostics.js";
+import { setLangOverride } from "../src/i18n.js";
 
 test("npm sin lockfile: npm install en vez de npm ci; con lockfile u otro gestor, el congelado", () => {
   const dir = mkdtempSync(join(tmpdir(), "bc-install-"));
@@ -79,4 +80,79 @@ test("fallo de Gradle: el «What went wrong» va delante aunque la traza final l
   assert.equal(failureOutput("npm error code E404", 2800), "npm error code E404");
   const short = out.split("\n").slice(0, 8).join("\n");
   assert.equal(failureOutput(short, 2800), short);
+});
+
+function repo(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), "bc-installdir-"));
+  for (const [f, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, f)), { recursive: true });
+    writeFileSync(join(root, f), content);
+  }
+  return root;
+}
+
+test("installDirFor: functions con package.json sin lockfile y raíz con su propio paquete → en functions", () => {
+  const root = repo({ "package.json": '{"name":"app"}', "package-lock.json": "{}", "functions/package.json": '{"name":"functions"}' });
+  try {
+    assert.equal(installDirFor(root, join(root, "functions")), join(root, "functions"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installDirFor: functions con su lockfile → en functions", () => {
+  const root = repo({ "package.json": "{}", "functions/package.json": "{}", "functions/package-lock.json": "{}" });
+  try {
+    assert.equal(installDirFor(root, join(root, "functions")), join(root, "functions"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installDirFor: monorepo con workspaces que incluyen la carpeta → en la raíz", () => {
+  const arr = repo({ "package.json": '{"workspaces":["packages/*","./functions"]}', "package-lock.json": "{}", "packages/api/package.json": "{}", "functions/package.json": "{}", "other/package.json": "{}" });
+  const obj = repo({ "package.json": '{"workspaces":{"packages":["apps/**"]}}', "yarn.lock": "", "apps/web/site/package.json": "{}" });
+  try {
+    assert.equal(installDirFor(arr, join(arr, "packages/api")), arr);
+    assert.equal(installDirFor(arr, join(arr, "functions")), arr);
+    // Fuera de los workspaces: su carpeta.
+    assert.equal(installDirFor(arr, join(arr, "other")), join(arr, "other"));
+    assert.equal(installDirFor(obj, join(obj, "apps/web/site"), "yarn.lock"), obj);
+  } finally {
+    rmSync(arr, { recursive: true, force: true });
+    rmSync(obj, { recursive: true, force: true });
+  }
+});
+
+test("installDirFor: pnpm-workspace.yaml → en la raíz", () => {
+  const root = repo({ "package.json": "{}", "pnpm-workspace.yaml": "packages:\n  - apps/*\n", "pnpm-lock.yaml": "", "apps/mobile/package.json": "{}" });
+  try {
+    assert.equal(installDirFor(root, join(root, "apps/mobile"), "pnpm-lock.yaml"), root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installDirFor: carpeta sin package.json (o la propia raíz) → en la raíz", () => {
+  const root = repo({ "package.json": "{}", "functions/index.js": "" });
+  try {
+    assert.equal(installDirFor(root, join(root, "functions")), root);
+    assert.equal(installDirFor(root, root), root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("deploy sin módulos (TS2307): pista con la carpeta en es/en/ca y diagnóstico de Backcode", () => {
+  const out = "npx terminó con código 2:\nsrc/index.ts(1,24): error TS2307: Cannot find module 'firebase-functions/v2' or its corresponding type declarations.\nError: functions predeploy error: Command terminated with non-zero exit code 2";
+  setLangOverride("es");
+  assert.match(missingModulesHint(out, ["functions"]), /Faltan las dependencias de functions/);
+  setLangOverride("en");
+  assert.match(missingModulesHint(out, ["functions"]), /dependencies of functions are missing/);
+  setLangOverride("ca");
+  assert.match(missingModulesHint(out, ["functions", "functions", ""]), /Falten les dependències de functions, \. /);
+  assert.equal(missingModulesHint("npx terminó con código 1:\nError: HTTP Error: 400", ["functions"]), "");
+  assert.equal(classify(out, { thrown: false, source: "detected" }), "backcode");
+  // Un script del propio proyecto: sigue siendo cosa del proyecto.
+  assert.equal(classify(out, { thrown: false, source: "script" }), null);
 });

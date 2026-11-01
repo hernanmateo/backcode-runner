@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { failingLog } from "./check-logs.js";
+import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
 import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
@@ -700,11 +701,23 @@ async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: 
     const url = out.match(/https:\/\/[^\s"'<>)\]]+/g)?.pop();
     return { ok: true, result: { url, sha: commit, log: out.slice(-1400) } };
   } catch (err) {
-    return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+    const error = String((err as Error).message);
+    const hint = missingModulesHint(error, target.auto?.deps?.length ? target.auto.deps.map((d) => d.dir) : [target.dir]);
+    return { ok: false, result: { error: hint ? `${hint}\n${error.slice(-(3000 - hint.length - 1))}` : error.slice(-3000), sha: commit } };
   } finally {
     await removeWorktree(cfg.repoPath, wt);
     rmSync(wt, { recursive: true, force: true });
   }
+}
+
+/**
+ * Pista para un despliegue que falló por módulos que faltan: casi siempre es que las dependencias de esas carpetas no
+ * se instalaron antes del predeploy. Vacía si la salida no va de eso.
+ */
+export function missingModulesHint(error: string, dirs: string[]): string {
+  if (!MISSING_MODULES.test(error)) return "";
+  const list = [...new Set(dirs.map((d) => d || "."))].join(", ");
+  return t("deploy.missingModules", { dir: list });
 }
 
 /** Variables `env` del perfil de build de eas.json del canal (las que lleva el bundle publicado). */
@@ -751,9 +764,44 @@ export async function installFrozen(app: Pick<ExpoApp, "pm">, wt: string, dir: s
   const has = (f: string) => existsSync(join(dir, f)) || existsSync(join(wt, f));
   const frozen = { pnpm: ["pnpm", "install", "--frozen-lockfile"], yarn: ["yarn", "install", "--frozen-lockfile"], bun: ["bun", "install", "--frozen-lockfile"], npm: ["npm", "ci"] }[app.pm];
   // Donde está el lockfile: la carpeta del paquete o, en un monorepo (workspaces), la raíz.
-  const lockfile = { pnpm: "pnpm-lock.yaml", yarn: "yarn.lock", bun: existsSync(join(dir, "bun.lockb")) || existsSync(join(wt, "bun.lockb")) ? "bun.lockb" : "bun.lock", npm: "package-lock.json" }[app.pm];
-  const installDir = existsSync(join(dir, "package.json")) && existsSync(join(dir, lockfile)) && !has("pnpm-workspace.yaml") ? dir : wt;
+  const lockfile = { pnpm: "pnpm-lock.yaml", yarn: "yarn.lock", bun: has("bun.lockb") ? "bun.lockb" : "bun.lock", npm: "package-lock.json" }[app.pm];
+  const installDir = installDirFor(wt, dir, lockfile);
   await exec(installCommand(app.pm, frozen, installDir), installDir);
+}
+
+/**
+ * Dónde instalar las dependencias de `dir` (dentro del worktree `wt`). En la propia carpeta si es un paquete
+ * (`package.json`) que no forma parte de un workspace de la raíz, tenga o no lockfile: p. ej. unas functions de Firebase
+ * sin package-lock.json en un repo cuya raíz tiene su propio package.json. En la raíz si la carpeta no es un paquete o si
+ * es un monorepo de verdad: pnpm-workspace.yaml, o `workspaces` del package.json raíz que la incluyen (salvo que la
+ * carpeta traiga su propio lockfile, como hasta ahora).
+ */
+export function installDirFor(wt: string, dir: string, lockfile = "package-lock.json"): string {
+  if (resolve(dir) === resolve(wt) || !existsSync(join(dir, "package.json"))) return wt;
+  if (existsSync(join(wt, "pnpm-workspace.yaml")) || existsSync(join(dir, "pnpm-workspace.yaml"))) return wt;
+  if (existsSync(join(dir, lockfile))) return dir;
+  return inRootWorkspaces(wt, relative(wt, dir)) ? wt : dir;
+}
+
+/** ¿La carpeta `rel` (relativa a la raíz) está en los `workspaces` del package.json raíz (array u objeto con `packages`)? */
+function inRootWorkspaces(wt: string, rel: string): boolean {
+  let ws: unknown;
+  try {
+    ws = (JSON.parse(readFileSync(join(wt, "package.json"), "utf8")) as { workspaces?: unknown }).workspaces;
+  } catch {
+    return false;
+  }
+  const list = Array.isArray(ws) ? ws : (ws as { packages?: unknown } | null)?.packages;
+  if (!Array.isArray(list)) return false;
+  const path = rel.split(sep).join("/");
+  return list.some((p) => typeof p === "string" && !p.startsWith("!") && workspaceGlob(p).test(path));
+}
+
+/** Patrón de workspace (`packages/*`, `apps/**`, `./functions`) como expresión regular sobre rutas con «/». */
+function workspaceGlob(pattern: string): RegExp {
+  const segs = pattern.replace(/^\.\//, "").replace(/\/+$/, "").split("/");
+  const body = segs.map((seg) => (seg === "**" ? ".*" : seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]"))).join("/");
+  return new RegExp(`^${body}$`);
 }
 
 /**
