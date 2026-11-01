@@ -493,6 +493,10 @@ Las tareas terminadas, las acciones y el registro de despliegues los sigue con u
 una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los lee como antes).
 - Cada paso tiene su botón (**Desplegar**) y hay **Desplegarlo todo**: los pendientes en ese orden, en una sola acción que **se
   para al primer fallo** (no publica la OTA si las reglas o las functions no han salido). Solo admins, como los despliegues.
+- Al acabar bien un despliegue, el runner recalcula el plan en el momento (si ya estaba calculando, lo repite al terminar). Ese
+  cálculo trae la rama principal del remoto y la compara, así que tarda unos segundos: mientras tanto la app sigue enseñando el
+  paso como **Desplegando…** (sin botón) hasta que el plan apunta ese commit, con un tope de 90 s. Si falla, se ve el error y
+  vuelve el botón.
 - Un paso **sin registro** (nunca desplegado desde Backcode) no cuenta como pendiente: despliégalo una vez y desde entonces se sigue.
 - **Lo desplegado fuera de la app también cuenta** (registro `projects/{pid}/deployLog`: paso, commit, cuándo, quién y vía):
   - lo que despliega **Claude Code** con el plugin (ver «Despliegues que hace Claude Code» arriba);

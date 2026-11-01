@@ -714,12 +714,19 @@ async function main(): Promise<void> {
   const releaseLock = await store.acquireLock();
   // «Pendiente de desplegar»: qué falta por salir (reglas, functions, OTA…) y en qué orden. Al arrancar, cada 3 min y
   // tras cada acción (un despliegue o un merge lo cambian).
+  // Si se pide mientras ya se calcula (p. ej. al acabar un despliegue), se repite al terminar: si no, el plan recién
+  // desplegado esperaría al siguiente ciclo (hasta 3 min) y la app lo vería como pendiente.
   let planBusy = false;
+  let planAgain = false;
   const rulesChecked = new Map<string, number>();
   let ciChecked = "";
-  const refreshPlan = async () => {
-    if (planBusy) return;
+  const refreshPlan = async (): Promise<void> => {
+    if (planBusy) {
+      planAgain = true;
+      return;
+    }
     planBusy = true;
+    planAgain = false;
     try {
       const base = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
       // CI de la rama base: una vez por commit. Sin CI no se da por sabido (los checks de un push tardan en aparecer).
@@ -736,7 +743,7 @@ async function main(): Promise<void> {
       // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.
       const fromHook = await flushDeployQueue({ projectId: cfg.projectId, repoPath: cfg.repoPath, remote: cfg.remote, baseBranch: cfg.baseBranch, targets, log: (step, sha, via) => store.logDeploy(step, sha, via) }).catch((err: Error) => (console.warn(`[deploy] ${err.message}`), 0));
       if (fromHook) console.log(`[deploy] ${t("deployed.fromHook", { n: fromHook })}`);
-      let plan = await computePlan(cfg, store, targets, app);
+      let plan = await computePlan(cfg, store, targets, app, base);
       // Reglas de Firebase que no están al día: si las publicadas son las de la rama principal, lo están.
       let verified = 0;
       for (const s of plan.steps.filter((x) => x.status !== "upToDate" && x.kind === "deploy")) {
@@ -750,12 +757,13 @@ async function main(): Promise<void> {
           () => undefined,
         );
       }
-      if (verified) plan = await computePlan(cfg, store, targets, app);
+      if (verified) plan = await computePlan(cfg, store, targets, app, base);
       await store.savePlan(plan);
     } catch (err) {
       console.warn(`[plan] ${(err as Error).message}`);
     } finally {
       planBusy = false;
+      if (planAgain) void refreshPlan();
     }
   };
   void refreshPlan();
