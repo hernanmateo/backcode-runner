@@ -30,9 +30,9 @@ Talk to the user in their language. Be brief: say what you're about to do, do it
 1. `uname -s` and `uname -m`. Windows isn't supported (the runner needs the macOS or Linux sandbox): stop and say so.
 2. Is the runner installed? `command -v backcode || ls ~/.backcode/bin/backcode`. If neither exists:
    - On macOS, offer the **Mac app** (easiest; it also opens a small panel in the browser):
-     https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg
+     https://github.com/hernanmateo/backcode-dist/releases/latest/download/Backcode-Runner.dmg
      — or install the executable from here, without Node:
-     `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | BACKCODE_NO_OPEN=1 sh`
+     `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh | BACKCODE_NO_OPEN=1 sh`
    - On Linux, the `install.sh` command above.
    - If they prefer npm and have Node 22+: `npm install -g backcode`.
    Ask which one, run it (for `install.sh`, after the user agrees), then use `~/.backcode/bin/backcode` if `backcode` isn't in
@@ -188,7 +188,7 @@ The PR itself runs the new CI: tell the user to check it's green before merging 
 If the repo's `.claude/settings.json` doesn't have `"enabledPlugins": { "backcode@backcode": true }`, offer to add it so
 everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Add the marketplace too, so Claude
 Code offers to install it to whoever doesn't have it yet:
-`"extraKnownMarketplaces": { "backcode": { "source": { "source": "github", "repo": "hernanmateo/backcode-runner" } } }`. Do it **in a PR, the Backcode way**,
+`"extraKnownMarketplaces": { "backcode": { "source": { "source": "github", "repo": "hernanmateo/backcode-dist" } } }`. Do it **in a PR, the Backcode way**,
 never with a commit to the main branch:
 
 1. `backcode task start "Activar el plugin de Backcode en el repo"` (in the user's language) → it prints the worktree path.

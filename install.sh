@@ -1,10 +1,10 @@
 #!/bin/sh
 # Backcode runner: instala el ejecutable (sin Node) en ~/.backcode/bin y abre el panel.
-#   curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh | sh
 # Variables: BACKCODE_VERSION=1.2.3 (por defecto, la última) · BACKCODE_NO_OPEN=1 (no abrir el panel al terminar)
 set -eu
 
-REPO="hernanmateo/backcode-runner"
+REPO="hernanmateo/backcode-dist"
 HOME_DIR="${BACKCODE_HOME:-$HOME/.backcode}"
 BIN_DIR="$HOME_DIR/bin"
 BIN="$BIN_DIR/backcode"

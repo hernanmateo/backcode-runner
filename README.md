@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/backcode"><img alt="npm downloads" src="https://img.shields.io/npm/dm/backcode?style=flat-square&color=C96442"></a>
   <a href="https://github.com/hernanmateo/backcode-runner/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hernanmateo/backcode-runner/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-1F1E1D?style=flat-square"></a>
-  <a href="https://github.com/hernanmateo/backcode-runner/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hernanmateo/backcode-runner?style=flat-square&color=C96442&label=release"></a>
+  <a href="https://github.com/hernanmateo/backcode-dist/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hernanmateo/backcode-runner?style=flat-square&color=C96442&label=release"></a>
   <img alt="No Node required" src="https://img.shields.io/badge/Node-not%20required-339933?style=flat-square&logo=nodedotjs&logoColor=white">
   <img alt="macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-1F1E1D?style=flat-square&logo=apple&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white">
@@ -46,7 +46,7 @@
 ## Quick start
 
 <p>
-  <a href="https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg"><img alt="Download for Mac" src="https://img.shields.io/badge/Download_for_Mac-Apple_Silicon_%26_Intel-1F1E1D?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/hernanmateo/backcode-dist/releases/latest/download/Backcode-Runner.dmg"><img alt="Download for Mac" src="https://img.shields.io/badge/Download_for_Mac-Apple_Silicon_%26_Intel-1F1E1D?style=for-the-badge&logo=apple&logoColor=white"></a>
 </p>
 
 **On a Mac, that's it:** open the `.dmg`, drag **Backcode Runner** to Applications and open it. No Terminal, no Node. It installs
@@ -70,21 +70,21 @@ Every option installs the same runner and opens the same panel. Pick the one tha
 
 | | How | Best for |
 |---|---|---|
-| **🍎 Mac app** · *easiest* | [Download Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg), drag it to Applications, open it | Anyone on macOS. No Terminal, no Node |
-| **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
+| **🍎 Mac app** · *easiest* | [Download Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-dist/releases/latest/download/Backcode-Runner.dmg), drag it to Applications, open it | Anyone on macOS. No Terminal, no Node |
+| **⚡ One command** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh \| sh` | Linux, or the Terminal on a Mac. No Node |
 | **📦 npm, no install** | `npx backcode` | You already use Node 22+ |
 | **📦 npm, global** | `npm install -g backcode`, then `backcode` | Node users who want the command around |
-| **🤖 Claude Code plugin** · *if you use Claude Code* | In Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
+| **🤖 Claude Code plugin** · *if you use Claude Code* | In Claude Code: `/plugin marketplace add hernanmateo/backcode-dist`, `/plugin install backcode@backcode`, then `/backcode:setup` | You live in Claude Code: it installs, connects and fixes everything with you |
 | **🛠️ From source** | `git clone https://github.com/hernanmateo/backcode-runner && cd backcode-runner && npm install && npm run panel` | Contributors |
 
 <details>
 <summary><strong>More options</strong></summary>
 <br>
 
-- **A specific version:** `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | BACKCODE_VERSION=1.0.0 sh`,
+- **A specific version:** `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh | BACKCODE_VERSION=1.0.0 sh`,
   or `npx backcode@1.0.0`.
 - **Install without opening the panel:** `… | BACKCODE_NO_OPEN=1 sh`.
-- **Just the executable:** download `backcode-<os>-<arch>` from the [latest release](https://github.com/hernanmateo/backcode-runner/releases/latest)
+- **Just the executable:** download `backcode-<os>-<arch>` from the [latest release](https://github.com/hernanmateo/backcode-dist/releases/latest)
   (`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`), check it against `SHA256SUMS` and run it.
 - **Headless (servers, no browser):** `backcode connect` to paste the configuration in the terminal, `backcode service install`
   to keep it running, `backcode start` to run it in the foreground.
@@ -220,12 +220,12 @@ explains how to add a `backcode:deploy:<name>` script or a `backcode.toml` and, 
 Prefer to do it from Claude Code? The `backcode` plugin sets everything up with you, conversationally:
 
 ```text
-/plugin marketplace add hernanmateo/backcode-runner
+/plugin marketplace add hernanmateo/backcode-dist
 /plugin install backcode@backcode
 /backcode:setup
 ```
 
-Everyone installs it once in their own Claude Code. The marketplace is read from the public `hernanmateo/backcode-runner` repo:
+Everyone installs it once in their own Claude Code. The marketplace is read from the public distribution repo `hernanmateo/backcode-dist` (binaries and plugin, no source):
 if that repo goes private, it stops working for anyone without access, and the marketplace (`.claude-plugin/` and `plugins/`)
 would have to be published from a public repo, such as the releases one.
 
@@ -491,7 +491,7 @@ hasn't started it (macOS 27 sometimes leaves the launch pending), the app starts
 <summary><strong>What does install.sh do exactly?</strong></summary>
 <br>
 It detects your OS and CPU, downloads <code>backcode-&lt;os&gt;-&lt;arch&gt;</code> from the latest
-<a href="https://github.com/hernanmateo/backcode-runner/releases/latest">GitHub Release</a>, checks it against
+<a href="https://github.com/hernanmateo/backcode-dist/releases/latest">GitHub Release</a>, checks it against
 <code>SHA256SUMS</code>, installs it in <code>~/.backcode/bin</code>, adds that folder to your <code>PATH</code> (one line in your
 shell profile) and opens the panel. No admin rights, nothing else touched. <a href="install.sh">Read it</a> before running it.
 The executable is this same TypeScript code compiled with Bun, with the panel embedded.

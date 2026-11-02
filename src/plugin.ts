@@ -11,7 +11,7 @@ import { readState, updateState } from "./paths.js";
 /** La versión del plugin que va con este runner (= plugins/backcode/.claude-plugin/plugin.json; lo comprueba un test). */
 export const PLUGIN_VERSION = "1.1.10";
 export const PLUGIN_ID = "backcode@backcode";
-export const MARKETPLACE_REPO = "hernanmateo/backcode-runner";
+export const MARKETPLACE_REPO = "hernanmateo/backcode-dist";
 /** Lo que hay que escribir en Claude Code para actualizarlo a mano (con `!`, o en una terminal sin él). */
 export const PLUGIN_UPDATE_CMDS = ["claude plugin marketplace update backcode", `claude plugin update ${PLUGIN_ID}`];
 export const PLUGIN_INSTALL_CMDS = [`claude plugin marketplace add ${MARKETPLACE_REPO}`, `claude plugin install ${PLUGIN_ID} --scope user`];
