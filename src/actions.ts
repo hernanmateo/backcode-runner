@@ -368,7 +368,7 @@ async function conflictsBlock(cfg: RunnerConfig, store: Store, featureId: string
 }
 
 /** Por qué no se mergeó un PR (el modo auto lo usa para decidir si arregla y reintenta o se para: auto-merge.ts). */
-export type MergeBlock = "noHost" | "noPr" | "closed" | "noChecks" | "ciNoChecks" | "pending" | "checks" | "conflicts";
+export type MergeBlock = "ciTask" | "noHost" | "noPr" | "closed" | "noChecks" | "ciNoChecks" | "pending" | "checks" | "conflicts";
 
 /**
  * Mergea (squash) el PR de una tarea si sus checks están en verde. `auto`: lo hace el modo auto del proyecto, que nunca
@@ -387,8 +387,12 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   if (pr?.state === "closed") {
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "closed" };
   }
+  const info = await store.featureInfo(featureId).catch(() => null);
+  // PR de una tarea de CI (ci-task.ts): Backcode nunca lo mergea (ni a petición de la app ni en modo auto); se revisa y
+  // se mergea a mano en el host. Si ya se mergeó a mano, lo de arriba lo marca como mergeado.
+  if (info?.kind === "ci") return { ok: false, result: { error: t("ci.noMerge", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "ciTask" };
   const strict = requireChecks || opts.auto === true;
-  const branch = (await store.featureInfo(featureId).catch(() => null))?.branch;
+  const branch = info?.branch;
   // Con CI en el repo, un PR sin checks no es «sin CI»: o GitHub aún no los ha registrado (se espera a que aparezcan) o
   // no los lanzó porque el PR choca con la base (no puede crear el merge ref), y entonces se trata como conflictos.
   const ciExpected =

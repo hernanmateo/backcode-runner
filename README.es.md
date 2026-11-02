@@ -60,7 +60,14 @@ scripts reales `test`/`lint`/`typecheck`/`build`; GitHub Actions, GitLab CI o Bi
 Backcode), pregunta si mantener el ordenador despierto (`backcode awake`), explica las pautas del proyecto y acaba con una lista
 ✓/✗. Nunca lee `~/.backcode/config/` ni imprime secretos. `/backcode:doctor` diagnostica y arregla lo que falle, y
 también mira la CI: sin ella Backcode mergea y despliega sin comprobar nada, así que lo avisa (aviso, no error) y ofrece crearla en
-un PR (las tareas de Backcode no pueden tocar la CI, así que esta es la forma de añadirla). Usa los mismos
+un PR (las tareas de Backcode no pueden tocar la CI, así que esta es una forma de añadirla; la otra es **Prepararla con
+Claude Code** en «CI y checks» de la app, si el runner anuncia `ciSetup`: una tarea de CI (`kind: "ci"`, que solo crea el
+servidor) y la única excepción acotada a la regla. El runner aplica el alcance, no solo el prompt: solo puede escribir
+`.github/workflows/*.yml` (GitHub) o `bitbucket-pipelines.yml` (Bitbucket) y docs (`docs/**/*.md`, `*.md` de la raíz), en el
+hook, en `open_pull_request` y en el arreglo del review; no tiene Bash ni puede leer `.env`, `.npmrc`, claves ni credenciales.
+Usa los scripts reales del proyecto y cita los secretos por nombre (`${{ secrets.NOMBRE }}` / `$NOMBRE`); el PR explica cuáles
+crear y cómo (`gh secret set NOMBRE`). Backcode nunca mergea ni despliega su PR en borrador, tampoco en modo auto: lo revisas y
+lo mergeas tú). Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.

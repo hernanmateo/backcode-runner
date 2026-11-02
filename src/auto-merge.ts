@@ -45,6 +45,8 @@ export interface AutoMergeDeps {
   retries: number;
   /** false si el runner sabe que el repo no tiene CI (capabilities.ci); undefined si aún no lo sabe. */
   hasCi: boolean | undefined;
+  /** Tarea de CI (ci-task.ts): su PR nunca se mergea solo. */
+  ciTask?: boolean;
   merge: () => Promise<Outcome & { blocked?: MergeBlock }>;
   fixChecks: () => Promise<Outcome>;
   fixConflicts: () => Promise<Outcome>;
@@ -67,6 +69,7 @@ export async function autoMerge(d: AutoMergeDeps): Promise<AutoMergeState> {
     return state;
   };
   let attempts = 0;
+  if (d.ciTask) return finish({ state: "stopped", attempts, reason: t("ci.noMerge", { host: "GitHub / Bitbucket" }) });
   if (d.hasCi === false) return finish({ state: "stopped", attempts, reason: t("auto.noCi") });
   await d.setState({ state: "waiting", attempts, reason: t("auto.waiting") }).catch(() => undefined);
   for (;;) {

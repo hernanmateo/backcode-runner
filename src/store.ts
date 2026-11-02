@@ -68,6 +68,8 @@ export interface Feature {
   /** "local": hecha con Claude Code fuera de Backcode (`backcode task start` / `task pr`), sin encargo del runner; con su
    * sessionId (la sesión de Claude Code que lo ejecutó), el runner la continúa cuando se le escribe desde la app. */
   origin?: string;
+  /** "ci": tarea de CI creada por el servidor desde «CI y checks» (ci-task.ts): alcance acotado y PR que nunca se mergea solo. */
+  kind?: "ci";
   refinedPrompt: string;
   acceptanceCriteria?: string[];
   status: FeatureStatus;
@@ -271,7 +273,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; chat?: boolean; ci?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -740,10 +742,10 @@ export class Store {
     await updateDoc(doc(this.project(), "actions", id), { status: ok ? "done" : "failed", result: clean, updatedAt: serverTimestamp() });
   }
 
-  async featureInfo(featureId: string): Promise<{ title: string; branch?: string; prUrl?: string; summary?: string; refinedPrompt: string }> {
+  async featureInfo(featureId: string): Promise<{ title: string; branch?: string; prUrl?: string; summary?: string; refinedPrompt: string; kind?: string }> {
     const d = await getDoc(this.feature(featureId));
     const result = (d.get("result") as FeatureResult | undefined) ?? {};
-    return { title: String(d.get("title") ?? ""), branch: d.get("branch") as string | undefined, prUrl: result.prUrl, summary: result.summary, refinedPrompt: String(d.get("refinedPrompt") ?? "") };
+    return { title: String(d.get("title") ?? ""), branch: d.get("branch") as string | undefined, prUrl: result.prUrl, summary: result.summary, refinedPrompt: String(d.get("refinedPrompt") ?? ""), kind: d.get("kind") as string | undefined };
   }
 
   async featureStatus(featureId: string): Promise<string | undefined> {

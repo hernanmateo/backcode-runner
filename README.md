@@ -242,7 +242,14 @@ would have to be published from a public repo, such as the releases one.
   or prints secrets.
 - **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it. It also checks
   the repo's CI: without it Backcode merges and deploys without checking anything, so it warns (not an error) and offers to
-  create it in a PR. Backcode tasks can't touch the CI, so this is the way to add it.
+  create it in a PR. Backcode tasks can't touch the CI, so this is one way to add it. The other is **Set it up with
+  Claude Code** in the app's «CI and checks» screen (runners that announce `ciSetup`): a CI task (`kind: "ci"`, created only
+  by the server) and the one narrow exception to the rule. The runner enforces its scope, not just the prompt: it can only
+  write `.github/workflows/*.yml` (GitHub) or `bitbucket-pipelines.yml` (Bitbucket) plus docs (`docs/**/*.md`, root `*.md`),
+  in the guard hook, in `open_pull_request` and in the review fix; it has no Bash and can't read `.env`, `.npmrc`, keys or
+  credentials. It uses the project's real scripts and references secrets by name (`${{ secrets.NAME }}` / `$NAME`); the PR
+  lists which ones to create and how (`gh secret set NAME`). Its draft PR is never merged or deployed by Backcode, not even
+  in auto mode: you review it and merge it by hand.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 

@@ -46,6 +46,7 @@ import { linkProject, machineId, machineStatus, MACHINE_BEAT_MS, parseLinkReques
 import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
+import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { buildReport, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
@@ -265,6 +266,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const { perms, roots } = permCtx;
   const permissionsText = permCtx.prompt;
   const session = sessionPermissions(permCtx, cfg.allowedDomains);
+  // Tarea de CI (ci-task.ts): solo el fichero de CI del host y docs, sin Bash ni leer secretos, y su PR nunca se
+  // mergea solo. Sin host de PR (push-only) no se puede: el runner tampoco anuncia ciSetup.
+  const ciHost = isCiTask(feature) ? prHost?.kind : undefined;
+  if (isCiTask(feature) && !ciHost) return { status: "failed", result: { error: t("ci.noMerge", { host: "GitHub / Bitbucket" }) } };
+  const ci = ciHost ? ciGuard(ciHost, isProtected) : undefined;
+  const taskProtected = ci?.isProtected ?? isProtected;
+  const guardExtras = ci ? { ...session.guard, denyRead: ci.denyRead } : session.guard;
+  if (ciHost) await store.event(id, "start", t("ci.start", { file: ciFileFor(ciHost) }));
   if (!isEmpty(perms)) await store.event(id, "start", t("run.permissions", { list: [...perms.domains, ...perms.commands, ...roots.map((r) => r.name)].join(", ") }));
 
   const previousPr = feature.result?.prUrl;
@@ -319,7 +328,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, taskBase(cfg.baseBranch))) === 0) {
             return fail(t("pr.empty"));
           }
-          const blocked = files.filter(isProtected);
+          const blocked = files.filter(taskProtected);
           if (blocked.length) return fail(t("pr.protected", { files: blocked.join(", ") }));
           const secrets = await scanStagedForSecrets(wt.path);
           if (secrets.length) return fail(t("pr.secrets", { list: secrets.join("; ") }));
@@ -336,7 +345,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
           await store.event(id, "pr", prUrl);
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
-          afterMerge = steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
+          // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
+          afterMerge = ciHost ? undefined : steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
@@ -481,7 +491,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }),
+          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }) + (ciHost ? ciSystemAppend(ciHost) : ""),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
         settingSources: [],
@@ -490,10 +500,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         // Planificando solo puede leer el repo y proponer el plan (o preguntar); sin editar ni ejecutar comandos.
         allowedTools: planning
           ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
-          : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
+          : ciHost
+            ? [...CI_TOOLS, "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
+            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
         // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
-        disallowedTools: session.disallowedTools,
-        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected, session.guard)] }] },
+        disallowedTools: ciHost ? [...(session.disallowedTools ?? []), "Bash", "NotebookEdit"] : session.disallowedTools,
+        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, taskProtected, guardExtras)] }] },
         sandbox: {
           enabled: true,
           failIfUnavailable: true,
@@ -655,7 +667,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   /** Sube lo que arregló la sesión de la tarea tras el review (con las mismas comprobaciones que open_pull_request). */
   async function pushReviewFix(before: string): Promise<boolean> {
     const files = await stageAll(wt.path);
-    const blocked = files.filter(isProtected);
+    const blocked = files.filter(taskProtected);
     const secrets = blocked.length ? [] : await scanStagedForSecrets(wt.path);
     if (blocked.length || secrets.length) {
       // Se quita del índice y no se sube: queda en el worktree para revisarlo a mano.
@@ -680,7 +692,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       review = { ...review, state: "reviewing" };
       await save();
       await store.event(id, "start", t(review.passes ? "review.retry" : "review.start", { level }));
-      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, level, model, env: agentEnv(), isProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
+      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, level, model, env: agentEnv(), isProtected: taskProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
       addSpend(r.spend);
       review = { ...review, passes: review.passes + 1, costUsd: review.costUsd + r.spend.costUsd, findings: r.findings ?? review.findings };
       return r;
@@ -735,12 +747,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const prompt = planning
       ? resuming
         ? buildPlanFollowUpPrompt(replies)
-        : buildPlanPrompt(id, feature, attachments)
+        : buildPlanPrompt(id, ciHost ? { ...feature, title: "CI", refinedPrompt: buildCiPrompt(ciHost), acceptanceCriteria: [] } : feature, attachments)
       : justApproved
         ? buildApprovedPlanPrompt(replies)
         : resuming
           ? buildFollowUpPrompt(replies, !!previousPr, { base: taskBase(cfg.baseBranch), files: conflicts })
-          : buildUserPrompt(id, feature, attachments);
+          : ciHost
+            ? buildCiPrompt(ciHost)
+            : buildUserPrompt(id, feature, attachments);
     if (model) await store.event(id, "say", t("run.model", { model }));
     // Pedida desde la app con la tarea parada: primero Remote Control, y al volver sigue el runner.
     if (remoteWanted && resuming && (await runRemote())) {
@@ -936,7 +950,8 @@ async function runOne(id: string, feature: Feature): Promise<void> {
       const fallback = result.prUrl ? "done" : "waiting";
       await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
       await store.event(id, status, result.prUrl ?? result.error ?? "");
-      if (status === "done" && result.prUrl?.startsWith("https://")) queueAutoMerge(id);
+      // Un PR de CI nunca entra en el modo auto: se revisa y se mergea a mano.
+      if (status === "done" && result.prUrl?.startsWith("https://") && !isCiTask(feature)) queueAutoMerge(id);
     }
     console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
     void refreshQuota();
@@ -1013,6 +1028,8 @@ async function main(): Promise<void> {
     knowledge: true,
     fixConflicts: true,
     fixChecks: true,
+    // Tareas de CI (ci-task.ts): la app ofrece «Prepararla con Claude Code» en «CI y checks» si el repo no tiene CI.
+    ciSetup: !!prHost,
     chat: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
