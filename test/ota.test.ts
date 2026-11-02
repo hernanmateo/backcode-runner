@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { otaScriptArgs } from "../src/ota.js";
+import { otaScriptArgs, promoteCheck } from "../src/ota.js";
 
 test("script sin rama: el runner pasa prod (production) o preview una sola vez", () => {
   assert.deepEqual(otaScriptArgs("./scripts/ota-publish.sh", "npm", "production", "hola"), {
@@ -39,4 +39,14 @@ test("--allow-native solo cuando se pide (Publicar sin comprobaciones)", () => {
     args: ["run", "ota:publish", "--allow-native", "--yes", "-m", "x"],
   });
   assert.ok(!JSON.stringify(otaScriptArgs("bash scripts/publish-update.sh prod", "bun", "production", "x")).includes("allow-native"));
+});
+
+test("promocionar: solo el commit que está ahora en preview y que production aún no tiene", () => {
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  assert.equal(promoteCheck(a, { preview: a, production: b }), null);
+  assert.equal(promoteCheck(a, { preview: a }), null);
+  assert.deepEqual(promoteCheck(a, {}), { error: "act.promoteNoPreview", vars: {} });
+  assert.deepEqual(promoteCheck(a, { preview: b }), { error: "act.promoteNotPreview", vars: { sha: "aaaaaaa", preview: "bbbbbbb" } });
+  assert.deepEqual(promoteCheck(a, { preview: a, production: a }), { error: "act.promoteSame", vars: { sha: "aaaaaaa" } });
 });

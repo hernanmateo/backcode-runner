@@ -31,3 +31,19 @@ export function otaScriptArgs(
   // (allowNative, lo pide un admin a sabiendas y solo si el script lo admite). Si el script se niega, se muestra su motivo.
   return { args: ["run", "ota:publish", ...(pm === "npm" ? ["--"] : []), ...extra, ...(allowNative ? ["--allow-native"] : []), "--yes", "-m", message.slice(0, 200)] };
 }
+
+/**
+ * «Promocionar a producción»: publica en production el MISMO commit que está ahora en preview (con las variables de
+ * production: el bundle de preview lleva grabadas las de preview y no se puede reutilizar tal cual). Sin build de
+ * tienda. Solo vale el último commit publicado bien en preview y si production no lo tiene ya.
+ */
+export function promoteCheck(
+  commit: string,
+  last: { preview?: string; production?: string },
+): { error: "act.promoteNoPreview" | "act.promoteNotPreview" | "act.promoteSame"; vars: Record<string, string> } | null {
+  const short = (s: string) => s.slice(0, 7);
+  if (!last.preview) return { error: "act.promoteNoPreview", vars: {} };
+  if (last.preview !== commit) return { error: "act.promoteNotPreview", vars: { sha: short(commit), preview: short(last.preview) } };
+  if (last.production === commit) return { error: "act.promoteSame", vars: { sha: short(commit) } };
+  return null;
+}

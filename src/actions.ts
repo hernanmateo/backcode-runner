@@ -14,7 +14,7 @@ import { ciConfigAt } from "./ci.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
-import { otaScriptArgs } from "./ota.js";
+import { otaScriptArgs, promoteCheck } from "./ota.js";
 import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
 import { scopeOf } from "./pending.js";
@@ -58,6 +58,11 @@ export interface Action {
    * script lo admite. En deployAll solo se aplica al paso OTA.
    */
   skipSmoke?: boolean;
+  /**
+   * OTA «Promocionar a producción» (con channel production y commit): publica en production el commit que está ahora en
+   * preview, sin esperar otra vez a los checks (ya los pasó) y con las variables de production. Ver promoteCheck.
+   */
+  promote?: boolean;
 }
 export interface StepResult {
   id: string;
@@ -160,7 +165,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
       ? await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)))
       : action.type === "deploy"
         ? await withTasks(cfg, store, `deploy:${action.target ?? ""}`, await runDeploy(cfg, host, action.target ?? ""))
-        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true);
+        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true, action.promote === true);
   await syncLocal(cfg);
   return done;
 }
@@ -347,7 +352,13 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   return { ok: true, result: { url: prUrl, sha } };
 }
 
-async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string, commitDirty = false, skipSmoke = false) {
+async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, channel: "preview" | "production", message: string, rollbackTo?: string, commitDirty = false, skipSmoke = false, promote = false) {
+  if (promote) {
+    if (channel !== "production" || !rollbackTo) return { ok: false, result: { error: t("act.promoteNoPreview") } };
+    const last = await store.lastDeploys();
+    const bad = promoteCheck(rollbackTo, { preview: last.get("ota:preview"), production: last.get("ota:production") });
+    if (bad) return { ok: false, result: { error: t(bad.error, bad.vars) } };
+  }
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
   if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
@@ -420,8 +431,8 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       out = await exec(["npx", "--yes", "eas-cli@latest", "update", "--channel", channel, "--environment", channel, "--message", message.slice(0, 200), "--platform", "all", "--non-interactive"], dir);
     }
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
-    // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback) y constan en el OTA.
-    const features = rollbackTo ? [] : await markDeployedTasks(store, channel, commit, (a, c) => isAncestor(cfg.repoPath, a, c));
+    // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback, sí al promocionar) y constan en el OTA.
+    const features = rollbackTo && !promote ? [] : await markDeployedTasks(store, channel, commit, (a, c) => isAncestor(cfg.repoPath, a, c));
     // Versión del OTA: la runtimeVersion que imprime EAS o, si no, la de la app (runtimeVersion = versión de la app).
     const ota = otaInfoFrom(out);
     const version = ota.runtimeVersion ?? (await readVersion(readFrom(dir), ""));

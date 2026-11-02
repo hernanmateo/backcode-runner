@@ -509,6 +509,11 @@ Tras publicar, las tareas mergeadas desde la app cuyo commit de merge va incluid
 **Rollback rápido:** desde la pantalla de OTA, un admin puede volver a publicar la versión anterior de un canal. El runner solo
 acepta commits que ya están en la rama base y no espera checks (esa versión ya se publicó); pasa por el mismo script o `eas update`.
 
+**Promocionar a producción:** publica en production el commit que está ahora en preview (acción `ota` con `promote: true`).
+El runner comprueba que es el último publicado bien en preview y que production aún no lo tiene; no espera otra vez a los
+checks, sí hace la prueba de arranque (cambian las variables: el bundle se vuelve a generar con las de production, sin build
+de tienda) y marca sus tareas como desplegadas en production. Ver [docs/plans/ota-canales.md](../docs/plans/ota-canales.md).
+
 El script vive en el repo y se ejecuta con tus credenciales: solo se usa el de la rama base, que ya ha pasado por review.
 
 ### PR de fuera de Backcode y descartar PR
