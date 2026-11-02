@@ -207,6 +207,8 @@ export interface FeatureResult {
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];
   /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
   planReady?: boolean;
+  /** Tarea de CI: ficheros que cambia su PR respecto a la base (la app los enseña al confirmar el merge). */
+  ciFiles?: string[];
   error?: string;
   /** Error conocido, para que la app lo muestre en el idioma de quien lo ve (error va en el del runner). */
   errorCode?: "noPr" | "noPlan";
@@ -790,8 +792,9 @@ export class Store {
     await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
   }
 
-  async markMerged(featureId: string, sha?: string, auto = false): Promise<void> {
-    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}) } });
+  /** `ciConfirmed`: PR de una tarea de CI mergeado tras la confirmación explícita de quien lo pidió (`by`). */
+  async markMerged(featureId: string, sha?: string, auto = false, ciConfirmed = false): Promise<void> {
+    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}), ...(ciConfirmed ? { ciConfirmed: true } : {}) } });
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */

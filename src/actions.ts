@@ -64,6 +64,11 @@ export interface Action {
    * preview, sin esperar otra vez a los checks (ya los pasó) y con las variables de production. Ver promoteCheck.
    */
   promote?: boolean;
+  /**
+   * Merge del PR de una tarea de CI: la persona confirmó en la app, viendo los ficheros y el diff, que este PR cambia lo
+   * que comprueba la CI. Sin esta marca (y siempre en modo auto o en un merge en lote) el PR de CI no se mergea.
+   */
+  confirmCi?: boolean;
 }
 export interface StepResult {
   id: string;
@@ -142,7 +147,7 @@ async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, com
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
-  if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "");
+  if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "", { confirmCi: action.confirmCi === true });
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
   // OTA, build y despliegue publican la rama base del remoto (no tu copia local): después, tu copia se pone al día
   // para que lo que ves en local sea lo que se acaba de publicar (p. ej. un merge que hizo otro y aún no tenías).
@@ -374,7 +379,7 @@ export type MergeBlock = "ciTask" | "noHost" | "noPr" | "closed" | "noChecks" | 
  * Mergea (squash) el PR de una tarea si sus checks están en verde. `auto`: lo hace el modo auto del proyecto, que nunca
  * mergea sin checks (aunque el proyecto no los exija) y deja la marca `merged.auto` para el aviso.
  */
-export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, opts: { auto?: boolean } = {}): Promise<{ ok: boolean; result: ActionResult; blocked?: MergeBlock }> {
+export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, opts: { auto?: boolean; confirmCi?: boolean } = {}): Promise<{ ok: boolean; result: ActionResult; blocked?: MergeBlock }> {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") }, blocked: "noHost" };
   const prUrl = await store.prUrlOf(featureId);
   if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: t("act.noPr") }, blocked: "noPr" };
@@ -388,9 +393,11 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
     return { ok: false, result: { error: t("act.prClosed", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "closed" };
   }
   const info = await store.featureInfo(featureId).catch(() => null);
-  // PR de una tarea de CI (ci-task.ts): Backcode nunca lo mergea (ni a petición de la app ni en modo auto); se revisa y
-  // se mergea a mano en el host. Si ya se mergeó a mano, lo de arriba lo marca como mergeado.
-  if (info?.kind === "ci") return { ok: false, result: { error: t("ci.noMerge", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "ciTask" };
+  // PR de una tarea de CI (ci-task.ts): define qué comprueba la CI y podría dejarse en verde a sí mismo, así que nunca se
+  // mergea solo (modo auto, «Mergear todo»): solo un merge individual que la persona confirmó en la app viendo los
+  // ficheros y el diff (confirmCi). Si ya se mergeó a mano en el host, lo de arriba lo marca como mergeado.
+  const ciTask = info?.kind === "ci";
+  if (ciTask && (opts.auto === true || opts.confirmCi !== true)) return { ok: false, result: { error: t("ci.noMerge", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }), url: prUrl }, blocked: "ciTask" };
   const strict = requireChecks || opts.auto === true;
   const branch = info?.branch;
   // Con CI en el repo, un PR sin checks no es «sin CI»: o GitHub aún no los ha registrado (se espera a que aparezcan) o
@@ -415,7 +422,10 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   const merged = await mergeUnlessConflict(host, prUrl);
   if (!merged) return conflictsBlock(cfg, store, featureId, prUrl, await conflictFiles(cfg, branch));
   const { sha } = merged;
-  await store.markMerged(featureId, sha, opts.auto);
+  await store.markMerged(featureId, sha, opts.auto, ciTask);
+  // Quién confirmó el merge del PR de CI (el runner que ejecuta la acción es el de quien la pidió): queda en la tarea
+  // (merged.by + merged.ciConfirmed) y en su log.
+  if (ciTask) await store.event(featureId, "merge", t("ci.mergeConfirmed", { who: store.uid }));
   // Tu copia local se pone al día para que veas el cambio (solo si es seguro: ver syncLocalBase).
   await syncLocal(cfg);
   // La rama ya no existe: la copia de trabajo de la tarea sobra.

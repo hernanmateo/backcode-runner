@@ -344,6 +344,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             return fail(t("pr.failed", { error: String(err).slice(0, 500) }));
           }
           await store.event(id, "pr", prUrl);
+          // Tarea de CI: los ficheros que cambia el PR respecto a la base, para enseñarlos al confirmar su merge en la app.
+          if (ciHost) {
+            const changed = await git(wt.path, ["diff", "--name-only", `${cfg.remote}/${taskBase(cfg.baseBranch)}...HEAD`]).catch(() => "");
+            const list = changed.split("\n").filter(Boolean);
+            result = { ...result, ciFiles: (list.length ? list : files).slice(0, 50) };
+          }
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
           afterMerge = ciHost ? undefined : steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
@@ -405,7 +411,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     });
   }, FEATURE_LEASE_MS / 3);
 
-  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr };
+  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}) };
   let sessionId = feature.sessionId;
   const model = modelFor(feature, cfg.model);
 
