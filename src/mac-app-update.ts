@@ -39,6 +39,13 @@ async function trustedTeam(app: string): Promise<string | null> {
   }
 }
 
+/** Versión de la app de Mac instalada (null si no hay app o no es un Mac). */
+export async function macAppVersion(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  const app = installedApp();
+  return app ? (await appVersion(app).catch(() => "")) || null : null;
+}
+
 /** Pone al día la app de Mac si hay una versión nueva. Devuelve la versión instalada, o null si no ha hecho nada. */
 export async function updateMacApp(opts: { force?: boolean } = {}): Promise<string | null> {
   if (process.platform !== "darwin") return null;
