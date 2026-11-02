@@ -232,11 +232,15 @@ would have to be published from a public repo, such as the releases one.
   running at login. Then it leaves the project **ready to work**: checks the sessions of the deploy tools the repo uses
   (wrangler, supabase, firebase; a missing login is a command for you to run with `!`), looks for deploys the repo has but
   doesn't declare yet (Vercel, Netlify, Fly, a `deploy` script, a Makefile…) and offers to declare them so they get a button in
-  the app (in a PR), offers to turn the plugin on for the
+  the app (in a PR), checks whether the repo has **CI** (CI files on the main branch, or checks on its latest commit) and,
+  if not, offers to create one fitted to the project (its package manager and real `test`/`lint`/`typecheck`/`build`
+  scripts; GitHub Actions, GitLab CI or Bitbucket Pipelines) in its own PR, offers to turn the plugin on for the
   whole team in the repo's `.claude/settings.json` (in a PR, the Backcode way), asks whether to keep the computer awake
   (`backcode awake`), explains the project's guidelines and ends with a ✓/✗ checklist. It never reads `~/.backcode/config/`
   or prints secrets.
-- **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it.
+- **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it. It also checks
+  the repo's CI: without it Backcode merges and deploys without checking anything, so it warns (not an error) and offers to
+  create it in a PR. Backcode tasks can't touch the CI, so this is the way to add it.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
