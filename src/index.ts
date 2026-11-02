@@ -1588,7 +1588,8 @@ async function main(): Promise<void> {
   const unsubscribeLinks = onSnapshot(
     store.myLinkRequests(thisMachine),
     (snap) => {
-      pendingLinks = snap.docs.map((d) => d.id);
+      // Las de control del ordenador (parar, actualizar, apagar…, con `type`) las atiende el supervisor (remote-control.ts).
+      pendingLinks = snap.docs.filter((d) => !d.get("type")).map((d) => d.id);
       void drainLinks();
     },
     (err) => console.warn(`[link] ${err.message}`),

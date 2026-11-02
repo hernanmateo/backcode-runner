@@ -131,6 +131,15 @@ export async function disableAutostart(): Promise<void> {
   }
 }
 
+/**
+ * Para el servicio en marcha sin quitarlo: sigue instalado y vuelve a arrancar al próximo inicio de sesión (o al abrir el
+ * panel). Si este proceso es el servicio, el sistema lo termina (SIGTERM): hay que dejarlo todo listo antes.
+ */
+export async function stopService(): Promise<void> {
+  if (process.platform === "darwin") await exec("launchctl", ["bootout", `gui/${userInfo().uid}/${LABEL}`]).catch(() => undefined);
+  else if (process.platform === "linux") await exec("systemctl", ["--user", "stop", "backcode-runner.service"]).catch(() => undefined);
+}
+
 /** Quita el servicio. Si este proceso es el servicio, el sistema lo para (hay que responder antes de llamar aquí). */
 export async function uninstallService(): Promise<void> {
   if (process.platform === "darwin") {

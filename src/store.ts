@@ -231,8 +231,12 @@ export function promptHash(title: string, refinedPrompt: string, acceptanceCrite
  * El runner se autentica como el usuario dueño de la runner key (token con claim runner=true).
  * Todo lo que hace pasa por las Security Rules: solo puede mover las tareas asignadas a ese usuario.
  */
-export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string; fns: Functions }> {
-  const app = initializeApp(cfg.firebase);
+export async function connect(
+  cfg: Pick<RunnerConfig, "firebase" | "functionsRegion" | "emulators" | "runnerKey">,
+  /** Nombre de la app de Firebase (el supervisor usa una propia por intento, sin chocar con la de por defecto). */
+  appName?: string,
+): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string; fns: Functions }> {
+  const app = appName ? initializeApp(cfg.firebase, appName) : initializeApp(cfg.firebase);
   const auth = getAuth(app);
   const db = getFirestore(app);
   const storage = getStorage(app);

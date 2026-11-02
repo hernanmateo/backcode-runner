@@ -366,6 +366,22 @@ clona desde el `repoUrl` del proyecto (nunca una URL de la petición) con tus cr
 con contenido. El supervisor arranca el proyecto en unos segundos.
 
 
+## Control remoto desde la app (runner ≥ 1.4)
+El supervisor (el panel/servicio o `backcode start`, el proceso que gestiona todos los proyectos de este ordenador) se
+conecta con la llave de cualquiera de los proyectos conectados y atiende peticiones de control en
+`users/{uid}/machines/{machineId}/requests/{id}` con un `type` fijo: `stopProject` / `startProject` / `restartProject` (con el
+`projectId`, que tiene que estar conectado aquí; parar se recuerda como con el botón del panel), `restartAll` (cada runner se
+reinicia al quedar libre, sin cortar tareas; el panel se relanza entero), `updateNow` (busca e instala ya la versión nueva del
+runner y de la app de Mac y actualiza el plugin con los comandos fijos de `PLUGIN_UPDATE_CMDS`; luego reinicia al quedar
+libres), `pauseAll` / `resumeAll` (como el botón general del panel: para todos los runners, pero el supervisor sigue
+escuchando y da él el latido para que la app deje reanudar) y `shutdown` (apaga del todo: las tareas a medias vuelven a la
+cola; como servicio, se para en el sistema sin desinstalarlo y vuelve al próximo inicio de sesión o al abrir el panel).
+Cada petición se valida (tipo del enum, id con la regex, proyecto conectado), se reclama una sola vez (`pending → running` en
+una transacción) y deja `done` o `failed` con su resultado. La app nunca manda comandos: cada tipo hace algo fijo. El
+supervisor publica en el documento del ordenador `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
+stopped, crashed, retrying o paused): solo metadatos. Las reglas solo dejan crear estas peticiones al dueño, con los campos
+cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En la app: Perfil › Tu ordenador.
+
 ## Qué hace con cada tarea
 1. La reclama (`execute → running`) y verifica que es tuya, que sigues en el grupo y que el encargo y los adjuntos no han cambiado
    desde que la aceptaste (huella).

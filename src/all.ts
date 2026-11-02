@@ -1,4 +1,5 @@
 import { t } from "./i18n.js";
+import { startRemoteControl } from "./remote-control.js";
 import { Supervisor } from "./supervisor.js";
 
 // `npm run all` / `backcode start`: un runner por cada proyecto conectado (~/.backcode/config/<proyecto>.env, creados con
@@ -28,7 +29,18 @@ console.log(`${t("all.starting", { n: ids.length, list: ids.join(", ") })}\n`);
 for (const id of ids) supervisor.start(id);
 supervisor.watchUpdates();
 supervisor.watchNewProjects();
+// Control desde la app: con la conexión hecha, esta terminal sigue abierta aunque se paren todos los proyectos (pausa o
+// parados desde la app), para poder reanudarlos; Ctrl+C o «Apagar del todo» la cierran.
+let interrupted = false;
+const remote = startRemoteControl(supervisor, {
+  shutdown: async () => {
+    interrupted = true;
+    await supervisor.stopAll();
+    process.exit(0);
+  },
+});
 const done = setInterval(() => {
+  if (remote.connected && !interrupted) return;
   if ([...supervisor.projects.values()].every((p) => !p.child && p.state !== "retrying")) {
     clearInterval(done);
     process.exit(0);
@@ -36,5 +48,6 @@ const done = setInterval(() => {
 }, 1000);
 // Ctrl+C llega a todos los hijos (mismo grupo de procesos); aquí solo se espera a que terminen.
 process.on("SIGINT", () => {
+  interrupted = true;
   for (const p of supervisor.projects.values()) if (p.state === "retrying") p.state = "stopped";
 });

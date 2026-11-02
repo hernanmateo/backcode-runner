@@ -333,6 +333,21 @@ answers `needsRepo` with a proposed folder (your projects folder + repo name) an
 the project's `repoUrl` (never a URL from the request) with your git/gh credentials and never touches a non-empty folder. The
 supervisor starts the project within seconds.
 
+## Remote control from the app (runner ≥ 1.4)
+The supervisor (the panel/service or `backcode start`, the process that manages every project on this computer) signs in
+with the key of any connected project and handles control requests in `users/{uid}/machines/{machineId}/requests/{id}` with
+a fixed `type`: `stopProject` / `startProject` / `restartProject` (with a `projectId` connected here; stopping is remembered
+like the panel button), `restartAll` (each runner restarts when idle, without cutting tasks; the panel relaunches itself),
+`updateNow` (finds and installs the new runner and Mac app version right away and updates the plugin with the fixed
+`PLUGIN_UPDATE_CMDS`; then restarts when idle), `pauseAll` / `resumeAll` (like the panel's main switch: every runner stops,
+but the supervisor keeps listening and sends the heartbeat so the app can resume) and `shutdown` (turns everything off:
+unfinished tasks go back to the queue; as a service it is stopped in the OS without uninstalling it, and comes back at the
+next login or when you open the panel). Each request is validated (enum type, id regex, connected project), claimed once
+(`pending → running` in a transaction) and ends `done` or `failed` with its result. The app never sends commands: each type
+does one fixed thing. The supervisor publishes `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
+stopped, crashed, retrying or paused) on the computer's document: metadata only. The rules only let the owner create these
+requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › Your computer.
+
 ## The panel
 
 Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.1:47474`:
