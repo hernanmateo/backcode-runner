@@ -6,8 +6,9 @@ import { failingLog } from "./check-logs.js";
 import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
-import { type Checks, isMergeConflictError, type PrHost } from "./hosts.js";
+import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
+import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
 import { t } from "./i18n.js";
 import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-checks.js";
 import { ciConfigAt } from "./ci.js";
@@ -28,7 +29,7 @@ import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from 
 export interface Action {
   /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
   id?: string;
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
   /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */
@@ -130,9 +131,9 @@ function checksWhenDone(read: () => Promise<Checks>, what: string, noneGraceMs =
 }
 
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
-async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string): Promise<ActionResult | null> {
+async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string, branch = cfg.baseBranch): Promise<ActionResult | null> {
   if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
-  const what = `${cfg.baseBranch} (${commit.slice(0, 7)})`;
+  const what = `${branch} (${commit.slice(0, 7)})`;
   // Justo tras un push a la rama base sus checks pueden tardar unos segundos en aparecer: si hay CI, se les da margen.
   const grace = (await ciConfigAt(cfg.repoPath, commit)) ? BASE_CHECKS_APPEAR_MS : 0;
   const checks = await checksWhenDone(() => host.commitChecks(commit), what, grace);
@@ -150,8 +151,10 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   if (action.type === "devServe") return devServe(cfg, store, action.featureId);
   if (action.type === "devStop") return devStop(cfg, store);
   if (action.type === "closePr") return closePr(cfg, store, host, action);
+  if (action.type === "promote") return promote(cfg, store, host);
+  if (action.type === "syncPreview") return syncPreview(cfg, host);
   if (action.type === "mergePr") {
-    const done = await mergeExternal(host, action.prUrl ?? "");
+    const done = await mergeExternal(cfg, host, action.prUrl ?? "");
     if (done.ok) await syncLocal(cfg);
     return done;
   }
@@ -229,7 +232,7 @@ async function openPr(cfg: RunnerConfig, store: Store, host: PrHost | undefined,
   if (f.prUrl?.startsWith("https://")) return { ok: true, result: { url: f.prUrl } };
   if (!f.branch) return { ok: false, result: { error: t("act.noBranch") } };
   const body = `${f.summary || f.refinedPrompt}\n\n---\n${t("pr.footerBranch", { id: featureId, branch: f.branch })}\n\n${t("pr.generated")}`;
-  const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: f.branch, base: cfg.baseBranch, title: f.title, body });
+  const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: f.branch, base: taskBase(cfg.baseBranch), title: f.title, body });
   await store.setPrUrl(featureId, url);
   return { ok: true, result: { url } };
 }
@@ -256,18 +259,24 @@ async function closePr(cfg: RunnerConfig, store: Store, host: PrHost | undefined
   }
   const pr = await openExternal(host, action.prUrl ?? "");
   if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
-  await host.close(pr.url, action.deleteBranch === true);
+  // La rama base y la de preview no se borran nunca (p. ej. al descartar la PR de promoción).
+  await host.close(pr.url, action.deleteBranch === true && !protectedBranch(pr.branch, cfg.baseBranch));
   return { ok: true, result: { url: pr.url } };
 }
 
-/** Mergear un PR externo: como el de una tarea (checks en verde, squash y borrar la rama). */
-async function mergeExternal(host: PrHost | undefined, prUrl: string) {
+/**
+ * Mergear un PR externo: como el de una tarea (checks en verde, squash y borrar la rama). El que sale de la rama base o
+ * de la de preview (la promoción a producción y la sincronización de vuelta) va con merge commit y sin borrar la rama:
+ * así los commits de las tareas siguen siendo los mismos en las dos ramas y «Pendiente de desplegar» los reconoce.
+ */
+async function mergeExternal(cfg: RunnerConfig, host: PrHost | undefined, prUrl: string) {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
   const pr = await openExternal(host, prUrl);
   if (!pr) return { ok: false, result: { error: t("act.prNotOpen") } };
   const blocked = requireGreen(await checksWhenDone(() => host.prChecks(pr.url), "PR"), "PR");
   if (blocked) return { ok: false, result: blocked };
-  const merged = await mergeUnlessConflict(host, pr.url);
+  const keep = protectedBranch(pr.branch, cfg.baseBranch);
+  const merged = await mergeUnlessConflict(host, pr.url, keep ? { method: "merge", deleteBranch: false } : undefined);
   if (!merged) return { ok: false, result: { error: t("act.prConflictsExternal", { base: pr.base }), url: pr.url } };
   return { ok: true, result: { url: pr.url, sha: merged.sha } };
 }
@@ -276,27 +285,85 @@ async function mergeExternal(host: PrHost | undefined, prUrl: string) {
  * Mergea el PR; si choca con la rama base (alguien mergeó antes algo que toca los mismos ficheros), devuelve null en vez
  * de lanzar: no es un fallo de Backcode, hay que poner la rama al día y se explica en la app.
  */
-export async function mergeUnlessConflict(host: PrHost, prUrl: string): Promise<{ sha?: string } | null> {
+export async function mergeUnlessConflict(host: PrHost, prUrl: string, opts?: MergeOptions): Promise<{ sha?: string } | null> {
   try {
-    return await host.merge(prUrl);
+    return await (opts ? host.merge(prUrl, opts) : host.merge(prUrl));
   } catch (e) {
     if (isMergeConflictError(e)) return null;
     throw e;
   }
 }
 
+/**
+ * «Promocionar a producción»: abre (o reutiliza) la PR de la rama de preview a la base con las tareas que entran (las
+ * mergeadas que están en preview y aún no en la base). Se mergea luego desde la app (mergePr: merge commit, sin borrar).
+ */
+async function promote(cfg: RunnerConfig, store: Store, host: PrHost | undefined) {
+  const from = previewBranch();
+  if (!from) return { ok: false, result: { error: t("env.noPreview") } };
+  if (!host) return { ok: false, result: { error: t("act.noHostOpen") } };
+  await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, cfg.baseBranch, from]);
+  const [fromSha, toSha] = await Promise.all([remoteSha(cfg.repoPath, cfg.remote, from), remoteSha(cfg.repoPath, cfg.remote, cfg.baseBranch)]);
+  const commits = await countBetween(cfg.repoPath, toSha, fromSha);
+  if (!commits) return { ok: false, result: { error: t("env.nothingToPromote", { from, to: cfg.baseBranch }) } };
+  // Las que van en preview y no en la base: includedTasks con la base como «despliegue anterior».
+  const features = await includedTasks(await store.mergedFeatures(), fromSha, toSha, (a, c) => isAncestor(cfg.repoPath, a, c));
+  const { title, body } = promotionPr(features, commits, from, cfg.baseBranch, t("pr.generated"));
+  const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: from, base: cfg.baseBranch, title, body });
+  return { ok: true, result: { url, sha: fromSha, features, log: t("env.promoted", { n: commits, from, to: cfg.baseBranch }) } };
+}
+
+/**
+ * «Sincronizar»: lleva la base a la rama de preview (tras promocionar o tras un hotfix directo a la base). Fast-forward
+ * si la de preview no tiene nada propio; si no, merge en una copia temporal. Sin forzar nunca: con conflictos o si el
+ * push está protegido, abre (o reutiliza) una PR de la base a la de preview.
+ */
+async function syncPreview(cfg: RunnerConfig, host: PrHost | undefined) {
+  const to = previewBranch();
+  if (!to) return { ok: false, result: { error: t("env.noPreview") } };
+  await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, cfg.baseBranch, to]);
+  const [baseSha, toSha] = await Promise.all([remoteSha(cfg.repoPath, cfg.remote, cfg.baseBranch), remoteSha(cfg.repoPath, cfg.remote, to)]);
+  const mode = syncMode(await countBetween(cfg.repoPath, toSha, baseSha), await countBetween(cfg.repoPath, baseSha, toSha));
+  if (mode === "uptodate") return { ok: true, result: { sha: toSha, log: t("env.syncUpToDate", { to, base: cfg.baseBranch }) } };
+  let reason = "";
+  if (mode === "fast-forward") {
+    // Sin --force: el remoto solo lo acepta si de verdad es un fast-forward.
+    const pushed = await exec(["git", "push", "--no-verify", cfg.remote, `${baseSha}:refs/heads/${to}`], cfg.repoPath).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
+    if (pushed) return { ok: true, result: { sha: baseSha, log: t("env.synced", { to, base: cfg.baseBranch }) } };
+  } else {
+    const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_sync", toSha);
+    try {
+      const msg = `Merge ${cfg.baseBranch} into ${to} (Backcode)`;
+      const merged = await exec(["git", "-c", "user.name=Backcode", "-c", "user.email=backcode@users.noreply.github.com", "merge", "--no-ff", "--no-edit", "-m", msg, baseSha], wt).then(() => true, async (e: Error) => {
+        reason = e.message.slice(-400);
+        await exec(["git", "merge", "--abort"], wt).catch(() => undefined);
+        return false;
+      });
+      if (merged) {
+        const ok = await exec(["git", "push", "--no-verify", cfg.remote, `HEAD:refs/heads/${to}`], wt).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
+        if (ok) return { ok: true, result: { sha: (await exec(["git", "rev-parse", "HEAD"], wt)).trim(), log: t("env.synced", { to, base: cfg.baseBranch }) } };
+      }
+    } finally {
+      await removeWorktree(cfg.repoPath, wt);
+    }
+  }
+  if (!host) return { ok: false, result: { error: t("env.syncFailed", { to, base: cfg.baseBranch, reason }) } };
+  const url = await host.openOrUpdatePr({ cwd: cfg.repoPath, branch: cfg.baseBranch, base: to, title: `Sincronizar ${cfg.baseBranch} → ${to}`, body: `${t("env.syncPrBody", { to, base: cfg.baseBranch })}\n\n${t("pr.generated")}` });
+  return { ok: true, result: { url, log: t("env.syncPr", { to, base: cfg.baseBranch, reason }) } };
+}
+
 /** Ficheros de la rama de la tarea que chocan con la rama base (vacío si no chocan o no se pudo saber). */
 async function conflictFiles(cfg: RunnerConfig, branch: string | undefined): Promise<string[]> {
   if (!branch) return [];
-  return fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, branch)
-    .then(() => findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, branch))
+  return fetchBranches(cfg.repoPath, cfg.remote, taskBase(cfg.baseBranch), branch)
+    .then(() => findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, taskBase(cfg.baseBranch), branch))
     .catch(() => [] as string[]);
 }
 
 /** El PR choca con la base. Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca «Arreglar con Claude». */
 async function conflictsBlock(cfg: RunnerConfig, store: Store, featureId: string, prUrl: string, files: string[]): Promise<{ ok: false; result: ActionResult; blocked: MergeBlock }> {
   if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
-  const error = files.length ? t("act.prConflictsFiles", { base: cfg.baseBranch, files: files.join(", ") }) : t("act.prConflicts", { base: cfg.baseBranch });
+  const error = files.length ? t("act.prConflictsFiles", { base: taskBase(cfg.baseBranch), files: files.join(", ") }) : t("act.prConflicts", { base: taskBase(cfg.baseBranch) });
   return { ok: false, result: { error, url: prUrl }, blocked: "conflicts" };
 }
 
@@ -326,7 +393,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   // no los lanzó porque el PR choca con la base (no puede crear el merge ref), y entonces se trata como conflictos.
   const ciExpected =
     store.capabilities.ci === true ||
-    (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${cfg.baseBranch}`)) ||
+    (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${taskBase(cfg.baseBranch)}`)) ||
     (!!branch && (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${branch}`)));
   const gate = await gatePrChecks({
     read: () => host.prChecks(prUrl),
@@ -359,10 +426,12 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     const bad = promoteCheck(rollbackTo, { preview: last.get("ota:preview"), production: last.get("ota:production") });
     if (bad) return { ok: false, result: { error: t(bad.error, bad.vars) } };
   }
-  const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
-  // Rollback: solo commits que ya están en la rama base (revisados); no se puede publicar cualquier commit.
+  // Cada canal publica su rama: production la base y preview la de preview, si el proyecto tiene (environments.ts).
+  const branch = branchForChannel(cfg.baseBranch, channel);
+  const head = await remoteHead(cfg.repoPath, cfg.remote, branch);
+  // Rollback: solo commits que ya están en la rama del canal (revisados); no se puede publicar cualquier commit.
   if (rollbackTo && !(await isAncestor(cfg.repoPath, rollbackTo, head))) {
-    return { ok: false, result: { error: t("act.notInBase", { sha: rollbackTo.slice(0, 7), base: `${cfg.remote}/${cfg.baseBranch}` }) } };
+    return { ok: false, result: { error: t("act.notInBase", { sha: rollbackTo.slice(0, 7), base: `${cfg.remote}/${branch}` }) } };
   }
   let commit = rollbackTo ?? head;
   const app = await findExpoApp(cfg.repoPath, commit);
@@ -371,7 +440,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
   if (!app.channels.includes(channel)) return { ok: false, result: { error: t("act.noChannel", { channel }) } };
   // En un rollback no se esperan los checks: esa versión ya se publicó antes y hay prisa por deshacer.
   if (!rollbackTo) {
-    const blocked = await requireGreenBase(cfg, host, commit);
+    const blocked = await requireGreenBase(cfg, host, commit, branch);
     if (blocked) return { ok: false, result: blocked };
   }
 
@@ -393,7 +462,7 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     const dirty = await dirtyFiles(wt);
     if (dirty.length && !commitDirty) return { ok: false, result: { error: t("act.dirty", { files: dirty.slice(0, 20).join(", ") }), dirty: dirty.slice(0, 50), sha: commit } };
     if (dirty.length) {
-      const pushed = await commitAndPush(cfg, wt, dirty, message);
+      const pushed = await commitAndPush(cfg, wt, dirty, message, branch);
       if ("error" in pushed) return { ok: false, result: { error: pushed.error, sha: commit } };
       commit = pushed.sha;
     }
@@ -479,11 +548,13 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
   if (!RUNTIME_VERSION_RE.test(runtimeVersion)) return { ok: false, result: { error: t("build.badRuntime", { v: runtimeVersion }) } };
   if (platforms.includes("ios") && process.platform !== "darwin") return { ok: false, result: { error: t("build.needMac") } };
 
-  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  // Builds para testers (TestFlight / Internal Testing): de la rama de preview si el proyecto tiene (environments.ts).
+  const branch = branchForChannel(cfg.baseBranch, "preview");
+  const commit = await remoteHead(cfg.repoPath, cfg.remote, branch);
   const app = await findExpoApp(cfg.repoPath, commit);
   if (!app) return { ok: false, result: { error: t("build.notExpo") } };
   if (!app.buildProfiles.includes(BUILD_PROFILE)) return { ok: false, result: { error: t("build.noProfile", { p: BUILD_PROFILE }) } };
-  const blocked = await requireGreenBase(cfg, host, commit);
+  const blocked = await requireGreenBase(cfg, host, commit, branch);
   if (blocked) return { ok: false, result: blocked };
 
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_build", commit);
@@ -745,10 +816,14 @@ async function depsIfChanged(app: Pick<ExpoApp, "pm">, wt: string, dir: string):
  * lo pide. El destino se vuelve a buscar en el repo: la app solo elige entre los que el propio repo declara.
  */
 async function runDeploy(cfg: RunnerConfig, host: PrHost | undefined, targetId: string) {
-  const commit = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
-  const target = (await findDeployTargets(cfg.repoPath, commit)).find((d) => d.id === targetId);
+  // Con rama de preview, los destinos de staging/preview salen de ella y el resto de la rama base (environments.ts).
+  const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
+  const targets = await findDeployTargets(cfg.repoPath, head);
+  const branch = branchForTarget(cfg.baseBranch, targetId, targets.map((d) => d.id));
+  const commit = branch === cfg.baseBranch ? head : await remoteHead(cfg.repoPath, cfg.remote, branch);
+  const target = (branch === cfg.baseBranch ? targets : await findDeployTargets(cfg.repoPath, commit)).find((d) => d.id === targetId);
   if (!target) return { ok: false, result: { error: t("deploy.unknown", { target: targetId }) } };
-  const blocked = await requireGreenBase(cfg, host, commit);
+  const blocked = await requireGreenBase(cfg, host, commit, branch);
   if (blocked) return { ok: false, result: blocked };
   const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_deploy", commit);
   const dir = join(wt, target.dir);
@@ -1007,7 +1082,7 @@ async function dirtyFiles(dir: string): Promise<string[]> {
  * «Commit y publicar»: commitea en la rama base los archivos sin commitear de la copia que se va a publicar y lo sube (sin
  * forzar: si la rama avanzó entretanto, falla). Nunca .env ni nada que parezca un secreto.
  */
-async function commitAndPush(cfg: RunnerConfig, wt: string, files: string[], message: string): Promise<{ sha: string } | { error: string }> {
+async function commitAndPush(cfg: RunnerConfig, wt: string, files: string[], message: string, branch = cfg.baseBranch): Promise<{ sha: string } | { error: string }> {
   const risky = files.filter((f) => /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key|keystore|jks)$|google-services|GoogleService-Info/i.test(f));
   if (risky.length) return { error: t("act.dirtyRisky", { files: risky.join(", ") }) };
   try {
@@ -1015,7 +1090,7 @@ async function commitAndPush(cfg: RunnerConfig, wt: string, files: string[], mes
     const secrets = await scanStagedForSecrets(wt);
     if (secrets.length) return { error: t("act.dirtyRisky", { files: secrets.join("; ") }) };
     await exec(["git", "-c", "user.name=Backcode", "-c", "user.email=backcode@users.noreply.github.com", "commit", "-m", t("act.dirtyCommit", { message: message.slice(0, 120), n: files.length })], wt);
-    await exec(["git", "push", cfg.remote, `HEAD:refs/heads/${cfg.baseBranch}`], wt);
+    await exec(["git", "push", cfg.remote, `HEAD:refs/heads/${branch}`], wt);
     return { sha: (await exec(["git", "rev-parse", "HEAD"], wt)).trim() };
   } catch (err) {
     return { error: t("act.dirtyPushFailed", { error: String((err as Error).message).slice(-800) }) };

@@ -912,6 +912,11 @@ export class Store {
     return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
   }
 
+  /** «Rama de preview» del proyecto (opcional; la cambian los admins en la app). Sin ella, undefined. */
+  watchPreviewBranch(onChange: (branch: string | undefined) => void): () => void {
+    return onSnapshot(this.project(), (d) => onChange(typeof d.get("previewBranch") === "string" ? String(d.get("previewBranch")) : undefined), () => undefined);
+  }
+
   /** «Modo auto» del proyecto (mergear solo las tareas terminadas; lo cambian los admins en la app) y su máximo de reintentos. */
   watchAutoMerge(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
     return onSnapshot(

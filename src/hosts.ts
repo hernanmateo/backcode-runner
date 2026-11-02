@@ -22,8 +22,11 @@ export interface PrHost {
   commitChecks(sha: string): Promise<Checks>;
   /** Log en bruto de los checks que fallan del PR (GitHub Actions); ausente si el host no lo da. Ver check-logs.ts. */
   failedLog?(prUrl: string): Promise<string>;
-  /** Saca el PR de borrador, lo mergea con squash y borra la rama. Devuelve el commit resultante si se conoce. */
-  merge(prUrl: string): Promise<{ sha?: string }>;
+  /**
+   * Saca el PR de borrador, lo mergea (por defecto con squash y borrando la rama) y devuelve el commit resultante si se
+   * conoce. La PR de promoción (rama de preview → base) va con merge commit y sin borrar la rama: ver mergeOptions.
+   */
+  merge(prUrl: string, opts?: MergeOptions): Promise<{ sha?: string }>;
   /** Estado del PR (p. ej. para enterarse de un merge hecho a mano en GitHub/Bitbucket) y su commit de merge. */
   prState(prUrl: string): Promise<{ state: "open" | "merged" | "closed"; sha?: string }>;
   /** PR abiertos del repo (también los creados fuera de Backcode), los más recientes primero. */
@@ -121,10 +124,10 @@ export function githubHost(repoPath: string): PrHost {
         ...statuses.statuses.map((s) => ({ name: s.context, state: (s.state === "success" ? "ok" : s.state === "pending" ? "pending" : "fail") as "ok" | "pending" | "fail" })),
       ]);
     },
-    async merge(prUrl) {
+    async merge(prUrl, opts) {
       await gh(["pr", "ready", prUrl]).catch(() => undefined); // si ya no era borrador, da igual
       await mergeWithRetry(
-        () => gh(["pr", "merge", prUrl, "--squash", "--delete-branch"]),
+        () => gh(ghMergeArgs(prUrl, opts)),
         () => gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => ""),
       );
       const sha = await gh(["pr", "view", prUrl, "--json", "mergeCommit", "-q", ".mergeCommit.oid"]).catch(() => "");
@@ -201,10 +204,10 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
     async commitChecks(sha) {
       return toChecks((await api<{ values: { name?: string; key: string; state: string }[] }>(`/commit/${sha}/statuses?pagelen=50`)).values);
     },
-    async merge(prUrl) {
+    async merge(prUrl, opts) {
       const id = await prId(prUrl);
       await api(`/pullrequests/${id}`, { method: "PUT", body: { draft: false } }).catch(() => undefined);
-      const pr = await api<Pr>(`/pullrequests/${id}/merge`, { method: "POST", body: { merge_strategy: "squash", close_source_branch: true } });
+      const pr = await api<Pr>(`/pullrequests/${id}/merge`, { method: "POST", body: bitbucketMergeBody(opts) });
       return { sha: pr.merge_commit?.hash };
     },
     async prState(prUrl) {
@@ -223,4 +226,20 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
       if (deleteBranch) await api(`/refs/branches/${encodeURIComponent(pr.source.branch.name)}`, { method: "DELETE" }).catch(() => undefined);
     },
   };
+}
+
+/** Cómo se mergea un PR: squash y borrar la rama (las tareas) o merge commit conservando la rama (la promoción). */
+export interface MergeOptions {
+  method?: "squash" | "merge";
+  deleteBranch?: boolean;
+}
+
+/** Argumentos de `gh pr merge`. */
+export function ghMergeArgs(prUrl: string, opts: MergeOptions = {}): string[] {
+  return ["pr", "merge", prUrl, opts.method === "merge" ? "--merge" : "--squash", ...(opts.deleteBranch === false ? [] : ["--delete-branch"])];
+}
+
+/** Cuerpo del merge de Bitbucket. */
+export function bitbucketMergeBody(opts: MergeOptions = {}): { merge_strategy: "squash" | "merge_commit"; close_source_branch: boolean } {
+  return { merge_strategy: opts.method === "merge" ? "merge_commit" : "squash", close_source_branch: opts.deleteBranch !== false };
 }
