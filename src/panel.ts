@@ -16,7 +16,8 @@ import { hasSavedApiKey, removeApiKey, saveApiKey } from "./anthropic.js";
 import { FIX_ACTIONS, fixesFor, runFix, type FixAction } from "./fixes.js";
 import { installedClaude, machineReport, type Check } from "./preflight.js";
 import { pluginInRepos, pluginInstalls, type RepoPlugin } from "./plugin.js";
-import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, uninstallService } from "./service.js";
+import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, stopService, uninstallService } from "./service.js";
+import { startRemoteControl } from "./remote-control.js";
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
 import { installPlatforms, listDevices, type Device, type DevicePlatform } from "./devices.js";
@@ -362,6 +363,21 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     }, 5_000);
   });
   supervisor.watchNewProjects();
+  // Control desde la app (parar/arrancar proyectos, actualizar, reiniciar, pausar y apagar): ver remote-control.ts.
+  startRemoteControl(supervisor, {
+    restartAll: () => void leave("restart"),
+    // Apagar del todo: como el botón de salir (las tareas a medias vuelven a la cola). Siendo el servicio, además se para
+    // en el sistema para que no lo relance (sigue instalado: vuelve al próximo inicio de sesión).
+    shutdown: async () => {
+      if (!service) return leave("quit");
+      leaving = "quit";
+      await supervisor.stopAll();
+      server.close();
+      await stopService();
+      process.exit(0);
+    },
+    onPower: () => setTimeout(applyAwake, 0),
+  });
   // «Mantener despierto enchufado»: desde que arranca, si está activado y el runner encendido; y si está enchufado, para
   // decirlo en el panel (con batería, caffeinate -s no actúa).
   applyAwake();

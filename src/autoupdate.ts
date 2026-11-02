@@ -36,7 +36,7 @@ export function exitSupervised(code: number): never {
 }
 export const PACKAGE_NAME = "backcode";
 /** Repositorio de GitHub con las versiones del ejecutable sin Node (Releases). */
-export const RELEASES_REPO = "hernanmateo/backcode-runner";
+export const RELEASES_REPO = "hernanmateo/backcode-dist";
 
 /**
  * Cómo se actualiza esta copia: el ejecutable desde GitHub Releases, git pull, npm en ~/.backcode/app, o nada (npx o

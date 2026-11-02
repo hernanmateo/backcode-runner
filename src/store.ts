@@ -207,6 +207,8 @@ export interface FeatureResult {
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];
   /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
   planReady?: boolean;
+  /** Tarea de CI: ficheros que cambia su PR respecto a la base (la app los enseña al confirmar el merge). */
+  ciFiles?: string[];
   error?: string;
   /** Error conocido, para que la app lo muestre en el idioma de quien lo ve (error va en el del runner). */
   errorCode?: "noPr" | "noPlan";
@@ -231,8 +233,12 @@ export function promptHash(title: string, refinedPrompt: string, acceptanceCrite
  * El runner se autentica como el usuario dueño de la runner key (token con claim runner=true).
  * Todo lo que hace pasa por las Security Rules: solo puede mover las tareas asignadas a ese usuario.
  */
-export async function connect(cfg: RunnerConfig): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string; fns: Functions }> {
-  const app = initializeApp(cfg.firebase);
+export async function connect(
+  cfg: Pick<RunnerConfig, "firebase" | "functionsRegion" | "emulators" | "runnerKey">,
+  /** Nombre de la app de Firebase (el supervisor usa una propia por intento, sin chocar con la de por defecto). */
+  appName?: string,
+): Promise<{ db: Firestore; storage: FirebaseStorage; uid: string; fns: Functions }> {
+  const app = appName ? initializeApp(cfg.firebase, appName) : initializeApp(cfg.firebase);
   const auth = getAuth(app);
   const db = getFirestore(app);
   const storage = getStorage(app);
@@ -786,8 +792,9 @@ export class Store {
     await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
   }
 
-  async markMerged(featureId: string, sha?: string, auto = false): Promise<void> {
-    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}) } });
+  /** `ciConfirmed`: PR de una tarea de CI mergeado tras la confirmación explícita de quien lo pidió (`by`). */
+  async markMerged(featureId: string, sha?: string, auto = false, ciConfirmed = false): Promise<void> {
+    await updateDoc(this.feature(featureId), { merged: { at: serverTimestamp(), by: this.uid, sha: sha ?? "", ...(auto ? { auto: true } : {}), ...(ciConfirmed ? { ciConfirmed: true } : {}) } });
   }
 
   /** Tareas mergeadas que aún no constan como desplegadas en ese canal (con el commit del merge). */

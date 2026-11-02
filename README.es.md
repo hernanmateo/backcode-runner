@@ -10,13 +10,13 @@ conectarlos y gestionarlos sin usar la terminal.
 Código abierto bajo [Apache-2.0](LICENSE): corre en tu ordenador y con acceso a tus repos, así que puedes leer exactamente qué hace.
 
 ## Empezar
-**En un Mac:** descarga [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg)
+**En un Mac:** descarga [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-dist/releases/latest/download/Backcode-Runner.dmg)
 (universal, firmada y notarizada), arrastra **Backcode Runner** a Aplicaciones y ábrela. Sin Terminal ni Node: copia el runner a
 `~/.backcode/bin`, lo deja arrancando al iniciar sesión y abre el panel. Volver a abrir la app solo abre el panel.
 
 **En Linux (o desde la Terminal de un Mac):** pega esto:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh | sh
 ```
 Instala un único ejecutable en `~/.backcode/bin` (**sin Node**), comprueba su SHA-256, deja `backcode` en el PATH (una línea
 en el perfil de tu shell) y abre el **panel** en el navegador (http://127.0.0.1:47474). Las próximas veces: `backcode`.
@@ -27,11 +27,11 @@ Todas instalan el mismo runner y abren el mismo panel.
 
 | Forma | Cómo | Para quién |
 |---|---|---|
-| **App de Mac** (la más fácil) | [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-runner/releases/latest/download/Backcode-Runner.dmg) → Aplicaciones → abrir | Cualquiera con macOS. Sin Terminal ni Node |
-| **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-runner/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
+| **App de Mac** (la más fácil) | [Backcode-Runner.dmg](https://github.com/hernanmateo/backcode-dist/releases/latest/download/Backcode-Runner.dmg) → Aplicaciones → abrir | Cualquiera con macOS. Sin Terminal ni Node |
+| **Un comando** | `curl -fsSL https://raw.githubusercontent.com/hernanmateo/backcode-dist/main/install.sh \| sh` | Linux o la Terminal de un Mac. Sin Node |
 | **npm sin instalar** | `npx backcode` | Si ya usas Node 22+ |
 | **npm global** | `npm install -g backcode` y después `backcode` | Usuarios de Node que quieren el comando a mano |
-| **Plugin de Claude Code** (lo más fácil si usas Claude Code) | En Claude Code: `/plugin marketplace add hernanmateo/backcode-runner`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
+| **Plugin de Claude Code** (lo más fácil si usas Claude Code) | En Claude Code: `/plugin marketplace add hernanmateo/backcode-dist`, `/plugin install backcode@backcode` y después `/backcode:setup` | Si trabajas en Claude Code: lo instala, conecta y arregla todo contigo |
 | **Desde el código** | `git clone … && npm install && npm run panel` | Para contribuir |
 
 Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx backcode@1.0.0`), sin abrir el panel
@@ -41,11 +41,11 @@ Más: una versión concreta (`BACKCODE_VERSION=1.0.0` en `install.sh`, o `npx ba
 **Plugin de Claude Code.** Cada persona lo instala una vez en su Claude Code:
 
 ```text
-/plugin marketplace add hernanmateo/backcode-runner
+/plugin marketplace add hernanmateo/backcode-dist
 /plugin install backcode@backcode
 ```
 
-El marketplace se lee del repo público `hernanmateo/backcode-runner`: si ese repo se pone privado, deja de funcionar para quien
+El marketplace se lee del repo público de distribución `hernanmateo/backcode-dist` (binarios y plugin, sin código): si ese repo se pone privado, deja de funcionar para quien
 no tenga acceso, y habría que publicar el marketplace (`.claude-plugin/` y `plugins/`) en un repo público, p. ej. el de las
 releases.
 
@@ -365,6 +365,22 @@ responde `needsRepo` con una carpeta propuesta (tu carpeta de proyectos + nombre
 clona desde el `repoUrl` del proyecto (nunca una URL de la petición) con tus credenciales de git/gh y no pisa nunca una carpeta
 con contenido. El supervisor arranca el proyecto en unos segundos.
 
+
+## Control remoto desde la app (runner ≥ 1.4)
+El supervisor (el panel/servicio o `backcode start`, el proceso que gestiona todos los proyectos de este ordenador) se
+conecta con la llave de cualquiera de los proyectos conectados y atiende peticiones de control en
+`users/{uid}/machines/{machineId}/requests/{id}` con un `type` fijo: `stopProject` / `startProject` / `restartProject` (con el
+`projectId`, que tiene que estar conectado aquí; parar se recuerda como con el botón del panel), `restartAll` (cada runner se
+reinicia al quedar libre, sin cortar tareas; el panel se relanza entero), `updateNow` (busca e instala ya la versión nueva del
+runner y de la app de Mac y actualiza el plugin con los comandos fijos de `PLUGIN_UPDATE_CMDS`; luego reinicia al quedar
+libres), `pauseAll` / `resumeAll` (como el botón general del panel: para todos los runners, pero el supervisor sigue
+escuchando y da él el latido para que la app deje reanudar) y `shutdown` (apaga del todo: las tareas a medias vuelven a la
+cola; como servicio, se para en el sistema sin desinstalarlo y vuelve al próximo inicio de sesión o al abrir el panel).
+Cada petición se valida (tipo del enum, id con la regex, proyecto conectado), se reclama una sola vez (`pending → running` en
+una transacción) y deja `done` o `failed` con su resultado. La app nunca manda comandos: cada tipo hace algo fijo. El
+supervisor publica en el documento del ordenador `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
+stopped, crashed, retrying o paused): solo metadatos. Las reglas solo dejan crear estas peticiones al dueño, con los campos
+cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En la app: Perfil › Tu ordenador.
 
 ## Qué hace con cada tarea
 1. La reclama (`execute → running`) y verifica que es tuya, que sigues en el grupo y que el encargo y los adjuntos no han cambiado

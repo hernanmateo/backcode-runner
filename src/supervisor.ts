@@ -166,11 +166,13 @@ export class Supervisor {
   /** Comprueba actualizaciones (una vez para todos) y, con versión nueva lista, reinicia cada runner al quedar libre. */
   watchUpdates(onReady?: () => void): void {
     let checking = false;
-    const check = async (force = false) => {
-      if (checking) return;
+    const check = async (force = false): Promise<boolean> => {
+      if (checking) return false;
       checking = true;
+      let updated = false;
       try {
         if (await updateIfAvailable({ force })) {
+          updated = true;
           this.restartAllWhenIdle();
           onReady?.();
         }
@@ -181,12 +183,14 @@ export class Supervisor {
       } finally {
         checking = false;
       }
+      return updated;
     };
     setInterval(() => void check(), UPDATE_EVERY_MS);
     setTimeout(() => void check(true), 15_000);
     this.checkUpdateNow = () => check(true);
   }
-  checkUpdateNow: () => Promise<void> = async () => undefined;
+  /** Busca e instala ya la versión nueva (true si la ha instalado: los runners se reinician al quedar libres). */
+  checkUpdateNow: () => Promise<boolean> = async () => false;
 
   logsAfter(id: string, after: number): { seq: number; text: string }[] {
     return (this.projects.get(id)?.logs ?? []).filter((l) => l.seq > after);
