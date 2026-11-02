@@ -34,6 +34,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
   var alerting = false
   /** Dirección del panel: si la primera carga falla, reload() no tiene página que recargar. */
   var panelURL: URL?
+  /** El paso en curso bajo el spinner («Starting the service…», «Waiting for the panel…»…), lo cuenta `backcode app-url`. */
+  let statusLabel = NSTextField(labelWithString: "")
+  /** ¿Ha llegado el panel a didFinish desde el último start()? Mientras no, manda el límite global (watchdog). */
+  var loaded = false
+  /** Intento en curso: las respuestas de un intento anterior (tras un aviso o un Retry) se ignoran. */
+  var attempt = 0
+  var watchdog: DispatchWorkItem?
+  /** `backcode app-url` en marcha, para pararlo si se pasa del límite. */
+  var runnerProcess: Process?
+  /** Límite global: como mucho en este tiempo hay panel o aviso con el motivo (nunca el spinner para siempre). */
+  static let startLimit: TimeInterval = 60
+  /** Límite de `backcode app-url`: por debajo del global, para que llegue su diagnóstico antes del aviso genérico. */
+  static let runnerLimit: TimeInterval = 55
+  /** Cada carga del panel: si el puerto acepta la conexión pero no contesta, falla pronto (no a los ~60 s de URLRequest). */
+  static let loadTimeout: TimeInterval = 10
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     buildMenu()
@@ -63,54 +78,165 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     NSLayoutConstraint.activate([spinner.centerXAnchor.constraint(equalTo: webView.centerXAnchor), spinner.centerYAnchor.constraint(equalTo: webView.centerYAnchor)])
     spinner.startAnimation(nil)
 
+    statusLabel.translatesAutoresizingMaskIntoConstraints = false
+    statusLabel.alignment = .center
+    statusLabel.textColor = .secondaryLabelColor
+    statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    statusLabel.lineBreakMode = .byTruncatingTail
+    webView.addSubview(statusLabel)
+    NSLayoutConstraint.activate([
+      statusLabel.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
+      statusLabel.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 12),
+      statusLabel.widthAnchor.constraint(lessThanOrEqualTo: webView.widthAnchor, constant: -40),
+    ])
+
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
     start()
   }
 
+  /** Por qué no se ha podido abrir el panel (lo diagnostica `backcode app-url` o lo decide la app al pasarse del límite). */
+  struct StartFailure {
+    var reason: String
+    var hint: String?
+    var log: [String] = []
+    /** Ofrecer «Open Login Items» (Configuración del Sistema › General › Ítems de inicio). */
+    var loginItems = false
+    /** Ofrecer «Start without service» (no tiene sentido si ya se ha probado sin servicio). */
+    var canSkipService = true
+  }
+
+  enum RunnerResult {
+    case url(String)
+    case failed(StartFailure)
+  }
+
+  static let logPath = "\(NSHomeDirectory())/.backcode/logs/service.log"
+  static let loginItemsURL = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!
+
+  func setStatus(_ text: String) {
+    statusLabel.stringValue = text
+    statusLabel.isHidden = text.isEmpty
+  }
+
+  /** La carga del panel, con tiempo máximo corto. */
+  func panelRequest(_ url: URL) -> URLRequest {
+    URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: Self.loadTimeout)
+  }
+
   /**
    * Pide al runner que se instale (si hace falta) y devuelva la dirección del panel. `retry`: desde «Retry», con el panel
-   * ya visto sin responder: el runner relanza el servicio (`launchctl kickstart -k`).
+   * ya visto sin responder: el runner relanza el servicio (`launchctl kickstart -k`). `noService`: «Start without
+   * service»: el panel en segundo plano sin launchd. Arma el límite global: si en `startLimit` no hay panel, aviso.
    */
-  func start(retry: Bool = false) {
+  func start(retry: Bool = false, noService: Bool = false) {
+    attempt += 1
+    let current = attempt
+    loaded = false
+    failingSince = nil
+    spinner.isHidden = false
+    spinner.startAnimation(nil)
+    setStatus("Starting…")
+    watchdog?.cancel()
+    let dog = DispatchWorkItem { [weak self] in
+      guard let self, current == self.attempt, !self.loaded else { return }
+      self.webView.stopLoading()
+      self.startFailed(StartFailure(
+        reason: "The runner's panel didn't open within \(Int(Self.startLimit)) seconds.",
+        hint: "The background service may be stuck or blocked by macOS. Check System Settings › General › Login Items › Allow in the Background, or run `backcode` in Terminal to see what happens.",
+        loginItems: true,
+        canSkipService: !noService))
+    }
+    watchdog = dog
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.startLimit, execute: dog)
+
+    var args = ["app-url"]
+    if retry { args.append("--retry") }
+    if noService { args.append("--no-service") }
     DispatchQueue.global(qos: .userInitiated).async {
-      let result = Self.runRunner(retry ? ["app-url", "--retry"] : ["app-url"])
+      let result = Self.runRunner(args, onStatus: { text in
+        DispatchQueue.main.async { if current == self.attempt, !self.loaded { self.setStatus(text) } }
+      }, onProcess: { process in
+        DispatchQueue.main.async { self.runnerProcess = process }
+      })
       DispatchQueue.main.async {
-        // ?native=1: el panel deja sitio a los botones de la ventana (rojo, amarillo y verde).
-        if let url = result.flatMap({ URL(string: $0.replacingOccurrences(of: "/#", with: "/?native=1#")) }) {
-          self.panelURL = url
-          self.webView.load(URLRequest(url: url))
-        } else {
-          self.startFailed("The runner didn't start.")
+        guard current == self.attempt, !self.alerting else { return }
+        self.runnerProcess = nil
+        switch result {
+        case .url(let line):
+          // ?native=1: el panel deja sitio a los botones de la ventana (rojo, amarillo y verde).
+          if let url = URL(string: line.replacingOccurrences(of: "/#", with: "/?native=1#")) {
+            self.panelURL = url
+            self.setStatus("Loading the panel…")
+            self.webView.load(self.panelRequest(url))
+          } else {
+            self.startFailed(StartFailure(reason: "The runner didn't return the panel's address."))
+          }
+        case .failed(var failure):
+          if noService { failure.canSkipService = false }
+          self.startFailed(failure)
         }
       }
     }
   }
 
-  /** El runner no arranca o su panel no responde: se dice, con el registro a mano, en vez de dejar el spinner para siempre. */
-  func startFailed(_ reason: String) {
+  /**
+   * El runner no arranca o su panel no responde: se dice con el motivo, qué hacer y botones para arreglarlo, en vez de
+   * dejar el spinner para siempre. «Open log» y «Open Login Items» vuelven a enseñar el aviso (luego, «Retry»).
+   */
+  func startFailed(_ failure: StartFailure) {
     guard !alerting else { return }
     alerting = true
+    attempt += 1 // lo que llegue del intento anterior ya no cuenta
+    watchdog?.cancel()
+    if let process = runnerProcess, process.isRunning { process.terminate() }
+    runnerProcess = nil
     spinner.stopAnimation(nil)
+    setStatus("")
+
+    enum Action { case retry, log, loginItems, noService, quit }
+    var actions: [(Action, String)] = [(.retry, "Retry"), (.log, "Open log")]
+    if failure.loginItems { actions.append((.loginItems, "Open Login Items")) }
+    if failure.canSkipService { actions.append((.noService, "Start without service")) }
+    actions.append((.quit, "Quit"))
+
+    var text = failure.reason
+    if let hint = failure.hint, !hint.isEmpty { text += "\n\n\(hint)" }
+    if !failure.log.isEmpty { text += "\n\nLast lines of the log:\n\(failure.log.joined(separator: "\n"))" }
+    text += "\n\nLog: ~/.backcode/logs/service.log"
+
     let alert = NSAlert()
-    alert.messageText = "Backcode Runner"
-    alert.informativeText = "\(reason)\n\nLog: ~/.backcode/logs/service.log"
-    alert.addButton(withTitle: "Retry")
-    alert.addButton(withTitle: "Open log")
-    alert.addButton(withTitle: "Quit")
-    let answer = alert.runModal()
+    alert.alertStyle = .warning
+    alert.messageText = "Backcode Runner couldn't open its panel"
+    alert.informativeText = text
+    for (_, title) in actions { alert.addButton(withTitle: title) }
+    let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     alerting = false
-    if answer == .alertThirdButtonReturn { NSApp.terminate(nil); return }
-    if answer == .alertSecondButtonReturn { NSWorkspace.shared.open(URL(fileURLWithPath: "\(NSHomeDirectory())/.backcode/logs/service.log")) }
-    failingSince = nil
-    spinner.isHidden = false
-    spinner.startAnimation(nil)
-    start(retry: true)
+    let action = actions.indices.contains(index) ? actions[index].0 : .quit
+    switch action {
+    case .quit:
+      NSApp.terminate(nil)
+    case .log:
+      NSWorkspace.shared.open(URL(fileURLWithPath: Self.logPath))
+      DispatchQueue.main.async { self.startFailed(failure) }
+    case .loginItems:
+      NSWorkspace.shared.open(Self.loginItemsURL)
+      DispatchQueue.main.async { self.startFailed(failure) }
+    case .noService:
+      start(noService: true)
+    case .retry:
+      start(retry: true)
+    }
   }
 
-  /** Ejecuta el runner de dentro de la app y devuelve la última línea que imprime (la URL). */
-  static func runRunner(_ args: [String]) -> String? {
-    guard let runner = Bundle.main.url(forResource: "backcode", withExtension: nil) else { return nil }
+  /**
+   * Ejecuta el runner de dentro de la app. Lee su salida línea a línea (no hasta el final: si algún hijo heredara la
+   * tubería, readDataToEndOfFile no acabaría nunca): «status: …» va a `onStatus`; la última línea es la dirección o
+   * «error: {json}» con el diagnóstico. Si tarda más de `runnerLimit`, se para y cuenta como fallo.
+   */
+  static func runRunner(_ args: [String], onStatus: @escaping (String) -> Void, onProcess: (Process) -> Void) -> RunnerResult {
+    let notStarted = StartFailure(reason: "The runner didn't start.", hint: "Run `backcode` in Terminal to see what happens.")
+    guard let runner = Bundle.main.url(forResource: "backcode", withExtension: nil) else { return .failed(notStarted) }
     let process = Process()
     process.executableURL = runner
     process.arguments = args
@@ -122,13 +248,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     let out = Pipe()
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice
-    do { try process.run() } catch { return nil }
-    // Si se cuelga (p. ej. launchctl), no deja la app esperando para siempre: cuenta como que no arrancó.
-    DispatchQueue.global().asyncAfter(deadline: .now() + 120) { if process.isRunning { process.terminate() } }
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else { return nil }
-    return String(data: data, encoding: .utf8)?.split(separator: "\n").last.map(String.init)
+
+    let lock = NSLock()
+    var buffer = Data()
+    var lines: [String] = []
+    let done = DispatchSemaphore(value: 0)
+    out.fileHandleForReading.readabilityHandler = { handle in
+      let chunk = handle.availableData
+      lock.lock()
+      buffer.append(chunk)
+      var statuses: [String] = []
+      while let newline = buffer.firstIndex(of: 0x0A) {
+        let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
+        buffer.removeSubrange(buffer.startIndex...newline)
+        if line.hasPrefix("status: ") { statuses.append(String(line.dropFirst(8))) } else if !line.isEmpty { lines.append(line) }
+      }
+      lock.unlock()
+      statuses.forEach(onStatus)
+      // Fin de la tubería: no se vuelve a llamar.
+      if chunk.isEmpty { handle.readabilityHandler = nil }
+    }
+    process.terminationHandler = { _ in done.signal() }
+    do { try process.run() } catch {
+      out.fileHandleForReading.readabilityHandler = nil
+      return .failed(notStarted)
+    }
+    onProcess(process)
+    let timedOut = done.wait(timeout: .now() + runnerLimit) == .timedOut
+    if timedOut, process.isRunning { process.terminate() }
+    // Lo último que escribió antes de salir puede llegar un instante después del final del proceso.
+    Thread.sleep(forTimeInterval: 0.3)
+    out.fileHandleForReading.readabilityHandler = nil
+    lock.lock()
+    if !buffer.isEmpty { lines.append(String(decoding: buffer, as: UTF8.self)) }
+    let last = lines.last?.trimmingCharacters(in: .whitespacesAndNewlines)
+    lock.unlock()
+
+    if let last, last.hasPrefix("error: "), let failure = parseFailure(String(last.dropFirst(7))) { return .failed(failure) }
+    if timedOut {
+      return .failed(StartFailure(
+        reason: "The runner took too long to start its service (over \(Int(runnerLimit)) seconds).",
+        hint: "launchd may be stuck. Check System Settings › General › Login Items › Allow in the Background, or run `backcode` in Terminal.",
+        loginItems: true))
+    }
+    if process.terminationStatus == 0, let last, last.hasPrefix("http") { return .url(last) }
+    return .failed(notStarted)
+  }
+
+  /** El diagnóstico de `backcode app-url` (app-diagnose.ts): message, hint, log y loginItems. */
+  static func parseFailure(_ json: String) -> StartFailure? {
+    guard let data = json.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let message = object["message"] as? String else { return nil }
+    return StartFailure(
+      reason: message,
+      hint: object["hint"] as? String,
+      log: object["log"] as? [String] ?? [],
+      loginItems: object["loginItems"] as? Bool ?? false,
+      canSkipService: object["kind"] as? String != "no-panel")
   }
 
   // El panel se queda en la ventana; cualquier otra dirección, al navegador.
@@ -149,21 +326,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
     failingSince = nil
+    loaded = true
+    watchdog?.cancel()
     spinner.stopAnimation(nil)
     spinner.isHidden = true
+    setStatus("")
   }
 
   // Si el panel se reinicia (actualización), la página vuelve a cargar sola; si la carga falla, se reintenta. Tras 30 s
   // sin respuesta (el servicio no arranca, el puerto lo tiene otro programa…) se avisa en vez de seguir con el spinner.
+  // Cada carga tiene su tiempo máximo (loadTimeout) y, antes de la primera, manda además el límite global (watchdog).
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+    guard !alerting else { return }
     let err = error as NSError
     if err.domain == NSURLErrorDomain && err.code != NSURLErrorCancelled {
       let since = failingSince ?? Date()
       failingSince = since
-      if Date().timeIntervalSince(since) > 30 { return startFailed("The runner's panel isn't responding.") }
+      if !loaded { setStatus("Waiting for the panel…") }
+      if Date().timeIntervalSince(since) > 30 {
+        return startFailed(StartFailure(
+          reason: "The runner's panel isn't responding (\(err.localizedDescription)).",
+          hint: "Retry restarts the background service. If it keeps happening, check that nothing else uses port 47474 (`lsof -iTCP:47474`)."))
+      }
     }
+    let current = attempt
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-      if webView.url == nil, let url = self.panelURL { webView.load(URLRequest(url: url)) } else { webView.reload() }
+      guard current == self.attempt, !self.alerting else { return }
+      if let url = self.panelURL { webView.load(self.panelRequest(url)) } else { webView.reload() }
     }
   }
 

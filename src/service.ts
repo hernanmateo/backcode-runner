@@ -13,6 +13,7 @@ import { APP_DIR, FROM_NPM, IS_BINARY, LOGS_DIR, MANAGED } from "./paths.js";
 
 const exec = promisify(execFile);
 const LABEL = "com.backcode.runner";
+export const SERVICE_LABEL = LABEL;
 const PLIST = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 const UNIT = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user", "backcode-runner.service");
 export const SERVICE_LOG = join(LOGS_DIR, "service.log");
@@ -79,9 +80,10 @@ export async function installService(opts: { executable?: string; keepRunning?: 
     mkdirSync(dirname(PLIST), { recursive: true });
     const domain = `gui/${userInfo().uid}`;
     if (opts.keepRunning) return writeFileSync(PLIST, plist);
-    await exec("launchctl", ["bootout", `${domain}/${LABEL}`]).catch(() => undefined);
+    // Con tiempo máximo: la app de Mac espera a este paso y no se puede quedar colgada en launchctl.
+    await exec("launchctl", ["bootout", `${domain}/${LABEL}`], { timeout: 15_000 }).catch(() => undefined);
     writeFileSync(PLIST, plist);
-    await exec("launchctl", ["bootstrap", domain, PLIST]);
+    await exec("launchctl", ["bootstrap", domain, PLIST], { timeout: 15_000 });
     // RunAtLoad no basta: macOS 27 puede dejar el arranque en espera («speculative») y no lanzarlo nunca.
     await kickService();
     return;
@@ -116,7 +118,7 @@ WantedBy=default.target
 /** Arranca el servicio ya instalado si no está en marcha (sin -k: si ya corre, no lo toca). Solo macOS. */
 export async function kickService(): Promise<void> {
   if (process.platform !== "darwin") return;
-  await exec("launchctl", kickstartArgs(false)).catch(() => undefined);
+  await exec("launchctl", kickstartArgs(false), { timeout: 10_000 }).catch(() => undefined);
 }
 
 /** Argumentos de `launchctl kickstart` para el servicio; con `-k` launchd mata el proceso que haya y lo relanza. */
@@ -128,7 +130,7 @@ export const kickstartArgs = (kill: boolean, uid = userInfo().uid): string[] => 
  * `systemctl --user restart`. Falla si no está instalado.
  */
 export async function restartService(): Promise<void> {
-  if (process.platform === "darwin") await exec("launchctl", kickstartArgs(true));
+  if (process.platform === "darwin") await exec("launchctl", kickstartArgs(true), { timeout: 15_000 });
   else if (process.platform === "linux") await exec("systemctl", ["--user", "restart", "backcode-runner.service"]);
   else throw new Error(`unsupported platform: ${process.platform}`);
 }

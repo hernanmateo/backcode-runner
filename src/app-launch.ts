@@ -7,6 +7,7 @@ import { newer } from "./autoupdate.js";
 import { openBrowser } from "./panel.js";
 import { panelAlive, panelUrl } from "./panel-client.js";
 import { BIN_DIR, readState } from "./paths.js";
+import { diagnose, systemDiagnoseDeps, type Diagnosis } from "./app-diagnose.js";
 import { installService, kickService, restartService, serviceInstalled } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
@@ -21,40 +22,95 @@ export function launchedAsApp(): boolean {
   return process.platform === "darwin" && process.execPath.includes(".app/Contents/MacOS/") && args.length === 0;
 }
 
+/** Lo que devuelve la preparación: la dirección del panel o, si no ha respondido nunca, el porqué. */
+export type AppLaunch = { url: string } | { diagnosis: Diagnosis };
+
 /**
  * Lo que hace la app al abrirse: instala o pone al día la copia de ~/.backcode/bin, deja el servicio y espera al panel.
- * Devuelve su dirección (con el token). La ventana nativa de la app (mac/BackcodeRunner.swift) la carga con `backcode app-url`.
+ * Devuelve su dirección (con el token) o, si el panel no ha respondido, un diagnóstico. La ventana nativa de la app
+ * (mac/BackcodeRunner.swift) lo pide con `backcode app-url`. `onStep`: cada paso, para enseñarlo bajo el spinner.
+ * `noService`: el botón «Start without service» de la app: el panel en segundo plano, sin launchd.
  */
-export async function prepareApp(opts: { retry?: boolean } = {}): Promise<string> {
+export async function prepareApp(opts: { retry?: boolean; noService?: boolean; onStep?: (step: string) => void } = {}): Promise<AppLaunch> {
+  const step = opts.onStep ?? (() => undefined);
+  step("Preparing the runner…");
   const installed = join(BIN_DIR, "backcode");
   const current = existsSync(installed) ? await exec(installed, ["--version"], { timeout: 15_000 }).then((r) => r.stdout.trim(), () => "") : "";
   // Solo hacia delante: si la copia instalada ya se actualizó sola a una versión más nueva que la de la app, se queda.
   if (!current || newer(VERSION, current)) {
+    step("Installing the runner…");
     mkdirSync(BIN_DIR, { recursive: true });
     const tmp = `${installed}.new`;
     copyFileSync(process.execPath, tmp);
     chmodSync(tmp, 0o755);
     // La copia hereda la cuarentena de la descarga: fuera (la app ya pasó Gatekeeper al abrirla).
-    await exec("xattr", ["-d", "com.apple.quarantine", tmp]).catch(() => undefined);
+    await exec("xattr", ["-d", "com.apple.quarantine", tmp], { timeout: 10_000 }).catch(() => undefined);
     renameSync(tmp, installed);
   }
   // BACKCODE_APP_NO_SERVICE (solo para probar la app sin instalar un LaunchAgent) o «Arrancar al iniciar sesión»
   // desactivado a mano: el panel en segundo plano, sin más (no se vuelve a activar por abrir la app).
-  if (process.env.BACKCODE_APP_NO_SERVICE === "1" || readState().autostartOff) {
-    if (!(await panelAlive())) spawn(installed, ["serve"], { detached: true, stdio: "ignore" }).unref();
-    await waitForPanel(panelAlive, sleep);
-  } else if (!serviceInstalled()) {
-    await installService({ executable: installed });
-    await waitForPanel(panelAlive, sleep);
-  } else await wakeService({ retry: !!opts.retry, alive: panelAlive, kick: kickService, restart: restartService, sleep });
-  return panelUrl();
+  const noService = !!opts.noService || process.env.BACKCODE_APP_NO_SERVICE === "1" || !!readState().autostartOff;
+  return bringUpPanel({
+    mode: noService ? "no-service" : serviceInstalled() ? "wake" : "install",
+    retry: !!opts.retry,
+    alive: panelAlive,
+    serve: () => spawn(installed, ["serve"], { detached: true, stdio: "ignore" }).unref(),
+    install: () => installService({ executable: installed }),
+    kick: kickService,
+    restart: restartService,
+    sleep,
+    step,
+    url: panelUrl,
+    diagnose: () => diagnose(systemDiagnoseDeps(!noService)),
+  });
+}
+
+/**
+ * El panel en marcha según el modo (`no-service`: proceso suelto; `install`: instalar el servicio; `wake`: despertar el
+ * que ya está). Si no responde en el tiempo previsto, no devuelve la dirección como si nada: devuelve el diagnóstico.
+ */
+export async function bringUpPanel(d: {
+  mode: "no-service" | "install" | "wake";
+  retry: boolean;
+  alive: () => Promise<boolean>;
+  serve: () => void;
+  install: () => Promise<void>;
+  kick: () => Promise<void>;
+  restart: () => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
+  step: (step: string) => void;
+  url: () => string;
+  diagnose: () => Promise<Diagnosis>;
+}): Promise<AppLaunch> {
+  let up: boolean;
+  if (d.mode === "no-service") {
+    if (!(await d.alive())) {
+      d.step("Starting the panel in the background…");
+      d.serve();
+    }
+    d.step("Waiting for the panel…");
+    up = await waitForPanel(d.alive, d.sleep, 20_000);
+  } else if (d.mode === "install") {
+    d.step("Installing the service…");
+    // Si launchctl falla al cargarlo, el diagnóstico de después dice por qué (no cargado, bloqueado…).
+    const installed = await d.install().then(() => true, () => false);
+    if (installed) d.step("Waiting for the panel…");
+    up = installed && (await waitForPanel(d.alive, d.sleep, 35_000));
+  } else up = await wakeService(d);
+  if (up) return { url: d.url() };
+  d.step("Checking what went wrong…");
+  return { diagnosis: await d.diagnose() };
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** El servicio tarda unos segundos en abrir el panel la primera vez: hasta ~30 s. */
-async function waitForPanel(alive: () => Promise<boolean>, wait: (ms: number) => Promise<void>): Promise<boolean> {
-  for (let i = 0; i < 60; i++) {
+/**
+ * Espera al panel hasta `ms` (por defecto ~30 s): cuenta tanto las vueltas (cada una, 500 ms de espera) como el reloj,
+ * porque cada consulta puede tardar hasta 3 s si el puerto acepta la conexión pero no contesta.
+ */
+async function waitForPanel(alive: () => Promise<boolean>, wait: (ms: number) => Promise<void>, ms = 30_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  for (let i = 0; i < ms / 500 && Date.now() < end; i++) {
     if (await alive()) return true;
     await wait(500);
   }
@@ -65,6 +121,7 @@ async function waitForPanel(alive: () => Promise<boolean>, wait: (ms: number) =>
  * Servicio ya instalado y el panel no responde. Primera vez: `kickstart` sin -k (instalado pero sin arrancar, launchd lo
  * deja en espera; si solo está arrancando, no se toca). Solo con el panel ya visto sin responder (tras la espera, o al
  * darle a «Reintentar» en la app) se relanza con -k: el proceso puede existir colgado o con un ejecutable viejo.
+ * Las esperas suman como mucho ~40 s, para que la app reciba el diagnóstico antes de su propio límite (60 s).
  */
 export async function wakeService(d: {
   retry: boolean;
@@ -72,20 +129,37 @@ export async function wakeService(d: {
   kick: () => Promise<void>;
   restart: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
+  step?: (step: string) => void;
 }): Promise<boolean> {
+  const step = d.step ?? (() => undefined);
   if (await d.alive()) return true;
-  if (d.retry) await d.restart().catch(() => undefined);
-  else {
-    await d.kick();
-    if (await waitForPanel(d.alive, d.sleep)) return true;
+  if (d.retry) {
+    step("Restarting the service…");
     await d.restart().catch(() => undefined);
+    step("Waiting for the panel…");
+    return waitForPanel(d.alive, d.sleep, 30_000);
   }
-  return waitForPanel(d.alive, d.sleep);
+  step("Starting the service…");
+  await d.kick();
+  step("Waiting for the panel…");
+  if (await waitForPanel(d.alive, d.sleep, 15_000)) return true;
+  step("Restarting the service…");
+  await d.restart().catch(() => undefined);
+  step("Waiting for the panel…");
+  return waitForPanel(d.alive, d.sleep, 22_000);
 }
+
+/** Una línea de `backcode app-url` para la app: progreso, la dirección (siempre la última) o el error en JSON. */
+export const appLine = {
+  step: (text: string) => `status: ${text}`,
+  result: (r: AppLaunch) => ("url" in r ? r.url : `error: ${JSON.stringify(r.diagnosis)}`),
+};
 
 /** Abierto sin la ventana nativa (el ejecutable directamente desde una .app): el panel en el navegador. */
 export async function launchApp(): Promise<void> {
-  openBrowser(await prepareApp());
+  const result = await prepareApp();
+  if ("url" in result) openBrowser(result.url);
+  else console.error(`${result.diagnosis.message}\n${result.diagnosis.hint}`);
   // Que dé tiempo a lanzar el navegador antes de salir.
   await new Promise((r) => setTimeout(r, 1500));
   process.exit(0);

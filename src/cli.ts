@@ -49,8 +49,16 @@ switch (command) {
     // Para la app de Mac: prepara la instalación y el servicio, y devuelve la dirección del panel (la última línea).
     const { prepareApp } = await import("./app-launch.js");
     // --retry: el botón «Retry» de la app (el panel ya no respondía): se relanza el servicio con `kickstart -k`.
-    console.log(await prepareApp({ retry: rest.includes("--retry") }));
-    process.exit(0);
+    // --no-service: «Start without service»: el panel en segundo plano, sin launchd.
+    // Antes, una línea «status: …» por paso (la app la enseña bajo el spinner); la última, la dirección o «error: {json}».
+    const { appLine } = await import("./app-launch.js");
+    const result = await prepareApp({
+      retry: rest.includes("--retry"),
+      noService: rest.includes("--no-service"),
+      onStep: (step) => console.log(appLine.step(step)),
+    });
+    console.log(appLine.result(result));
+    process.exit("url" in result ? 0 : 2);
     break;
   }
   case "task": {

@@ -423,6 +423,18 @@ Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md
 
 Set `BACKCODE_HOME` to use another root and `BACKCODE_PANEL_PORT` to use another port.
 
+## Troubleshooting: the Mac app keeps loading
+
+The app shows the current step under the spinner and, if the panel doesn't answer within ~60 s, an alert with the
+reason (service not loaded or waiting, blocked in Login Items, port 47474 taken, service crashing on start) and buttons
+to **Retry**, **Open log**, **Open Login Items** and **Start without service**. To check by hand:
+
+- **Is the service running?** `launchctl print gui/$(id -u)/com.backcode.runner` (look at `state`, `pid` and `last exit code`). Not found: it isn't loaded; reopen the app or run `backcode` once.
+- **Blocked by macOS?** System Settings › General › Login Items › *Allow in the Background*: turn on Backcode (or `backcode`). `launchctl print-disabled gui/$(id -u)` lists it as disabled when it's off.
+- **Port taken?** `lsof -nP -iTCP:47474 -sTCP:LISTEN` shows who listens on the panel's port. Quit that process (`kill <PID>`) or set `BACKCODE_PANEL_PORT`.
+- **Crashing on start?** `tail -n 50 ~/.backcode/logs/service.log`.
+- Running `backcode` in Terminal starts the panel without the service, which helps to see the error.
+
 ## FAQ
 
 <details>
