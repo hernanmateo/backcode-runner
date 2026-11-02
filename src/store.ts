@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { hostname } from "node:os";
 import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
@@ -977,7 +978,45 @@ export class Store {
 
   /** Latido y estado de este ordenador (users/{uid}/machines/{machineId}): solo booleanos y metadatos, nunca tokens. */
   async saveMachineStatus(machineId: string, status: Record<string, unknown>): Promise<void> {
-    await setDoc(doc(this.db, "users", this.uid, "machines", machineId), { ...status, lastSeen: serverTimestamp() });
+    // merge: conserva `metrics`, que publica el monitor aparte (monitor.ts).
+    await setDoc(doc(this.db, "users", this.uid, "machines", machineId), { ...status, lastSeen: serverTimestamp() }, { merge: true });
+  }
+
+  private metricsGroups: { at: number; ids: string[] } | null = null;
+  /**
+   * Métricas agregadas de este ordenador (monitor.ts): en su ficha (users/{uid}/machines) y, para que las vea el equipo,
+   * en groups/{gid}/machines/{machineId} de cada grupo del que soy miembro.
+   */
+  async saveMachineMetrics(machineId: string, metrics: Record<string, unknown>): Promise<void> {
+    // Si la ficha aún no existe (sin el primer latido) las reglas no la dejan crear solo con métricas: se sigue con el equipo.
+    await setDoc(doc(this.db, "users", this.uid, "machines", machineId), { metrics, lastSeen: serverTimestamp() }, { merge: true }).catch(() => undefined);
+    if (!this.metricsGroups || Date.now() - this.metricsGroups.at > 30 * 60_000) {
+      const groups = await getDocs(query(collection(this.db, "groups"), where("memberIds", "array-contains", this.uid)));
+      this.metricsGroups = { at: Date.now(), ids: groups.docs.map((g) => g.id) };
+    }
+    const host = hostname().replace(/\.local$/, "").slice(0, 100) || "?";
+    await Promise.all(
+      this.metricsGroups.ids.map((gid) =>
+        setDoc(doc(this.db, "groups", gid, "machines", machineId), { uid: this.uid, host, metrics, lastSeen: serverTimestamp() }).catch(() => undefined),
+      ),
+    );
+  }
+
+  /** Límites de tareas a la vez: el personal de este proyecto (runnerSettings/{uid}) y el de este ordenador. */
+  watchLimits(machineId: string, onChange: (limits: { project: unknown; machine: unknown }) => void): () => void {
+    const current = { project: undefined as unknown, machine: undefined as unknown };
+    const emit = () => onChange({ ...current });
+    const a = onSnapshot(doc(this.project(), "runnerSettings", this.uid), (d) => ((current.project = d.get("maxParallel")), emit()), () => undefined);
+    const b = onSnapshot(doc(this.db, "users", this.uid, "machineSettings", machineId), (d) => ((current.machine = d.get("maxParallel")), emit()), () => undefined);
+    return () => {
+      a();
+      b();
+    };
+  }
+
+  /** Por qué esperan en cola mis tareas de este proyecto (scheduler.ts): lo enseña la app en su tarjeta. */
+  async setQueue(queue: { reason: string; featureIds: string[] } | null): Promise<void> {
+    await updateDoc(doc(this.project(), "runners", this.uid), { queue: queue ? { ...queue, at: serverTimestamp() } : null });
   }
 
   /** «Conectar en <host>» / «Clonar en <host>» pedidos desde la app a este ordenador. */

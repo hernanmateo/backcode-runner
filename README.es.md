@@ -767,6 +767,18 @@ técnicas, pero el agente pierde contexto sobre por qué existen.
 Las genera la app; las puedes ajustar a mano en `~/.backcode/config/<proyecto>.env` (después, reinicia ese proyecto en el panel). Ver [`.env.example`](.env.example) para todas
 (límites por tarea, modelo, dominios permitidos, rutas protegidas, mapa del proyecto…).
 
+## Tareas en paralelo (runner ≥ 1.2)
+
+Cada tarea sigue en su propio worktree y rama, pero un proyecto puede ejecutar varias a la vez:
+
+- **Límite por proyecto (personal)**: cuántas tareas de ese proyecto ejecuta *tu* ordenador a la vez. Se elige en los ajustes del proyecto en la app (`projects/{pid}/runnerSettings/{uid}`). Por defecto **1**, como antes.
+- **Límite por ordenador**: máximo de tareas a la vez en ese ordenador, sumando todos sus proyectos. Se elige en Perfil › Tu ordenador (`users/{uid}/machineSettings/{machineId}`). Por defecto, sin tope. Los runners del mismo ordenador comparten los huecos en `~/.backcode/slots` (un fichero por tarea en marcha; los de procesos muertos se limpian solos).
+- Nunca arrancan a la vez dos tareas creadas desde la misma conversación del runner.
+- **Freno automático**: aunque los límites lo permitan, no se arranca una tarea nueva con presión de memoria alta o con menos de 5 GB de disco libre. Espera en cola y el motivo se publica en `projects/{pid}/runners/{uid}.queue`, que la app enseña en su tarjeta. Se vuelve a mirar cada 30 s.
+- **Monitor de la máquina**: cada minuto uno de los runners del ordenador publica solo métricas agregadas (CPU, RAM, presión de memoria, RAM real por sesión de Claude Code, disco libre, tamaño de los worktrees, tareas en marcha y un número recomendado) en `users/{uid}/machines/{id}.metrics` y en `groups/{gid}/machines/{id}` para el equipo.
+
+Los runners antiguos no saben nada de esto y siguen de una en una. Ver `src/scheduler.ts`, `src/slots.ts` y `src/monitor.ts`.
+
 ## Desarrollo
 ```bash
 git clone https://github.com/hernanmateo/backcode-runner.git && cd backcode-runner
