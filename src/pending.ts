@@ -142,7 +142,7 @@ export function scopeOf(target: DeployTarget): Scope {
   return { covers: target.dir || "repo", rank: 2, match: (f) => !dir || f.startsWith(dir) };
 }
 
-const NATIVE = /(^|\/)(app\.json|app\.config\.[cm]?[jt]s|eas\.json|ios\/|android\/|plugins\/|modules\/)/;
+export const NATIVE = /(^|\/)(app\.json|app\.config\.[cm]?[jt]s|eas\.json|ios\/|android\/|plugins\/|modules\/)/;
 
 /** `fetched`: punta de la rama principal recién traída (refreshPlan ya hace el fetch, uno por cálculo); sin ella, se trae aquí. */
 export async function computePlan(cfg: RunnerConfig, store: Store, deploys: DeployTarget[], app: ExpoApp | null, fetched?: string): Promise<DeployPlan> {

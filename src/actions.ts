@@ -16,6 +16,7 @@ import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
 import { otaScriptArgs, promoteCheck } from "./ota.js";
+import { appScheme, nativeFiles, prChannel, prNumberOf, prOtaArgs, prOtaLink } from "./pr-ota.js";
 import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
 import { scopeOf } from "./pending.js";
@@ -29,7 +30,7 @@ import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from 
 export interface Action {
   /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
   id?: string;
-  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview";
+  type: "merge" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview" | "prOta";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
   /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */
@@ -99,6 +100,12 @@ export interface ActionResult {
   log?: string;
   /** OTA: archivos sin commitear que impidieron publicar (la app ofrece «Commit y publicar»). */
   dirty?: string[];
+  /** OTA de un PR (prOta): su canal de EAS Update y los enlaces que abren la app en él o la devuelven a su canal. */
+  channel?: string;
+  link?: string;
+  backLink?: string;
+  /** OTA de un PR: ficheros nativos que impiden publicarlo por OTA. */
+  native?: string[];
   /** OTA, build y despliegue hechos bien: tareas que entraron en él (su detalle en la app). */
   features?: DeployedTask[];
 }
@@ -158,6 +165,8 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   if (action.type === "closePr") return closePr(cfg, store, host, action);
   if (action.type === "promote") return promote(cfg, store, host);
   if (action.type === "syncPreview") return syncPreview(cfg, host);
+  // «Prova aquest PR al teu mòbil»: OTA solo del PR de la tarea, en su propio canal de EAS Update (pr-<número>).
+  if (action.type === "prOta") return publishPrOta(cfg, store, host, action.featureId ?? "");
   if (action.type === "mergePr") {
     const done = await mergeExternal(cfg, host, action.prUrl ?? "");
     if (done.ok) await syncLocal(cfg);
@@ -522,6 +531,62 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
     return { ok: true, result: { url, sha: commit, ...(version ? { version } : {}), ...(ota.updateId ? { updateId: ota.updateId } : {}), features, log: `${smoke ? `${smoke.detail}\n` : skipSmoke ? `${t("smoke.skipped")}\n` : ""}${out.slice(-1400)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    await removeWorktree(cfg.repoPath, wt);
+    // Por si git no pudo quitarla: la copia lleva los .env copiados.
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+/**
+ * «Prova aquest PR al teu mòbil»: publica por EAS Update SOLO el código del PR de una tarea (la punta de su rama) en un
+ * canal propio del PR (`pr-<número>`, ver pr-ota.ts), con las variables de preview (mismo runtimeVersion que la build
+ * de preview). Nunca toca production ni el canal preview compartido. Se puede repetir tras nuevos commits: publica la
+ * versión nueva en el mismo canal. Si el PR cambia código nativo no se publica (no llegaría por OTA): se dice cuáles.
+ */
+async function publishPrOta(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string): Promise<{ ok: boolean; result: ActionResult }> {
+  if (!/^[A-Za-z0-9]{1,64}$/.test(featureId)) return { ok: false, result: { error: t("git.badFeatureId", { id: featureId }) } };
+  const [f, status] = await Promise.all([store.featureInfo(featureId), store.featureStatus(featureId)]);
+  const n = prNumberOf(f.prUrl);
+  if (status !== "done" || !f.branch || !f.prUrl || n === null) return { ok: false, result: { error: t("act.prOtaNotReady") } };
+  if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
+  // Solo un PR abierto: ni mergeado ni cerrado.
+  const pr = await host.prState(f.prUrl).catch(() => null);
+  if (pr?.state !== "open") return { ok: false, result: { error: t("act.prOtaNotReady"), url: f.prUrl } };
+  const channel = prChannel(n);
+
+  await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, f.branch]);
+  const commit = await gitIn(cfg.repoPath, ["rev-parse", "FETCH_HEAD"]);
+  const app = await findExpoApp(cfg.repoPath, commit);
+  if (!app) return { ok: false, result: { error: t("act.notExpo") } };
+  if (!app.ota) return { ok: false, result: { error: otaMissing() } };
+  if (app.ota !== "eas" && app.otaProvider !== "eas") return { ok: false, result: { error: t("act.prOtaEasOnly") } };
+  // Cambios nativos del PR respecto a la rama base: no pueden llegar por OTA (la app ofrece la versión de desarrollo).
+  const base = `${cfg.remote}/${taskBase(cfg.baseBranch)}`;
+  const changed = (await gitIn(cfg.repoPath, ["diff", "--name-only", `${base}...${commit}`]).catch(() => "")).split("\n").filter(Boolean);
+  const native = nativeFiles(changed);
+  if (native.length) return { ok: false, result: { error: t("act.prOtaNative", { files: native.slice(0, 10).join(", ") }), native: native.slice(0, 50), channel, sha: commit, url: f.prUrl } };
+
+  const message = `PR #${n}: ${f.title}`.slice(0, 200);
+  const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_prota", commit);
+  const dir = join(wt, app.appDir);
+  const repoAppDir = join(cfg.repoPath, app.appDir);
+  try {
+    await installFrozen(app, wt, dir);
+    await copyLocalFiles(cfg.repoPath, wt, [".env", ".env.local", join(app.appDir, ".env"), join(app.appDir, ".env.local")]);
+    const env = profileEnv(dir, "preview");
+    // Prueba de arranque obligatoria, como en cualquier OTA: un PR que cierra la app al arrancar no se publica.
+    const smoke = await smokeTest(dir, env, cfg.worktreesDir, repoAppDir);
+    if (!smoke.ok) return { ok: false, result: { error: t("smoke.failed", { detail: smoke.detail }), sha: commit, channel } };
+    const scheme = appScheme((await appConfig(dir, env)) as { scheme?: unknown } | null);
+    const out = await exec(prOtaArgs(channel, message), dir);
+    const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
+    const ota = otaInfoFrom(out);
+    const version = ota.runtimeVersion ?? (await readVersion(readFrom(dir), ""));
+    const links = scheme ? { link: prOtaLink(scheme, channel), backLink: prOtaLink(scheme, "") } : {};
+    return { ok: true, result: { url, sha: commit, channel, ...links, ...(version ? { version } : {}), ...(ota.updateId ? { updateId: ota.updateId } : {}), log: `${smoke.detail}\n${out.slice(-1400)}` } };
+  } catch (err) {
+    return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit, channel } };
   } finally {
     await removeWorktree(cfg.repoPath, wt);
     // Por si git no pudo quitarla: la copia lleva los .env copiados.
