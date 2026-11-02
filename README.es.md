@@ -171,6 +171,7 @@ Todo lo del panel se puede hacer también con comandos (`npm i -g backcode` deja
 | `backcode connect` | Conecta un proyecto: pega la configuración de la app (⌘V + Enter). Si el panel está en marcha, lo arranca él; si no, en esta terminal. |
 | `backcode start [proyecto…]` | Arranca en esta terminal todos los proyectos (o los indicados), con los logs juntos (`[proyecto]` delante). |
 | `backcode service install` / `uninstall` / `status` | Arrancar al iniciar sesión (lo mismo que el interruptor del panel). Log en `~/.backcode/logs/service.log`. |
+| `backcode service restart` | Relanza el servicio aunque su proceso siga ahí (colgado, o con un ejecutable viejo tras actualizarse) cuando el panel no responde. En macOS es `launchctl kickstart -k gui/$(id -u)/com.backcode.runner`. |
 | `backcode deploys [--json] [--project <id>]` | Despliegues del proyecto en su rama principal (`id`, `name`, `dir`, `provider`, `source`; sin comandos ni secretos). Desde el repo o un worktree suyo, o con `--project`. |
 | `backcode deployed <nombre> [--sha <commit>] [--project <id>]` | Apunta un despliegue hecho a mano (desde la terminal, otro ordenador…) para que «Pendiente de desplegar» lo sepa. El nombre, como lo enseña `backcode deploys`; el commit, `HEAD` o el indicado, y tiene que estar ya en la rama principal remota. Solo admins. |
 | `backcode awake [off\|plugged\|always]` | Mantener el ordenador despierto, como en el panel (lo aplica en menos de un minuto). Sin modo: el actual, el de la app y el que se aplica. |

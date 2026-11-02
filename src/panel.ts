@@ -16,7 +16,7 @@ import { hasSavedApiKey, removeApiKey, saveApiKey } from "./anthropic.js";
 import { FIX_ACTIONS, fixesFor, runFix, type FixAction } from "./fixes.js";
 import { installedClaude, machineReport, type Check } from "./preflight.js";
 import { pluginInRepos, pluginInstalls, type RepoPlugin } from "./plugin.js";
-import { disableAutostart, installService, isService, serviceInstalled, serviceSupported, stopService, uninstallService } from "./service.js";
+import { disableAutostart, installService, isService, kickstartSelf,serviceInstalled, serviceSupported, stopService, uninstallService } from "./service.js";
 import { startRemoteControl } from "./remote-control.js";
 import { bitbucketAccountState, connectProject, parseConfig, saveAccountBitbucket, type Answers } from "./setup.js";
 import { Supervisor } from "./supervisor.js";
@@ -89,6 +89,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   void refreshChecks();
   let updateReady = false;
   let leaving: string | null = null;
+  // Ya se ha pedido a launchd que nos relance (`kickstart -k`): su SIGTERM no es un «apagar».
+  let kickstarted = false;
   let panelDevices: Device[] = [];
   let devicePlatforms: DevicePlatform[] = [];
   const machineAwake = new MachineAwake();
@@ -161,6 +163,9 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
     else await supervisor.stopAll();
     server.close();
     if (why === "restart" && !service) return relaunch();
+    // Como servicio de launchd: `launchctl kickstart -k` aparte, que lo mata y lo relanza de una vez (con solo KeepAlive,
+    // macOS 27 puede dejarlo en espera, y además hay 30 s de ThrottleInterval). Si a los 10 s seguimos aquí, como siempre.
+    if (service && why === "restart" && (kickstarted = await kickstartSelf())) await new Promise((r) => setTimeout(r, 10_000));
     // El ejecutable de Bun a veces se queda colgado en process.exit: como servicio, launchd lo relanza igual, así que se
     // termina con SIGKILL (los runners ya han salido).
     if (service && why === "restart") process.kill(process.pid, "SIGKILL");
@@ -394,7 +399,8 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
   };
   void lookDevices();
   setInterval(() => void lookDevices(), 30_000).unref();
-  const shutdown = () => void leave("quit");
+  // Tras el `launchctl kickstart -k` de un reinicio (los runners ya han salido), su SIGTERM nos relanza: salir y ya.
+  const shutdown = () => (kickstarted ? process.exit(0) : void leave("quit"));
   process.on("SIGTERM", shutdown);
   // Ctrl+C ya les llega a los runners (mismo grupo de procesos); aquí se espera a que terminen.
   process.on("SIGINT", () => {

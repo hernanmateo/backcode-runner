@@ -374,6 +374,7 @@ Everything in the panel also works from the terminal. `install.sh` puts `backcod
 | `backcode connect` | Connect a project by pasting the configuration from the app. |
 | `backcode start [project…]` | Run all projects (or the given ones) in this terminal, with prefixed logs. |
 | `backcode service install` · `uninstall` · `status` | Start at login, same as the switch in the panel. |
+| `backcode service restart` | Relaunch the service even if its process is still there (hung, or on an old binary after an update) when the panel doesn't answer. On macOS it's `launchctl kickstart -k gui/$(id -u)/com.backcode.runner`. |
 | `backcode deploys [--json] [--project <id>]` | The project's deploys on its main branch (`id`, `name`, `dir`, `provider`, `source`; no commands or secrets). From the repo or one of its worktrees, or with `--project`. |
 | `backcode deployed <name> [--sha <commit>] [--project <id>]` | Record a deploy done by hand (from the terminal, another computer…) so Pending deploys knows it. The name, as `backcode deploys` shows it; the commit, `HEAD` or the given one, and it must already be on the remote main branch. Admins only. |
 | `backcode awake [off\|plugged\|always]` | Keep the computer awake, same as in the panel (it applies it within a minute). No mode: shows the current one, the app's and the one applied. |
@@ -484,7 +485,9 @@ Dock icon: the runner keeps working in the background (closing the window stops 
 it, run <code>backcode service uninstall</code> and delete the app and <code>~/.backcode</code>. If the panel doesn't answer within
 about 30 seconds (the service won't start, another program holds port 47474…), the window says so, with <em>Retry</em> and
 <em>Open log</em> (<code>~/.backcode/logs/service.log</code>), instead of spinning forever. If the service is installed but launchd
-hasn't started it (macOS 27 sometimes leaves the launch pending), the app starts it when it opens.
+hasn't started it (macOS 27 sometimes leaves the launch pending), the app starts it when it opens; if it still doesn't answer
+after that wait, or when you press <em>Retry</em>, it relaunches it with <code>launchctl kickstart -k</code> (same as
+<code>backcode service restart</code>).
 </details>
 
 <details>

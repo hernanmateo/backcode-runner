@@ -7,7 +7,7 @@ import { newer } from "./autoupdate.js";
 import { openBrowser } from "./panel.js";
 import { panelAlive, panelUrl } from "./panel-client.js";
 import { BIN_DIR, readState } from "./paths.js";
-import { installService, kickService, serviceInstalled } from "./service.js";
+import { installService, kickService, restartService, serviceInstalled } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
 // actualizaciones del runner van a esa copia; la app la sustituye entera mac-app-update.ts), deja el runner como servicio («Arrancar al
@@ -25,7 +25,7 @@ export function launchedAsApp(): boolean {
  * Lo que hace la app al abrirse: instala o pone al día la copia de ~/.backcode/bin, deja el servicio y espera al panel.
  * Devuelve su dirección (con el token). La ventana nativa de la app (mac/BackcodeRunner.swift) la carga con `backcode app-url`.
  */
-export async function prepareApp(): Promise<string> {
+export async function prepareApp(opts: { retry?: boolean } = {}): Promise<string> {
   const installed = join(BIN_DIR, "backcode");
   const current = existsSync(installed) ? await exec(installed, ["--version"], { timeout: 15_000 }).then((r) => r.stdout.trim(), () => "") : "";
   // Solo hacia delante: si la copia instalada ya se actualizó sola a una versión más nueva que la de la app, se queda.
@@ -42,13 +42,45 @@ export async function prepareApp(): Promise<string> {
   // desactivado a mano: el panel en segundo plano, sin más (no se vuelve a activar por abrir la app).
   if (process.env.BACKCODE_APP_NO_SERVICE === "1" || readState().autostartOff) {
     if (!(await panelAlive())) spawn(installed, ["serve"], { detached: true, stdio: "ignore" }).unref();
-  } else if (!serviceInstalled()) await installService({ executable: installed });
-  // Instalado pero sin arrancar (launchd puede dejarlo en espera): que arranque ya.
-  else if (!(await panelAlive())) await kickService();
-
-  // El servicio tarda unos segundos en abrir el panel la primera vez.
-  for (let i = 0; i < 60 && !(await panelAlive()); i++) await new Promise((r) => setTimeout(r, 500));
+    await waitForPanel(panelAlive, sleep);
+  } else if (!serviceInstalled()) {
+    await installService({ executable: installed });
+    await waitForPanel(panelAlive, sleep);
+  } else await wakeService({ retry: !!opts.retry, alive: panelAlive, kick: kickService, restart: restartService, sleep });
   return panelUrl();
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** El servicio tarda unos segundos en abrir el panel la primera vez: hasta ~30 s. */
+async function waitForPanel(alive: () => Promise<boolean>, wait: (ms: number) => Promise<void>): Promise<boolean> {
+  for (let i = 0; i < 60; i++) {
+    if (await alive()) return true;
+    await wait(500);
+  }
+  return alive();
+}
+
+/**
+ * Servicio ya instalado y el panel no responde. Primera vez: `kickstart` sin -k (instalado pero sin arrancar, launchd lo
+ * deja en espera; si solo está arrancando, no se toca). Solo con el panel ya visto sin responder (tras la espera, o al
+ * darle a «Reintentar» en la app) se relanza con -k: el proceso puede existir colgado o con un ejecutable viejo.
+ */
+export async function wakeService(d: {
+  retry: boolean;
+  alive: () => Promise<boolean>;
+  kick: () => Promise<void>;
+  restart: () => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  if (await d.alive()) return true;
+  if (d.retry) await d.restart().catch(() => undefined);
+  else {
+    await d.kick();
+    if (await waitForPanel(d.alive, d.sleep)) return true;
+    await d.restart().catch(() => undefined);
+  }
+  return waitForPanel(d.alive, d.sleep);
 }
 
 /** Abierto sin la ventana nativa (el ejecutable directamente desde una .app): el panel en el navegador. */
