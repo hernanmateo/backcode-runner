@@ -145,7 +145,45 @@ ones they pick, **in a PR, the Backcode way**:
 
 Once it's merged, the buttons show up in the app's **Deploys** tab within a few minutes.
 
-### 6.3 The plugin, on for the whole team
+### 6.3 CI
+
+Backcode only merges a PR and deploys when its checks are green. With no CI there's nothing to check: it merges and
+deploys **without testing anything** (the app shows a «No CI» badge). Backcode tasks can't add CI (for safety they can't
+touch it), so this is the place to do it, with the user watching.
+
+**Detect** it exactly like the **CI** section of `/backcode:doctor`: CI files on `<remote>/<base>`
+(`.github/workflows/*.yml`, `.gitlab-ci.yml`, `bitbucket-pipelines.yml`, `.circleci/config.yml`, `azure-pipelines.yml`,
+`Jenkinsfile`, `.buildkite/`, `.woodpecker`, `.drone.yml`) or, on GitHub with `gh`, checks on its latest commit. Has CI:
+one ✓ line and move on.
+
+No CI: say it in one line (a warning, not an error) and **propose a CI fitted to this project**. Read only versioned files
+on the main branch (`git ls-files`, `git show <remote>/<base>:<file>`); don't run or install anything to find out:
+
+- **Host** (from `git remote get-url <remote>` and step 1 of the app): github.com → GitHub Actions
+  (`.github/workflows/ci.yml`); gitlab → `.gitlab-ci.yml`; bitbucket.org → `bitbucket-pipelines.yml` (remind them to enable
+  Pipelines in the repo settings). Anything else: tell them what you'd do and ask which CI they use.
+- **Stack and package manager**: the lockfile decides (`package-lock.json` → `npm ci`, `pnpm-lock.yaml` → pnpm with
+  `--frozen-lockfile`, `yarn.lock` → yarn, `bun.lockb`/`bun.lock` → bun); the Node version from `.nvmrc`,
+  `.node-version` or `engines.node` (else the current LTS). Without JavaScript: `pyproject.toml`/`requirements*.txt`,
+  `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`/`build.gradle`, a `Makefile`… with their usual install and test commands.
+- **Commands**: only the scripts the project really has — `test`, `lint`, `typecheck` / `tsc` / `check`, `build` — in each
+  part that has its own `package.json` (a monorepo or workspaces: one job or step per part, with its `working-directory`).
+  Skip watch modes, e2e that need real services or secrets, and anything that deploys or publishes. If there are no tests
+  or checks at all, say so: a CI that only installs and builds still catches broken builds.
+- Trigger on pull requests and on pushes to the main branch; no secrets, no deploy steps.
+
+Show the user the file you'd create and the commands it runs, and ask. If they accept, **in a PR, the Backcode way**, never
+on the main branch:
+
+1. `backcode task start "Añadir CI al repo"` (in the user's language).
+2. In that worktree, create the file. If you can, run the same commands locally there first to check they pass; if one
+   fails for a reason unrelated to the CI (a test that's already red), keep it and say so in the PR.
+3. Commit and run `backcode task pr --title "<same title>" --body-file <file>`: what it checks, and that from then on
+   Backcode waits for these checks to be green before merging and deploying.
+
+The PR itself runs the new CI: tell the user to check it's green before merging it from the app.
+
+### 6.4 The plugin, on for the whole team
 
 If the repo's `.claude/settings.json` doesn't have `"enabledPlugins": { "backcode@backcode": true }`, offer to add it so
 everyone who opens the repo in Claude Code gets the plugin (and the Backcode guidelines). Add the marketplace too, so Claude
@@ -160,14 +198,14 @@ never with a commit to the main branch:
 
 Tell the user the PR is on the board, ready to review and merge from the app.
 
-### 6.4 Keep this computer awake
+### 6.5 Keep this computer awake
 
 Ask: "Do you want this computer to keep picking up tasks while you're not using it? **No** / **Plugged in** (recommended on
 laptops) / **Always**". Apply it with `backcode awake off`, `backcode awake plugged` or `backcode awake always` (`backcode awake`
 alone shows the current mode, from the panel and from the app). Mention the limit: with the lid closed and no external
 display, a Mac sleeps anyway.
 
-### 6.5 Project guidelines
+### 6.6 Project guidelines
 
 Run `echo '{"cwd":"<repo>"}' | backcode hook session-start`. If it prints JSON with the guidelines (`additionalContext`), the
 project has them on: explain in two lines that every change goes through `/backcode:feature` (its own worktree, and a PR
@@ -184,6 +222,7 @@ Show a short checklist with ✓ / ✗, and for every ✗ the exact command or st
 - GitHub / Bitbucket access
 - Deploy tool sessions (one line per provider)
 - Deploys declared (or their PR)
+- CI (or its PR; no CI is a warning)
 - Plugin on in the repo (or its PR)
 - Keep awake
 - Guidelines
