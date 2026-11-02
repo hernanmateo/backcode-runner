@@ -242,7 +242,14 @@ would have to be published from a public repo, such as the releases one.
   or prints secrets.
 - **`/backcode:doctor`** finds out why a project is stuck, tasks don't start or PRs don't open, and fixes it. It also checks
   the repo's CI: without it Backcode merges and deploys without checking anything, so it warns (not an error) and offers to
-  create it in a PR. Backcode tasks can't touch the CI, so this is the way to add it.
+  create it in a PR. Backcode tasks can't touch the CI, so this is one way to add it. The other is **Set it up with
+  Claude Code** in the app's «CI and checks» screen (runners that announce `ciSetup`): a CI task (`kind: "ci"`, created only
+  by the server) and the one narrow exception to the rule. The runner enforces its scope, not just the prompt: it can only
+  write `.github/workflows/*.yml` (GitHub) or `bitbucket-pipelines.yml` (Bitbucket) plus docs (`docs/**/*.md`, root `*.md`),
+  in the guard hook, in `open_pull_request` and in the review fix; it has no Bash and can't read `.env`, `.npmrc`, keys or
+  credentials. It uses the project's real scripts and references secrets by name (`${{ secrets.NAME }}` / `$NAME`); the PR
+  lists which ones to create and how (`gh secret set NAME`). Its draft PR is never merged or deployed by Backcode, not even
+  in auto mode: you review it and merge it by hand.
 
 It drives the same `backcode` commands you can run yourself (`backcode status`, `backcode connect --clone --no-start`…).
 
@@ -491,6 +498,18 @@ Optional, off by default. When a project admin sets a **preview branch** in the 
 - handles **Sync** (`syncPreview`): brings the base branch back into the preview branch (fast-forward or merge, never forced); with conflicts or a protected branch it opens a PR instead.
 
 Without a preview branch nothing changes. See `src/environments.ts`.
+
+## Tasks in parallel (runner ≥ 1.2)
+
+Each task still gets its own worktree and branch, but a project can now run several at once:
+
+- **Per-project limit (personal)**: how many tasks of that project *your* computer runs at once. Set in the project settings in the app (`projects/{pid}/runnerSettings/{uid}`). Default **1**, as before.
+- **Per-computer limit**: maximum tasks at once on that computer, across all its projects. Set in Profile › Your computer (`users/{uid}/machineSettings/{machineId}`). Default: no cap (each project keeps its own limit, as before). The runners of the same computer share slots in `~/.backcode/slots` (one file per running task; files from dead processes are cleaned up), so it works with the panel and with runners started by hand.
+- Two tasks created from the same runner conversation never start at the same time (they usually touch the same files).
+- **Automatic brake**: even if the limits allow it, no new task starts under high memory pressure (macOS `kern.memorystatus_vm_pressure_level`; Linux `MemAvailable` < 10 %) or with less than 5 GB of free disk. The task waits in the queue and the reason is published in `projects/{pid}/runners/{uid}.queue`, which the app shows on its card. It is checked again every 30 s.
+- **Machine monitor**: every minute one of the computer's runners publishes aggregated metrics only (CPU load and cores, total RAM, memory pressure, real RAM per Claude Code session, free disk, worktrees size, running tasks and a recommended number of tasks at once) to `users/{uid}/machines/{id}.metrics` and to `groups/{gid}/machines/{id}` for the team. No process names or paths.
+
+Older runners ignore all of this and keep running one task at a time. See `src/scheduler.ts`, `src/slots.ts` and `src/monitor.ts`.
 
 ## Development
 

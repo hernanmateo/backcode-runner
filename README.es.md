@@ -60,7 +60,14 @@ scripts reales `test`/`lint`/`typecheck`/`build`; GitHub Actions, GitLab CI o Bi
 Backcode), pregunta si mantener el ordenador despierto (`backcode awake`), explica las pautas del proyecto y acaba con una lista
 ✓/✗. Nunca lee `~/.backcode/config/` ni imprime secretos. `/backcode:doctor` diagnostica y arregla lo que falle, y
 también mira la CI: sin ella Backcode mergea y despliega sin comprobar nada, así que lo avisa (aviso, no error) y ofrece crearla en
-un PR (las tareas de Backcode no pueden tocar la CI, así que esta es la forma de añadirla). Usa los mismos
+un PR (las tareas de Backcode no pueden tocar la CI, así que esta es una forma de añadirla; la otra es **Prepararla con
+Claude Code** en «CI y checks» de la app, si el runner anuncia `ciSetup`: una tarea de CI (`kind: "ci"`, que solo crea el
+servidor) y la única excepción acotada a la regla. El runner aplica el alcance, no solo el prompt: solo puede escribir
+`.github/workflows/*.yml` (GitHub) o `bitbucket-pipelines.yml` (Bitbucket) y docs (`docs/**/*.md`, `*.md` de la raíz), en el
+hook, en `open_pull_request` y en el arreglo del review; no tiene Bash ni puede leer `.env`, `.npmrc`, claves ni credenciales.
+Usa los scripts reales del proyecto y cita los secretos por nombre (`${{ secrets.NOMBRE }}` / `$NOMBRE`); el PR explica cuáles
+crear y cómo (`gh secret set NOMBRE`). Backcode nunca mergea ni despliega su PR en borrador, tampoco en modo auto: lo revisas y
+lo mergeas tú). Usa los mismos
 comandos: `backcode status` (resumen sin secretos) y `pbpaste | backcode connect --clone --no-start` (`--repo <ruta>` si el repo
 está en otra carpeta). El plugin vive en `plugins/backcode/` y el marketplace en `.claude-plugin/marketplace.json`; se comprueban
 con `claude plugin validate .`.
@@ -766,6 +773,18 @@ técnicas, pero el agente pierde contexto sobre por qué existen.
 ## Variables del `.env`
 Las genera la app; las puedes ajustar a mano en `~/.backcode/config/<proyecto>.env` (después, reinicia ese proyecto en el panel). Ver [`.env.example`](.env.example) para todas
 (límites por tarea, modelo, dominios permitidos, rutas protegidas, mapa del proyecto…).
+
+## Tareas en paralelo (runner ≥ 1.2)
+
+Cada tarea sigue en su propio worktree y rama, pero un proyecto puede ejecutar varias a la vez:
+
+- **Límite por proyecto (personal)**: cuántas tareas de ese proyecto ejecuta *tu* ordenador a la vez. Se elige en los ajustes del proyecto en la app (`projects/{pid}/runnerSettings/{uid}`). Por defecto **1**, como antes.
+- **Límite por ordenador**: máximo de tareas a la vez en ese ordenador, sumando todos sus proyectos. Se elige en Perfil › Tu ordenador (`users/{uid}/machineSettings/{machineId}`). Por defecto, sin tope. Los runners del mismo ordenador comparten los huecos en `~/.backcode/slots` (un fichero por tarea en marcha; los de procesos muertos se limpian solos).
+- Nunca arrancan a la vez dos tareas creadas desde la misma conversación del runner.
+- **Freno automático**: aunque los límites lo permitan, no se arranca una tarea nueva con presión de memoria alta o con menos de 5 GB de disco libre. Espera en cola y el motivo se publica en `projects/{pid}/runners/{uid}.queue`, que la app enseña en su tarjeta. Se vuelve a mirar cada 30 s.
+- **Monitor de la máquina**: cada minuto uno de los runners del ordenador publica solo métricas agregadas (CPU, RAM, presión de memoria, RAM real por sesión de Claude Code, disco libre, tamaño de los worktrees, tareas en marcha y un número recomendado) en `users/{uid}/machines/{id}.metrics` y en `groups/{gid}/machines/{id}` para el equipo.
+
+Los runners antiguos no saben nada de esto y siguen de una en una. Ver `src/scheduler.ts`, `src/slots.ts` y `src/monitor.ts`.
 
 ## Desarrollo
 ```bash

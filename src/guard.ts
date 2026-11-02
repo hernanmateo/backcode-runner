@@ -25,6 +25,33 @@ export function protectedMatcher(extra: string[]): (rel: string) => boolean {
   return (rel) => patterns.some((re) => re.test(rel));
 }
 
+/** Fichero de CI que puede crear una tarea de CI (kind "ci") según el host del repo. */
+export function ciFilePattern(host: "github" | "bitbucket"): RegExp {
+  return host === "github" ? /^\.github\/workflows\/[^/]+\.ya?ml$/ : /^bitbucket-pipelines\.yml$/;
+}
+
+/** Docs que también puede tocar una tarea de CI: docs/ y los .md de la raíz (CLAUDE.md sigue protegido). */
+const CI_DOCS = [/^docs\/.+\.mdx?$/, /^[^/]+\.md$/];
+
+/**
+ * Alcance de una tarea de CI (excepción acotada a la regla de la CI): todo queda protegido salvo el fichero de CI del
+ * host y docs; sobre ellos siguen las protecciones de siempre (`base`), menos para el propio fichero de CI.
+ */
+export function ciScopeMatcher(host: "github" | "bitbucket", base: (rel: string) => boolean): (rel: string) => boolean {
+  const ci = ciFilePattern(host);
+  return (rel) => {
+    if (ci.test(rel)) return false;
+    if (CI_DOCS.some((re) => re.test(rel))) return base(rel);
+    return true;
+  };
+}
+
+/** Lo que una tarea de CI no puede ni leer: ficheros de entorno, credenciales y claves. */
+const SECRET_FILES = [/(^|\/)\.env($|\.)/, /(^|\/)\.npmrc$/, /(^|\/)\.netrc$/, /(^|\/)\.pypirc$/, /\.(pem|key|p12|pfx|keystore|jks)$/, /(^|\/)id_(rsa|ed25519|ecdsa)/, /(^|\/)(credentials|secrets?)(\.[a-z]+)?$/i, /(^|\/)google-services\.json$/, /(^|\/)GoogleService-Info\.plist$/, /(^|\/)serviceAccount[^/]*\.json$/i];
+export function isSecretFile(rel: string): boolean {
+  return SECRET_FILES.some((re) => re.test(rel));
+}
+
 // Comandos de red. curl y wget se pueden conceder (permisos personales, ver permissions.ts); el resto, nunca.
 const NET_COMMANDS = /(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\b/;
 const NET_COMMANDS_ALL = new RegExp(NET_COMMANDS.source, "g");
@@ -81,6 +108,8 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 export interface GuardExtras {
   readRoots?: string[];
   allowCommands?: string[];
+  /** Rutas del worktree que no se pueden ni leer (tareas de CI: ficheros de secretos). Grep/Glob sobre ellas, tampoco. */
+  denyRead?: (rel: string) => boolean;
 }
 
 export function createGuardHook(worktree: string, isProtected: (rel: string) => boolean, extras: GuardExtras = {}): HookCallback {
@@ -96,6 +125,11 @@ export function createGuardHook(worktree: string, isProtected: (rel: string) => 
     const field = PATH_FIELDS[tool];
     if (field) {
       const raw = toolInput[field];
+      // Grep/Glob con patrón (glob) que apunta a un fichero de secretos: denegado aunque la carpeta sea el worktree.
+      if (extras.denyRead && (tool === "Glob" || tool === "Grep")) {
+        const pattern = String(toolInput[tool === "Glob" ? "pattern" : "glob"] ?? "");
+        if (/\.env|\.npmrc|\.netrc|\.pem|\.key|credentials|secret|id_rsa|id_ed25519/i.test(pattern)) return deny(t("guard.secretRead", { path: pattern }));
+      }
       if (raw === undefined && (tool === "Glob" || tool === "Grep")) return {}; // por defecto: cwd
       if (typeof raw !== "string") return deny(t("guard.badPath"));
       const abs = realpathLoose(isAbsolute(raw) ? raw : resolve(root, raw));
@@ -105,6 +139,7 @@ export function createGuardHook(worktree: string, isProtected: (rel: string) => 
         return deny(t("guard.outside", { root }));
       }
       const rel = relative(root, abs).split(sep).join("/");
+      if (extras.denyRead && rel && extras.denyRead(rel)) return deny(t("guard.secretRead", { path: rel }));
       if (WRITE_TOOLS.has(tool) && isProtected(rel)) {
         return deny(t("guard.protected", { path: rel }));
       }

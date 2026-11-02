@@ -9,7 +9,10 @@ import { onSnapshot, type QueryDocumentSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
-import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
+import { CONFIG_DIR, HOME_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
+import { brakeReason, measure, metricsDoc, MONITOR_EVERY_MS, quickCheck, rememberSessionRam, takeMonitorTurn } from "./monitor.js";
+import { clampLimit, effectiveProjectLimit, MAX_MACHINE_LIMIT, MAX_PROJECT_LIMIT, nextTask, type QueuedTask, type QueueReason } from "./scheduler.js";
+import { takeSlot } from "./slots.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { previewBranch, setPreviewBranch, taskBase, validPreviewBranch } from "./environments.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
@@ -43,6 +46,7 @@ import { linkProject, machineId, machineStatus, MACHINE_BEAT_MS, parseLinkReques
 import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
+import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { buildReport, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
@@ -84,14 +88,32 @@ const DENY_READ = [
   ...[".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".netrc", ".npmrc", ".config/gh", ".config/gcloud", ".claude.json", "Library/Keychains"].map((p) => join(home, p)),
 ];
 
-let current: { id: string; abort: AbortController } | null = null;
+/** Tareas en marcha en este proceso (varias a la vez según los límites; scheduler.ts) y cómo cancelarlas. */
+const running = new Map<string, QueuedTask>();
+const aborts = new Map<string, AbortController>();
+/** Límite personal de este proyecto y total de este ordenador (users/{uid}/machineSettings); null = sin tope. */
+const limits = { project: null as number | null, machine: null as number | null };
+const SLOTS_DIR = join(HOME_DIR, "slots");
+const WORKTREES_ROOT = join(HOME_DIR, "worktrees");
+/** Operaciones git sobre el repo principal (fetch, worktree add): de una en una aunque arranquen varias tareas. */
+let repoGitChain: Promise<unknown> = Promise.resolve();
+function withRepoLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = repoGitChain.then(fn, fn);
+  repoGitChain = next.catch(() => undefined);
+  return next;
+}
 /** Remote Control necesita `script` para darle un terminal a Claude Code. */
 const REMOTE_PLATFORMS: NodeJS.Platform[] = ["darwin", "linux"];
 let refreshQuota: () => Promise<void> = async () => undefined;
 /** GitHub o Bitbucket según el repo; sin él solo se sube la rama. Se decide al arrancar (checkRepo). */
 let prHost: PrHost | undefined;
-let pending: string[] = [];
+let pending: QueuedTask[] = [];
+/** drain() decidiendo qué arrancar (las tareas corren aparte, en `running`). */
 let busy = false;
+let drainRetry: NodeJS.Timeout | undefined;
+/** Último motivo de espera publicado en runners/{uid}.queue (para no escribir si no cambia). */
+let queueKey = "";
+let monitorTimer: NodeJS.Timeout | undefined;
 /** Hay versión nueva: se termina lo que esté en marcha, no se coge nada más y se reinicia. */
 let restarting = false;
 let stopping = false;
@@ -198,7 +220,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const resuming = !!feature.sessionId;
   // Modo plan: hasta que quien la ejecuta aprueba el plan, Claude solo lee el repo y propone (o rehace) el plan.
   const planning = !!feature.planFirst && !feature.planApproved;
-  const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), featureId: id, branch: feature.branch!, resume: resuming });
+  const wt = await withRepoLock(() => createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), featureId: id, branch: feature.branch!, resume: resuming }));
   // Hecha con Claude Code desde el repo: su sesión está guardada en la carpeta del repo, no en la del worktree.
   if (resuming && feature.origin === "local" && !adoptTranscript(wt.path, feature.sessionId!)) {
     await store.event(id, "say", t("run.localTask"));
@@ -244,6 +266,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const { perms, roots } = permCtx;
   const permissionsText = permCtx.prompt;
   const session = sessionPermissions(permCtx, cfg.allowedDomains);
+  // Tarea de CI (ci-task.ts): solo el fichero de CI del host y docs, sin Bash ni leer secretos, y su PR nunca se
+  // mergea solo. Sin host de PR (push-only) no se puede: el runner tampoco anuncia ciSetup.
+  const ciHost = isCiTask(feature) ? prHost?.kind : undefined;
+  if (isCiTask(feature) && !ciHost) return { status: "failed", result: { error: t("ci.noMerge", { host: "GitHub / Bitbucket" }) } };
+  const ci = ciHost ? ciGuard(ciHost, isProtected) : undefined;
+  const taskProtected = ci?.isProtected ?? isProtected;
+  const guardExtras = ci ? { ...session.guard, denyRead: ci.denyRead } : session.guard;
+  if (ciHost) await store.event(id, "start", t("ci.start", { file: ciFileFor(ciHost) }));
   if (!isEmpty(perms)) await store.event(id, "start", t("run.permissions", { list: [...perms.domains, ...perms.commands, ...roots.map((r) => r.name)].join(", ") }));
 
   const previousPr = feature.result?.prUrl;
@@ -298,7 +328,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, taskBase(cfg.baseBranch))) === 0) {
             return fail(t("pr.empty"));
           }
-          const blocked = files.filter(isProtected);
+          const blocked = files.filter(taskProtected);
           if (blocked.length) return fail(t("pr.protected", { files: blocked.join(", ") }));
           const secrets = await scanStagedForSecrets(wt.path);
           if (secrets.length) return fail(t("pr.secrets", { list: secrets.join("; ") }));
@@ -315,7 +345,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
           await store.event(id, "pr", prUrl);
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
-          afterMerge = steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
+          // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
+          afterMerge = ciHost ? undefined : steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
@@ -351,7 +382,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   });
 
   const abort = new AbortController();
-  current = { id, abort };
+  aborts.set(id, abort);
   // El tiempo máximo cuenta solo mientras trabaja el runner (no mientras la persona está en Remote Control).
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const armTimeout = () => {
@@ -460,7 +491,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }),
+          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }) + (ciHost ? ciSystemAppend(ciHost) : ""),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
         settingSources: [],
@@ -469,10 +500,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         // Planificando solo puede leer el repo y proponer el plan (o preguntar); sin editar ni ejecutar comandos.
         allowedTools: planning
           ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
-          : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
+          : ciHost
+            ? [...CI_TOOLS, "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
+            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
         // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
-        disallowedTools: session.disallowedTools,
-        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, isProtected, session.guard)] }] },
+        disallowedTools: ciHost ? [...(session.disallowedTools ?? []), "Bash", "NotebookEdit"] : session.disallowedTools,
+        hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, taskProtected, guardExtras)] }] },
         sandbox: {
           enabled: true,
           failIfUnavailable: true,
@@ -634,7 +667,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   /** Sube lo que arregló la sesión de la tarea tras el review (con las mismas comprobaciones que open_pull_request). */
   async function pushReviewFix(before: string): Promise<boolean> {
     const files = await stageAll(wt.path);
-    const blocked = files.filter(isProtected);
+    const blocked = files.filter(taskProtected);
     const secrets = blocked.length ? [] : await scanStagedForSecrets(wt.path);
     if (blocked.length || secrets.length) {
       // Se quita del índice y no se sube: queda en el worktree para revisarlo a mano.
@@ -659,7 +692,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       review = { ...review, state: "reviewing" };
       await save();
       await store.event(id, "start", t(review.passes ? "review.retry" : "review.start", { level }));
-      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, level, model, env: agentEnv(), isProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
+      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, level, model, env: agentEnv(), isProtected: taskProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
       addSpend(r.spend);
       review = { ...review, passes: review.passes + 1, costUsd: review.costUsd + r.spend.costUsd, findings: r.findings ?? review.findings };
       return r;
@@ -714,12 +747,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const prompt = planning
       ? resuming
         ? buildPlanFollowUpPrompt(replies)
-        : buildPlanPrompt(id, feature, attachments)
+        : buildPlanPrompt(id, ciHost ? { ...feature, title: "CI", refinedPrompt: buildCiPrompt(ciHost), acceptanceCriteria: [] } : feature, attachments)
       : justApproved
         ? buildApprovedPlanPrompt(replies)
         : resuming
           ? buildFollowUpPrompt(replies, !!previousPr, { base: taskBase(cfg.baseBranch), files: conflicts })
-          : buildUserPrompt(id, feature, attachments);
+          : ciHost
+            ? buildCiPrompt(ciHost)
+            : buildUserPrompt(id, feature, attachments);
     if (model) await store.event(id, "say", t("run.model", { model }));
     // Pedida desde la app con la tarea parada: primero Remote Control, y al volver sigue el runner.
     if (remoteWanted && resuming && (await runRemote())) {
@@ -760,7 +795,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const leftOpen = remoteSession as RemoteSession | null;
     leftOpen?.stop();
     if (leftOpen) await store.setRemote(id, null).catch(() => undefined);
-    current = null;
+    aborts.delete(id);
     // El worktree se conserva: la conversación puede continuar (se limpia tras días sin uso).
   }
 
@@ -838,43 +873,94 @@ function describeTool(name: string, input: Record<string, unknown>, root: string
   }
 }
 
+/**
+ * Arranca tareas de la cola mientras haya hueco: límite personal del proyecto, total del ordenador (huecos compartidos
+ * en ~/.backcode/slots), freno por RAM/disco y nunca dos de la misma conversación a la vez. Las que esperan publican el
+ * motivo (runners/{uid}.queue) para que la app lo enseñe en su tarjeta.
+ */
 async function drain(): Promise<void> {
   if (busy) return;
   busy = true;
+  clearTimeout(drainRetry);
+  let reason: QueueReason | null = null;
   try {
-    while (!stopping && !restarting && pending.length > 0) {
-      const id = pending.shift()!;
-      const feature = await store.claim(id);
-      if (!feature) continue;
-      console.log(`[run] ${id} · ${feature.title}`);
-      const release = awake.hold();
-      try {
-        const { status, result, sessionId } = await runFeature(id, feature);
-        if (status === "released") {
-          console.log(`[released] ${id} ${result.prUrl ?? ""}`);
-          continue;
-        }
-        if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
-          await store.requeue(id);
-        } else {
-          // Volver a la cola con mensajes sin leer necesita las reglas nuevas: sin ellas, queda esperando (no fallida).
-          const fallback = result.prUrl ? "done" : "waiting";
-          await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
-          await store.event(id, status, result.prUrl ?? result.error ?? "");
-          if (status === "done" && result.prUrl?.startsWith("https://")) queueAutoMerge(id);
-        }
-        console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
-        void refreshQuota();
-        void publishSession(id, sessionId ?? feature.sessionId);
-      } catch (err) {
-        console.error(`[error] ${id}`, err);
-        await store.finish(id, "failed", { error: String(err).slice(0, 2000) });
-      } finally {
-        release();
+    while (!stopping && !restarting) {
+      const pick = nextTask(pending, [...running.values()], effectiveProjectLimit(limits.project, limits.machine));
+      if (!pick.task) {
+        reason = pick.reason;
+        break;
       }
+      const brake = brakeReason(await quickCheck(WORKTREES_ROOT).catch(() => ({ pressure: "normal" as const, diskFree: Number.MAX_SAFE_INTEGER })));
+      if (brake) {
+        reason = brake;
+        break;
+      }
+      const task = pick.task;
+      const releaseSlot = takeSlot(SLOTS_DIR, cfg.projectId, task.id, limits.machine);
+      if (!releaseSlot) {
+        reason = "machine";
+        break;
+      }
+      pending = pending.filter((p) => p.id !== task.id);
+      const feature = await store.claim(task.id).catch((err) => {
+        console.warn(`[claim] ${task.id} ${(err as Error).message}`);
+        return null;
+      });
+      if (!feature) {
+        releaseSlot();
+        continue;
+      }
+      running.set(task.id, task);
+      void runOne(task.id, feature).finally(() => {
+        releaseSlot();
+        running.delete(task.id);
+        void drain();
+      });
     }
   } finally {
     busy = false;
+  }
+  // Esperando por RAM, disco o el total del ordenador (que liberan otros procesos): se vuelve a mirar en 30 s.
+  if (reason === "memory" || reason === "disk" || reason === "machine") drainRetry = setTimeout(() => void drain(), 30_000);
+  await publishQueue(reason);
+}
+
+async function publishQueue(reason: QueueReason | null): Promise<void> {
+  const ids = reason ? pending.map((p) => p.id).slice(0, 50) : [];
+  const key = reason ? `${reason}:${ids.join(",")}` : "";
+  if (key === queueKey || stopping) return;
+  queueKey = key;
+  if (reason) console.log(`[queue] ${t(`queue.${reason}`)}`);
+  await store.setQueue(reason ? { reason, featureIds: ids } : null).catch((err) => console.warn(`[queue] ${(err as Error).message}`));
+}
+
+async function runOne(id: string, feature: Feature): Promise<void> {
+  console.log(`[run] ${id} · ${feature.title}`);
+  const release = awake.hold();
+  try {
+    const { status, result, sessionId } = await runFeature(id, feature);
+    if (status === "released") {
+      console.log(`[released] ${id} ${result.prUrl ?? ""}`);
+      return;
+    }
+    if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
+      await store.requeue(id);
+    } else {
+      // Volver a la cola con mensajes sin leer necesita las reglas nuevas: sin ellas, queda esperando (no fallida).
+      const fallback = result.prUrl ? "done" : "waiting";
+      await store.finish(id, status, result, sessionId).catch((err) => (status === "execute" ? store.finish(id, fallback, result, sessionId) : Promise.reject(err)));
+      await store.event(id, status, result.prUrl ?? result.error ?? "");
+      // Un PR de CI nunca entra en el modo auto: se revisa y se mergea a mano.
+      if (status === "done" && result.prUrl?.startsWith("https://") && !isCiTask(feature)) queueAutoMerge(id);
+    }
+    console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
+    void refreshQuota();
+    void publishSession(id, sessionId ?? feature.sessionId);
+  } catch (err) {
+    console.error(`[error] ${id}`, err);
+    await store.finish(id, "failed", { error: String(err).slice(0, 2000) }).catch(() => undefined);
+  } finally {
+    release();
   }
 }
 
@@ -942,6 +1028,8 @@ async function main(): Promise<void> {
     knowledge: true,
     fixConflicts: true,
     fixChecks: true,
+    // Tareas de CI (ci-task.ts): la app ofrece «Prepararla con Claude Code» en «CI y checks» si el repo no tiene CI.
+    ciSetup: !!prHost,
     chat: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
@@ -1124,7 +1212,7 @@ async function main(): Promise<void> {
   const checked = new Map<string, string>();
   const checkConflicts = async () => {
     for (const f of await store.myOpenPrs().catch(() => [])) {
-      if (current?.id === f.id) continue; // se está ejecutando
+      if (running.has(f.id)) continue; // se está ejecutando
       // ¿Se mergeó a mano en GitHub/Bitbucket? Se marca como mergeada (y la próxima OTA la marcará desplegada).
       if (prHost && f.prUrl?.startsWith("https://")) {
         const pr = await prHost.prState(f.prUrl).catch(() => null);
@@ -1155,7 +1243,7 @@ async function main(): Promise<void> {
   // cleanupPeriodDays días), la app lo avisa en vez de ofrecer abrirlas en la app de Claude o retomarlas.
   const checkSessions = async () => {
     for (const f of await store.mySessionTasks().catch(() => [])) {
-      if (current?.id === f.id) continue;
+      if (running.has(f.id)) continue;
       await publishSession(f.id, f.sessionId);
     }
   };
@@ -1187,9 +1275,9 @@ async function main(): Promise<void> {
   const requeue = () => {
     pending = [...queued.mine, ...queued.shared]
       .filter((d) => store.executes(d.data() as Feature))
-      .map((d) => ({ id: d.id, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
+      .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
       .sort((a, b) => a.priority - b.priority || a.at - b.at)
-      .map((d) => d.id);
+      .map((d) => ({ id: d.id, chatId: d.chatId }));
     if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
     void drain();
   };
@@ -1429,6 +1517,29 @@ async function main(): Promise<void> {
   beat();
   const beatTimer = setInterval(beat, MACHINE_BEAT_MS);
 
+  // Monitor de la máquina (monitor.ts): cada minuto lo publica uno solo de los runners del ordenador, en su ficha y en la
+  // de cada equipo. Solo números agregados.
+  const publishMetrics = async () => {
+    if (stopping || !takeMonitorTurn(HOME_DIR)) return;
+    const m = await measure(WORKTREES_ROOT, SLOTS_DIR);
+    rememberSessionRam(SLOTS_DIR, m.sessionRam);
+    await store.saveMachineMetrics(thisMachine, metricsDoc(m));
+  };
+  const metricsTick = () => void publishMetrics().catch((err) => console.warn(`[monitor] ${(err as Error).message}`));
+  metricsTick();
+  monitorTimer = setInterval(metricsTick, MONITOR_EVERY_MS);
+
+  // Límites de tareas a la vez: el personal de este proyecto y el total de este ordenador (los dos desde la app).
+  const stopLimits = store.watchLimits(thisMachine, (next) => {
+    const project = clampLimit(next.project, MAX_PROJECT_LIMIT, null);
+    const machine = clampLimit(next.machine, MAX_MACHINE_LIMIT, null);
+    if (project === limits.project && machine === limits.machine) return;
+    limits.project = project;
+    limits.machine = machine;
+    console.log(`[backcode] ${t("queue.limits", { project: effectiveProjectLimit(project, machine), machine: machine ?? "-" })}`);
+    void drain();
+  });
+
   // «Conectar en <host>» / «Clonar en <host>» desde la app: solo peticiones de mi uid (las reglas solo dejan crearlas a
   // mí y para proyectos de los que soy miembro) y se vuelve a comprobar que puedo leer el proyecto. La llave no viaja:
   // se usa la de este ordenador.
@@ -1496,6 +1607,8 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     unsubscribeLinks();
     clearInterval(beatTimer);
+    clearInterval(monitorTimer);
+    stopLimits();
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
@@ -1520,8 +1633,10 @@ async function main(): Promise<void> {
     clearInterval(sessionsTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();
-    current?.abort.abort();
-    while (busy) await new Promise((r) => setTimeout(r, 200));
+    for (const abort of aborts.values()) abort.abort();
+    clearTimeout(drainRetry);
+    clearInterval(monitorTimer);
+    while (busy || running.size > 0) await new Promise((r) => setTimeout(r, 200));
     await releaseLock();
     awake.stop();
     exitSupervised(0);
@@ -1537,7 +1652,7 @@ async function main(): Promise<void> {
     console.log(`[backcode] ${t("update.waiting")}`);
     // Una acción esperando a la CI no retrasa el reinicio hasta 15 minutos: falla con los checks en curso.
     stopWaitingForChecks();
-    while (busy || actionsBusy || refineBusy || chatBusy || scaffoldBusy || linkBusy) await new Promise((r) => setTimeout(r, 1000));
+    while (busy || running.size > 0 || actionsBusy || refineBusy || chatBusy || scaffoldBusy || linkBusy) await new Promise((r) => setTimeout(r, 1000));
     stopping = true;
     unsubscribe();
     stopLang();
@@ -1547,6 +1662,8 @@ async function main(): Promise<void> {
     unsubscribeScaffolds();
     unsubscribeLinks();
     clearInterval(beatTimer);
+    clearInterval(monitorTimer);
+    stopLimits();
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
