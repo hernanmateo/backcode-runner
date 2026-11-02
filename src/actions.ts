@@ -106,6 +106,11 @@ export interface ActionResult {
   /** Checks que no están en verde (si se rechaza por eso). */
   checks?: string[];
   log?: string;
+  /**
+   * fixChecks de un PR de CI: «ciAppCode» si Claude concluye que el fichero de CI está bien y lo que falla es el código de la
+   * app o sus tests (la app ofrece entonces una tarea normal para arreglarlo; `log` lleva su explicación).
+   */
+  blocked?: "ciAppCode";
   /** OTA: archivos sin commitear que impidieron publicar (la app ofrece «Commit y publicar»). */
   dirty?: string[];
   /** OTA de un PR (prOta): su canal de EAS Update y los enlaces que abren la app en él o la devuelven a su canal. */
