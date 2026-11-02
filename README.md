@@ -139,7 +139,9 @@ For every task you accept, the runner:
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
 It also handles what an admin asks for from the app, always with your own credentials: merge a PR once checks are green,
-publish an **Expo OTA update** (after a boot test in a simulator), build for TestFlight / Internal Testing (after a
+publish an **Expo OTA update** (after a boot test in a simulator; **Promote to production** republishes the commit that's on
+preview to production, with the production variables and no store build — see
+[docs/plans/ota-canales.md](../docs/plans/ota-canales.md)), build for TestFlight / Internal Testing (after a
 successful build, each task that went into it records the build per platform — version, runtimeVersion and action — and the
 **Build** tab lists the merged tasks still pending a build of each platform), **install the app on your own phone** (Release build of the main branch, over Wi-Fi or
 cable, on a phone paired with your runner's computer; the panel's **Phones** section shows which ones are ready) — or a
