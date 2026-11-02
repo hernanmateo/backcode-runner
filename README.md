@@ -189,7 +189,7 @@ explains how to add a `backcode:deploy:<name>` script or a `backcode.toml` and, 
   <tr>
     <td valign="top">
       <h4>GitHub and Bitbucket</h4>
-      Draft PRs with <code>gh</code> or a Bitbucket API token, or just push the branch. Detects merges and conflicts with main, and an admin can have Claude fix the conflicts from the app. A PR blocked by red checks can be sent back to Claude Code with the failing jobs' log.
+      Draft PRs with <code>gh</code> or a Bitbucket API token, or just push the branch. Detects merges and conflicts with main, and an admin can have Claude fix the conflicts from the app. A PR blocked by red checks can be sent back to Claude Code with the failing jobs' log. On a CI task's PR, if Claude finds the CI file is fine and the project's own code fails the checks, the runner returns `blocked: "ciAppCode"` and the app offers a normal task to fix the code (checks are never weakened).
     </td>
     <td valign="top">
       <h4>New projects from an idea</h4>

@@ -466,6 +466,11 @@ secretos, hasta 3000 caracteres) y la tarjeta de merge lo enseña con **Devolver
 Cuando la CI vuelva a estar en verde, se mergea como siempre. En Bitbucket todavía no se lee el log: Claude recibe solo qué checks
 fallan.
 
+En el PR de una tarea de CI (`kind: "ci"`), `fixChecks` tiene el alcance de esa tarea (solo el fichero de CI y docs). Si Claude
+concluye que el fichero de CI está bien y lo que falla es el código o los tests del proyecto, no cambia nada y termina con la línea
+`CI_FILE_OK: failure is in app code`: el runner devuelve `blocked: "ciAppCode"` con los checks en rojo y su explicación, y la app
+ofrece crear una tarea normal para arreglar el código. `requireGreen`, el alcance de la tarea de CI y el guard no cambian.
+
 ### Conversación con tu runner
 
 El botón redondo junto a *Proponer una idea* abre un chat libre con tu runner, sin tarea (`projects/{pid}/chats`, solo lo ves

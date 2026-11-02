@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fixChecksPrompt, fixChecksScope } from "../src/fix-checks.js";
+import { CI_APP_CODE_MARKER, ciAppCodeResult, fixChecksPrompt, fixChecksScope, parseCiAppCode } from "../src/fix-checks.js";
 import { protectedMatcher } from "../src/guard.js";
 
 const base = protectedMatcher([]);
@@ -48,4 +48,29 @@ test("el prompt del PR de CI permite arreglar el workflow pero nunca debilitar c
   assert.match(prompt, /in Català/);
   assert.doesNotMatch(prompt, /read but not change/);
   assert.match(fixChecksPrompt(["build: fail"], "", "English", "bitbucket"), /`bitbucket-pipelines\.yml`/);
+});
+
+test("el prompt del PR de CI pide la línea marcador cuando falla el código de la app", () => {
+  const prompt = fixChecksPrompt(["test: fail"], "", "English", "github");
+  assert.ok(prompt.includes(CI_APP_CODE_MARKER));
+  assert.ok(!fixChecksPrompt(["test: fail"], "", "English").includes(CI_APP_CODE_MARKER));
+});
+
+test("parseCiAppCode detecta la línea marcador (también con formato) y la quita de la explicación", () => {
+  assert.deepEqual(parseCiAppCode(`El typecheck falla en src/a.ts.\n${CI_APP_CODE_MARKER}`), { appCode: true, explanation: "El typecheck falla en src/a.ts." });
+  assert.equal(parseCiAppCode(`Explicació\n\n\`${CI_APP_CODE_MARKER}\``).appCode, true);
+  assert.equal(parseCiAppCode(`**${CI_APP_CODE_MARKER}.**`).appCode, true);
+  assert.equal(parseCiAppCode("He arreglado el comando de instalación del workflow.").appCode, false);
+  assert.equal(parseCiAppCode(`No escribo ${CI_APP_CODE_MARKER} a mitad de frase`).appCode, false);
+  assert.equal(parseCiAppCode("").appCode, false);
+});
+
+test("ciAppCodeResult: motivo propio con los checks en rojo y la explicación", () => {
+  const r = ciAppCodeResult("https://github.com/o/r/pull/1", ["lint: fail", "test: fail"], "ESLint falla en src/a.ts");
+  assert.equal(r.blocked, "ciAppCode");
+  assert.deepEqual(r.checks, ["lint: fail", "test: fail"]);
+  assert.equal(r.log, "ESLint falla en src/a.ts");
+  assert.equal(r.url, "https://github.com/o/r/pull/1");
+  assert.ok(r.error);
+  assert.equal("log" in ciAppCodeResult("https://x", [], ""), false);
 });

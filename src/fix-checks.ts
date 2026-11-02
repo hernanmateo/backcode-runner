@@ -16,6 +16,26 @@ import type { Store } from "./store.js";
 // Claude, con el log de los checks que fallan, lo arregla y ejecuta los tests en el sandbox, como en una tarea. El commit y
 // el push (sin forzar) los hace el runner.
 
+/**
+ * Línea final con la que Claude dice, en un PR de CI, que el fichero de CI está bien y lo que falla es el código de la app
+ * (o sus tests): fuera del alcance de la tarea de CI. Con ella y sin cambios, fixChecks devuelve `blocked: "ciAppCode"` y la
+ * app ofrece una tarea normal para arreglar el código (en vez de devolverlo a Claude Code en bucle).
+ */
+export const CI_APP_CODE_MARKER = "CI_FILE_OK: failure is in app code";
+
+/** ¿Ha concluido Claude que el fallo está en el código de la app? Devuelve también su explicación sin la línea marcador. */
+export function parseCiAppCode(summary: string): { appCode: boolean; explanation: string } {
+  const lines = summary.split("\n");
+  const marker = (l: string) => l.trim().replace(/^[`*_\s]+|[`*_.\s]+$/g, "") === CI_APP_CODE_MARKER;
+  const appCode = lines.some(marker);
+  return { appCode, explanation: lines.filter((l) => !marker(l)).join("\n").trim() };
+}
+
+/** Resultado de fixChecks cuando, en un PR de CI, el fallo está en el código de la app (no en el fichero de CI). */
+export function ciAppCodeResult(prUrl: string, checks: string[], explanation: string): ActionResult {
+  return { error: t("checksFix.ciAppCode"), url: prUrl, checks, blocked: "ciAppCode", ...(explanation ? { log: explanation.slice(0, 2000) } : {}) };
+}
+
 export function fixChecksPrompt(failing: string[], log: string, language: string, ciHost?: CiHost): string {
   const header = `The CI checks of this pull request are failing, so it can't be merged:
 ${failing.map((c) => `- ${c}`).join("\n")}
@@ -27,7 +47,7 @@ ${log ? `\nEnd of the failing jobs' log:\n<ci_log>\n${log}\n</ci_log>\n` : ""}`;
     return `${header}
 This is a Backcode CI pull request: it creates or changes the repository's CI, and the failure is often in the CI file itself. Fix it:
 - Find the cause in the log. You may modify ONLY ${file} and, if useful, documentation (\`docs/**/*.md\` or a root \`*.md\`); every other path is blocked by the runner, and so are Bash, reading .env files, credentials and keys.
-- Fix the CI so it runs the repository's real commands correctly (wrong install command, runtime version, working directory, missing step…). Never remove, skip, disable or weaken a check to make it pass: no deleting jobs or steps, no \`continue-on-error\`, \`|| true\`, \`allow_failure\`, conditions that skip it, or dropping test/lint/typecheck commands. If the failure is in the application code or tests (not the CI), don't touch them: explain it in your reply.
+- Fix the CI so it runs the repository's real commands correctly (wrong install command, runtime version, working directory, missing step…). Never remove, skip, disable or weaken a check to make it pass: no deleting jobs or steps, no \`continue-on-error\`, \`|| true\`, \`allow_failure\`, conditions that skip it, or dropping test/lint/typecheck commands. If the failure is in the application code or tests (not the CI), don't touch them and don't change the CI file either: explain in your reply which checks fail and why, and end your reply with this exact line on its own: \`${CI_APP_CODE_MARKER}\`. Use that line only when the CI file is fine and the project's own code fails its checks; never together with a CI change.
 - Reference secrets only by name; never read, print or hardcode a secret value.
 - Keep the change minimal. This PR is never merged automatically: a person reviews it and merges it by hand.
 ${done}`;
@@ -114,6 +134,10 @@ export async function fixChecks(
     if (secrets.length) return { ok: false, result: { error: t("fix.secrets", { list: secrets.join(", ") }), url: prUrl } };
     if (await git(path, ["status", "--porcelain"])) await git(path, ["commit", "--quiet", "--no-verify", "-m", t("checksFix.commit")]);
     if ((await git(path, ["rev-list", "--count", `${remote}/${branch}..HEAD`])) === "0") {
+      // PR de CI sin cambios y Claude dice que el fichero de CI está bien: falla el código de la app, que la tarea de CI no
+      // puede (ni debe) tocar. Motivo propio para que la app ofrezca una tarea normal con los checks y la explicación.
+      const ci = scope.ciHost ? parseCiAppCode(summary) : null;
+      if (ci?.appCode) return { ok: false, result: ciAppCodeResult(prUrl, checks.pending, ci.explanation) };
       return { ok: false, result: { error: t("checksFix.noChanges"), url: prUrl, ...(summary ? { log: summary } : {}) } };
     }
     // PR de CI: como en open_pull_request de la tarea de CI, nada fuera de su alcance llega a subirse.
