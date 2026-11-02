@@ -1,6 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { ActionResult } from "./actions.js";
 import { failingLog } from "./check-logs.js";
+import { CI_TOOLS, ciGuard, type CiHost, isCiTask } from "./ci-task.js";
 import { followLocalWorktree } from "./conflicts.js";
 import type { RunnerConfig } from "./config.js";
 import { createDetachedWorktree, git, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
@@ -15,15 +16,40 @@ import type { Store } from "./store.js";
 // Claude, con el log de los checks que fallan, lo arregla y ejecuta los tests en el sandbox, como en una tarea. El commit y
 // el push (sin forzar) los hace el runner.
 
-export function fixChecksPrompt(failing: string[], log: string, language: string): string {
-  return `The CI checks of this pull request are failing, so it can't be merged:
+export function fixChecksPrompt(failing: string[], log: string, language: string, ciHost?: CiHost): string {
+  const header = `The CI checks of this pull request are failing, so it can't be merged:
 ${failing.map((c) => `- ${c}`).join("\n")}
-${log ? `\nEnd of the failing jobs' log:\n<ci_log>\n${log}\n</ci_log>\n` : ""}
+${log ? `\nEnd of the failing jobs' log:\n<ci_log>\n${log}\n</ci_log>\n` : ""}`;
+  const done = `- When you are done, reply with two or three sentences in ${language} saying what was failing and how you fixed it.`;
+  if (ciHost) {
+    // PR de una tarea de CI: el fallo suele estar en el propio workflow. Mismo alcance que la tarea original.
+    const file = ciHost === "github" ? "`.github/workflows/*.yml`" : "`bitbucket-pipelines.yml`";
+    return `${header}
+This is a Backcode CI pull request: it creates or changes the repository's CI, and the failure is often in the CI file itself. Fix it:
+- Find the cause in the log. You may modify ONLY ${file} and, if useful, documentation (\`docs/**/*.md\` or a root \`*.md\`); every other path is blocked by the runner, and so are Bash, reading .env files, credentials and keys.
+- Fix the CI so it runs the repository's real commands correctly (wrong install command, runtime version, working directory, missing step…). Never remove, skip, disable or weaken a check to make it pass: no deleting jobs or steps, no \`continue-on-error\`, \`|| true\`, \`allow_failure\`, conditions that skip it, or dropping test/lint/typecheck commands. If the failure is in the application code or tests (not the CI), don't touch them: explain it in your reply.
+- Reference secrets only by name; never read, print or hardcode a secret value.
+- Keep the change minimal. This PR is never merged automatically: a person reviews it and merges it by hand.
+${done}`;
+  }
+  return `${header}
 Fix the code so these checks pass:
 - Find the cause in the log (and in the CI workflow, which you can read but not change) and fix it in the code or the tests. Don't skip, disable or weaken tests or checks to make them pass.
 - Run the same commands locally (tests, linter, type checker) and make sure they pass before finishing. If a check needs something unavailable here (secrets, network), say so instead of guessing.
 - Keep the change minimal: don't refactor or touch anything unrelated.
-- When you are done, reply with two or three sentences in ${language} saying what was failing and how you fixed it.`;
+${done}`;
+}
+
+/**
+ * Alcance del arreglo: como una tarea normal (guard de siempre, con Bash) o, si el PR es de una tarea de CI, con las mismas
+ * restricciones que la tarea de CI original (solo el fichero de CI del host y docs, sin Bash ni leer secretos).
+ */
+export function fixChecksScope(kind: string | undefined, host: CiHost, isProtected: (rel: string) => boolean) {
+  if (!isCiTask({ kind })) {
+    return { ciHost: undefined, isProtected, denyRead: undefined, allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "Bash", "TodoWrite"], disallowedTools: ["NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"] };
+  }
+  const ci = ciGuard(host, isProtected);
+  return { ciHost: host, isProtected: ci.isProtected, denyRead: ci.denyRead, allowedTools: [...CI_TOOLS], disallowedTools: ["Bash", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"] };
 }
 
 export async function fixChecks(
@@ -35,13 +61,14 @@ export async function fixChecks(
   featureId: string,
 ): Promise<{ ok: boolean; result: ActionResult }> {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") } };
-  const { prUrl, branch } = await store.prOf(featureId);
+  const { prUrl, branch, kind } = await store.prOf(featureId);
   if (!prUrl?.startsWith("https://") || !branch) return { ok: false, result: { error: t("act.noPr") } };
   const pr = await host.prState(prUrl).catch(() => null);
   if (pr && pr.state !== "open") return { ok: false, result: { error: t("checksFix.notOpen"), url: prUrl } };
   const checks = await host.prChecks(prUrl);
   if (checks.state !== "failing") return { ok: false, result: { error: t(checks.state === "pending" ? "checksFix.pending" : "checksFix.notFailing"), url: prUrl } };
   const log = await failingLog(host, prUrl);
+  const scope = fixChecksScope(kind, host.kind, agent.isProtected);
 
   const { remote } = cfg;
   await git(cfg.repoPath, ["fetch", "--quiet", remote, `+${branch}:refs/remotes/${remote}/${branch}`]);
@@ -51,7 +78,7 @@ export async function fixChecks(
     signal.addEventListener("abort", () => abort.abort(), { once: true });
     let summary = "";
     for await (const msg of query({
-      prompt: fixChecksPrompt(checks.pending, log, LANGUAGE_NAME[lang()]),
+      prompt: fixChecksPrompt(checks.pending, log, LANGUAGE_NAME[lang()], scope.ciHost),
       options: {
         pathToClaudeCodeExecutable: claudeExecutable(),
         cwd: path,
@@ -59,12 +86,13 @@ export async function fixChecks(
         abortController: abort,
         env: agent.env,
         // Como en una tarea: editar y ejecutar comandos en el sandbox (para correr los tests), con el mismo guard (la CI
-        // del repo, entre otros, está protegida). Sin abrir PR: el commit y el push los hace el runner.
+        // del repo, entre otros, está protegida). Sin abrir PR: el commit y el push los hace el runner. En un PR de una
+        // tarea de CI, el alcance de esa tarea: solo su fichero de CI y docs, sin Bash ni leer secretos.
         settingSources: [],
         permissionMode: "dontAsk",
-        allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "Bash", "TodoWrite"],
-        disallowedTools: ["NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"],
-        hooks: { PreToolUse: [{ hooks: [createGuardHook(path, agent.isProtected)] }] },
+        allowedTools: scope.allowedTools,
+        disallowedTools: scope.disallowedTools,
+        hooks: { PreToolUse: [{ hooks: [createGuardHook(path, scope.isProtected, scope.denyRead ? { denyRead: scope.denyRead } : {})] }] },
         sandbox: {
           enabled: true,
           failIfUnavailable: true,
@@ -87,6 +115,12 @@ export async function fixChecks(
     if (await git(path, ["status", "--porcelain"])) await git(path, ["commit", "--quiet", "--no-verify", "-m", t("checksFix.commit")]);
     if ((await git(path, ["rev-list", "--count", `${remote}/${branch}..HEAD`])) === "0") {
       return { ok: false, result: { error: t("checksFix.noChanges"), url: prUrl, ...(summary ? { log: summary } : {}) } };
+    }
+    // PR de CI: como en open_pull_request de la tarea de CI, nada fuera de su alcance llega a subirse.
+    if (scope.ciHost) {
+      const changed = (await git(path, ["diff", "--name-only", `${remote}/${branch}`, "HEAD"])).split("\n").filter(Boolean);
+      const blocked = changed.filter(scope.isProtected);
+      if (blocked.length) return { ok: false, result: { error: t("checksFix.protected", { files: blocked.join(", ") }), url: prUrl } };
     }
     // Sin forzar: si alguien subió a la rama mientras tanto, falla y no se pisa nada.
     await git(path, ["push", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
