@@ -68,10 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     start()
   }
 
-  /** Pide al runner que se instale (si hace falta) y devuelva la dirección del panel. */
-  func start() {
+  /**
+   * Pide al runner que se instale (si hace falta) y devuelva la dirección del panel. `retry`: desde «Retry», con el panel
+   * ya visto sin responder: el runner relanza el servicio (`launchctl kickstart -k`).
+   */
+  func start(retry: Bool = false) {
     DispatchQueue.global(qos: .userInitiated).async {
-      let result = Self.runRunner(["app-url"])
+      let result = Self.runRunner(retry ? ["app-url", "--retry"] : ["app-url"])
       DispatchQueue.main.async {
         // ?native=1: el panel deja sitio a los botones de la ventana (rojo, amarillo y verde).
         if let url = result.flatMap({ URL(string: $0.replacingOccurrences(of: "/#", with: "/?native=1#")) }) {
@@ -102,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     failingSince = nil
     spinner.isHidden = false
     spinner.startAnimation(nil)
-    start()
+    start(retry: true)
   }
 
   /** Ejecuta el runner de dentro de la app y devuelve la última línea que imprime (la URL). */

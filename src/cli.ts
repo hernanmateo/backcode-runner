@@ -48,7 +48,8 @@ switch (command) {
   case "app-url": {
     // Para la app de Mac: prepara la instalación y el servicio, y devuelve la dirección del panel (la última línea).
     const { prepareApp } = await import("./app-launch.js");
-    console.log(await prepareApp());
+    // --retry: el botón «Retry» de la app (el panel ya no respondía): se relanza el servicio con `kickstart -k`.
+    console.log(await prepareApp({ retry: rest.includes("--retry") }));
     process.exit(0);
     break;
   }
@@ -91,7 +92,7 @@ switch (command) {
     await import("./all.js");
     break;
   case "service": {
-    const { installService, serviceInstalled, uninstallService, SERVICE_LOG } = await import("./service.js");
+    const { installService, restartService, serviceInstalled, uninstallService, SERVICE_LOG } = await import("./service.js");
     const sub = rest[0] ?? "status";
     if (sub === "install") {
       await installService();
@@ -99,6 +100,19 @@ switch (command) {
     } else if (sub === "uninstall") {
       await uninstallService();
       console.log(t("cli.serviceOff"));
+    } else if (sub === "restart") {
+      // Lo relanza aunque esté en marcha (launchctl kickstart -k): si se ha colgado o sigue con un ejecutable viejo.
+      if (!serviceInstalled()) {
+        console.error(t("cli.serviceRestartNotInstalled"));
+        process.exit(1);
+      }
+      try {
+        await restartService();
+      } catch (err) {
+        console.error(t("cli.serviceRestartFailed", { error: (err as Error).message }));
+        process.exit(1);
+      }
+      console.log(t("cli.serviceRestarted", { log: SERVICE_LOG }));
     } else console.log(t(serviceInstalled() ? "cli.serviceIsOn" : "cli.serviceIsOff"));
     break;
   }

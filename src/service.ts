@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -116,7 +116,42 @@ WantedBy=default.target
 /** Arranca el servicio ya instalado si no está en marcha (sin -k: si ya corre, no lo toca). Solo macOS. */
 export async function kickService(): Promise<void> {
   if (process.platform !== "darwin") return;
-  await exec("launchctl", ["kickstart", `gui/${userInfo().uid}/${LABEL}`]).catch(() => undefined);
+  await exec("launchctl", kickstartArgs(false)).catch(() => undefined);
+}
+
+/** Argumentos de `launchctl kickstart` para el servicio; con `-k` launchd mata el proceso que haya y lo relanza. */
+export const kickstartArgs = (kill: boolean, uid = userInfo().uid): string[] => ["kickstart", ...(kill ? ["-k"] : []), `gui/${uid}/${LABEL}`];
+
+/**
+ * Relanza el servicio aunque ya esté en marcha (`launchctl kickstart -k`): para cuando el proceso existe pero no responde
+ * (colgado o con un ejecutable viejo tras actualizarse), o macOS 27 lo ha dejado en espera. Solo macOS; en Linux,
+ * `systemctl --user restart`. Falla si no está instalado.
+ */
+export async function restartService(): Promise<void> {
+  if (process.platform === "darwin") await exec("launchctl", kickstartArgs(true));
+  else if (process.platform === "linux") await exec("systemctl", ["--user", "restart", "backcode-runner.service"]);
+  else throw new Error(`unsupported platform: ${process.platform}`);
+}
+
+/**
+ * Siendo el servicio de launchd: lanza `launchctl kickstart -k` aparte (detached), para que launchd lo mate y lo relance
+ * de una vez, sin depender de KeepAlive (macOS 27 lo puede dejar en espera, y hay ThrottleInterval de 30 s). Devuelve
+ * false si no se ha podido lanzar (fuera de macOS o sin launchctl): entonces toca la salida de siempre.
+ */
+export function kickstartSelf(spawnFn: typeof spawn = spawn): Promise<boolean> {
+  if (process.platform !== "darwin") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      const child = spawnFn("launchctl", kickstartArgs(true), { detached: true, stdio: "ignore" });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 /**

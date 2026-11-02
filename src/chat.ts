@@ -10,8 +10,8 @@ import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
 import { claudeExecutable } from "./preflight.js";
-import { buildChatPrompt, buildChatSystemAppend, type ChatVideo } from "./prompt.js";
-import type { Attachment, ChatUserMessage, RunnerChat, Store } from "./store.js";
+import { buildChatPrompt, buildChatSystemAppend, type ChatVideo, type PromptMessage } from "./prompt.js";
+import type { Attachment, ChatUserMessage, RunnerChat, Store, ThreadMessage } from "./store.js";
 
 // Conversación libre con mi runner (botón junto a «Proponer una idea»): projects/{pid}/chats/{id}. No hay tarea: la
 // persona pregunta o pide arreglos pequeños (p. ej. resolver un conflicto en la rama de un PR). Claude trabaja con los
@@ -61,7 +61,7 @@ export function frameAttachments(frames: ChatUserMessage["frames"]): Attachment[
  * Lo que Claude recibe del vídeo de un mensaje: la transcripción y los fotogramas descargados (subcarpeta
  * <mensaje>-video de .backcode-attachments) o, si el análisis falló o no llegó a tiempo, el motivo.
  */
-async function chatVideo(store: Store, projectId: string, worktree: string, m: ChatUserMessage): Promise<ChatVideo> {
+async function chatVideo(store: Store, projectId: string, worktree: string, m: ThreadMessage): Promise<ChatVideo> {
   const durationMs = typeof m.video?.durationMs === "number" ? m.video.durationMs : undefined;
   if (m.videoDone !== true) return { durationMs, frames: [], error: "the analysis did not finish in time" };
   if (m.videoError) return { durationMs, frames: [], error: String(m.videoError).slice(0, 300) };
@@ -72,6 +72,18 @@ async function chatVideo(store: Store, projectId: string, worktree: string, m: C
     console.warn(`[chat] ${(err as Error).message}`);
   }
   return { durationMs, transcript: typeof m.transcript === "string" ? m.transcript : "", frames };
+}
+
+/**
+ * Un mensaje de la persona listo para el prompt (conversación con el runner o hilo de una tarea): sus adjuntos descargados
+ * en su subcarpeta de .backcode-attachments (excluida de git y protegida) y, si trae vídeo, su análisis.
+ */
+export async function promptMessage(store: Store, projectId: string, worktree: string, m: ThreadMessage): Promise<PromptMessage> {
+  return {
+    text: m.text,
+    files: m.attachments?.length ? await materializeAttachments(store, projectId, worktree, m.attachments, m.id) : [],
+    ...(m.video ? { video: await chatVideo(store, projectId, worktree, m) } : {}),
+  };
 }
 
 /** Una rama a la que la conversación puede cambiar: existente en el remoto (se comprueba al hacer fetch) y no la base. */
@@ -396,12 +408,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       // Las imágenes de cada mensaje se descargan en su subcarpeta de .backcode-attachments (excluida de git y protegida).
       const prompt = buildChatPrompt(
         await Promise.all(
-          unread.map(async (m) => ({
-            text: m.text,
-            files: m.attachments?.length ? await materializeAttachments(store, cfg.projectId, path, m.attachments, m.id) : [],
-            ...(m.video ? { video: await chatVideo(store, cfg.projectId, path, m) } : {}),
-            ...(m.voice === true ? { voice: true } : {}),
-          })),
+          unread.map(async (m) => ({ ...(await promptMessage(store, cfg.projectId, path, m)), ...(m.voice === true ? { voice: true } : {}) })),
         ),
       );
       for await (const msg of query({

@@ -16,6 +16,10 @@ ask for the configuration in the chat, no `sudo`, and ask before changing anythi
    what's missing on this computer and which projects are connected.
 2. Service log (when it runs at login): `tail -n 80 ~/.backcode/logs/service.log`.
    macOS: `launchctl print gui/$(id -u)/com.backcode.runner | head -20`. Linux: `systemctl --user status backcode-runner`.
+   **Installed but the panel doesn't answer** (port 47474; e.g. it stopped after an auto-update, or macOS 27 left the
+   launch on hold): offer to relaunch it with `backcode service restart` (same as
+   `launchctl kickstart -k gui/$(id -u)/com.backcode.runner`), which kills whatever process is there and starts it again.
+   Ask first: a task in progress goes back to the queue.
 3. Running by hand? `ps -Ao pid,command | grep -E "backcode|dist/(cli|index|all)\.js" | grep -v grep`.
 4. **CI** (only when you're in a project's repo): does its main branch have CI? See [CI](#ci) below.
 
