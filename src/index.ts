@@ -1304,7 +1304,8 @@ async function main(): Promise<void> {
   const queued = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[] };
   const requeue = () => {
     pending = [...queued.mine, ...queued.shared]
-      .filter((d) => store.executes(d.data() as Feature))
+      // Las archivadas se quedan en la cola sin ejecutarse: al desarchivarlas, el snapshot cambia y vuelven aquí.
+      .filter((d) => store.executes(d.data() as Feature) && d.get("archivedAt") == null)
       .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
       .sort((a, b) => a.priority - b.priority || a.at - b.at)
       .map((d) => ({ id: d.id, chatId: d.chatId }));

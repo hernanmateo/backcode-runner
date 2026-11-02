@@ -770,6 +770,18 @@ El texto de las tareas lo escriben otros miembros del grupo: se trata como **dat
 
 Recomendado: protege la rama base del repo (PR y review obligatorios) y revisa cada PR como si viniera de un desconocido.
 
+## Resolución de problemas: la app de Mac se queda cargando
+
+La app enseña el paso en curso bajo el spinner y, si el panel no responde en ~60 s, un aviso con el motivo (servicio no
+cargado o en espera, bloqueado en Ítems de inicio, puerto 47474 ocupado, servicio que falla al arrancar) y los botones
+**Retry**, **Open log**, **Open Login Items** y **Start without service**. Para comprobarlo a mano:
+
+- **¿Está en marcha el servicio?** `launchctl print gui/$(id -u)/com.backcode.runner` (mira `state`, `pid` y `last exit code`). Si no lo encuentra, no está cargado: vuelve a abrir la app o ejecuta `backcode` una vez.
+- **¿Lo bloquea macOS?** Configuración del Sistema › General › Ítems de inicio › *Permitir en segundo plano*: activa Backcode (o `backcode`). `launchctl print-disabled gui/$(id -u)` lo lista como desactivado si está apagado.
+- **¿Puerto ocupado?** `lsof -nP -iTCP:47474 -sTCP:LISTEN` dice quién escucha en el puerto del panel. Cierra ese proceso (`kill <PID>`) o usa `BACKCODE_PANEL_PORT`.
+- **¿Se cae al arrancar?** `tail -n 50 ~/.backcode/logs/service.log`.
+- `backcode` en la terminal arranca el panel sin el servicio y enseña el error.
+
 ## Diagnósticos de Backcode
 Si activas **Perfil › Enviar diagnósticos a Backcode** en la app (desactivado por defecto), cuando algo falla **por
 Backcode** tu runner manda un informe para que se arregle (`src/diagnostics.ts`). Solo cuenta como de Backcode una

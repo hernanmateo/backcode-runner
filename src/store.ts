@@ -443,6 +443,8 @@ export class Store {
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "execute" || !this.executes(d.data() as Feature)) return null;
+      // Archivada mientras esperaba en la cola: no se ejecuta (firestore.rules tampoco deja reclamarla).
+      if (d.get("archivedAt") != null) return null;
       const attempts = ((d.get("attempts") as number | undefined) ?? 0) + 1;
       // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
       const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
