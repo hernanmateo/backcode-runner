@@ -481,6 +481,17 @@ The executable is this same TypeScript code compiled with Bun, with the panel em
 Not yet. The OS sandbox is mandatory, so the runner supports macOS and Linux only.
 </details>
 
+## Preview and production environments (preview branch)
+
+Optional, off by default. When a project admin sets a **preview branch** in the app (e.g. `develop`; it must already exist on the remote), the runner:
+
+- starts tasks from that branch and opens their draft PRs against it;
+- publishes preview from it (OTA `preview`, staging/preview deploy targets, tester builds) and production from the base branch (OTA `production`, production targets and anything whose environment is unknown, such as rules or functions);
+- handles **Promote to production** (`promote`): opens or reuses the PR from the preview branch to the base branch, listing the tasks it brings. Merging it from the app uses a merge commit and keeps the branch, so those tasks show up as pending to deploy in production;
+- handles **Sync** (`syncPreview`): brings the base branch back into the preview branch (fast-forward or merge, never forced); with conflicts or a protected branch it opens a PR instead.
+
+Without a preview branch nothing changes. See `src/environments.ts`.
+
 ## Development
 
 ```bash

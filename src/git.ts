@@ -500,6 +500,11 @@ export async function stageAll(worktree: string): Promise<string[]> {
   return out.split("\0").filter(Boolean);
 }
 
+/** Commits de `to` que no están en `from` (refs o shas). */
+export async function countBetween(repoPath: string, from: string, to: string): Promise<number> {
+  return Number(await git(repoPath, ["rev-list", "--count", `${from}..${to}`]));
+}
+
 export async function commitsAhead(worktree: string, remote: string, baseBranch: string): Promise<number> {
   return Number(await git(worktree, ["rev-list", "--count", `${remote}/${baseBranch}..HEAD`]));
 }

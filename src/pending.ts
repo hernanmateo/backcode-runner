@@ -1,6 +1,7 @@
 import type { RunnerConfig } from "./config.js";
 import { lastCliPublish } from "./ota-watch.js";
-import { type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./git.js";
+import { countBetween, type DeployTarget, type ExpoApp, git, remoteHead, isAncestor } from "./git.js";
+import { previewBranch } from "./environments.js";
 import { includedTasks } from "./deploy-tasks.js";
 import { BUILD_PLATFORMS, type BuildPlatform, nativeDependencyChanges, nativeFilesByPlatform } from "./native-changes.js";
 import type { Store } from "./store.js";
@@ -47,6 +48,32 @@ export interface DeployPlan {
   builds?: BuildStep[];
   /** Builds para testers (app de Expo con perfil production): por plataforma, tareas mergeadas desde su última build. */
   buildTasks?: PlanBuild[];
+  /**
+   * Con rama de preview: lo que está en ella y aún no en la base (lo que entraría al «Promocionar a producción») y
+   * cuántos commits de la base le faltan a ella (tras promocionar o un hotfix: «Sincronizar»).
+   */
+  promotion?: PlanPromotion;
+}
+
+export interface PlanPromotion {
+  branch: string;
+  /** La rama base (production). */
+  into: string;
+  /** Commits de la rama de preview que no están en la base. */
+  count: number;
+  features: { id: string; title: string }[];
+  /** Commits de la base que no están en la rama de preview. */
+  behind: number;
+}
+
+/** Lo pendiente de promocionar de la rama de preview a la base (`base`: su punta), si el proyecto tiene rama de preview. */
+async function promotionOf(cfg: RunnerConfig, base: string, merged: { id: string; title: string; sha: string }[]): Promise<PlanPromotion | undefined> {
+  const branch = previewBranch();
+  if (!branch) return undefined;
+  const head = await remoteHead(cfg.repoPath, cfg.remote, branch);
+  const [count, behind] = await Promise.all([countBetween(cfg.repoPath, base, head), countBetween(cfg.repoPath, head, base)]);
+  const features = count ? await includedTasks(merged, head, base, (a, c) => isAncestor(cfg.repoPath, a, c)) : [];
+  return { branch, into: cfg.baseBranch, count, features: features.slice(0, MAX_PLAN_BUILD_TASKS), behind };
 }
 
 export interface BuildStep {
@@ -175,7 +202,8 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
   }
   // Tareas pendientes de build: las mergeadas desde la última build hecha bien de cada plataforma.
   const buildTasks = app?.buildProfiles.includes("production") ? await pendingBuilds(merged, base, last, (a, c) => isAncestor(cfg.repoPath, a, c)) : [];
-  return { base, steps: steps.slice(0, 10), ...(nativeHint ? { nativeHint } : {}), ...(builds.length ? { builds } : {}), ...(buildTasks.length ? { buildTasks } : {}) };
+  const promotion = await promotionOf(cfg, base, merged).catch(() => undefined);
+  return { base, steps: steps.slice(0, 10), ...(promotion ? { promotion } : {}), ...(nativeHint ? { nativeHint } : {}), ...(builds.length ? { builds } : {}), ...(buildTasks.length ? { buildTasks } : {}) };
 
   /** Qué tareas lo traen: las mergeadas cuyo commit está entre el último despliegue y la base y tocan esos ficheros. */
   async function bringing(lastSha: string, match: (file: string) => boolean): Promise<{ id: string; title: string }[]> {

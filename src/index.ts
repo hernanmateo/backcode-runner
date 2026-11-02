@@ -11,6 +11,7 @@ import { z } from "zod";
 import { KIT_DIR, loadConfig } from "./config.js";
 import { CONFIG_DIR, LOGS_DIR, ownArgs, readState, updateState } from "./paths.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
+import { previewBranch, setPreviewBranch, taskBase, validPreviewBranch } from "./environments.js";
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
@@ -117,7 +118,7 @@ async function drainAutoMerge(): Promise<void> {
       const signal = autoMergeAbort.signal;
       const final = await autoMerge({
         featureId,
-        base: cfg.baseBranch,
+        base: taskBase(cfg.baseBranch),
         retries: autoMergeSettings.retries,
         hasCi: store.capabilities.ci,
         merge: () => mergeTask(cfg, store, prHost, featureId, { auto: true }),
@@ -197,37 +198,37 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const resuming = !!feature.sessionId;
   // Modo plan: hasta que quien la ejecuta aprueba el plan, Claude solo lee el repo y propone (o rehace) el plan.
   const planning = !!feature.planFirst && !feature.planApproved;
-  const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: cfg.baseBranch, featureId: id, branch: feature.branch!, resume: resuming });
+  const wt = await createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), featureId: id, branch: feature.branch!, resume: resuming });
   // Hecha con Claude Code desde el repo: su sesión está guardada en la carpeta del repo, no en la del worktree.
   if (resuming && feature.origin === "local" && !adoptTranscript(wt.path, feature.sessionId!)) {
     await store.event(id, "say", t("run.localTask"));
     return { status: "done", result: { ...(feature.result ?? {}), error: undefined } };
   }
-  await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
+  await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}` }));
   // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
   // Claude los resuelve en esta vuelta y el commit de open_pull_request cierra el merge.
   let conflicts: string[] = [];
   if (resuming) {
-    const sync = await mergeBaseIntoBranch(wt.path, cfg.remote, cfg.baseBranch).catch((err: Error) => {
-      void store.event(id, "say", t("run.syncFail", { base: cfg.baseBranch, error: err.message }));
+    const sync = await mergeBaseIntoBranch(wt.path, cfg.remote, taskBase(cfg.baseBranch)).catch((err: Error) => {
+      void store.event(id, "say", t("run.syncFail", { base: taskBase(cfg.baseBranch), error: err.message }));
       return null;
     });
     if (sync?.status === "merged") {
       await pushBranch(wt.path, cfg.remote, wt.branch).catch(() => undefined);
-      await store.event(id, "start", t("run.synced", { base: `${cfg.remote}/${cfg.baseBranch}` }));
+      await store.event(id, "start", t("run.synced", { base: `${cfg.remote}/${taskBase(cfg.baseBranch)}` }));
       await store.setConflicts(id, []).catch(() => undefined);
     } else if (sync?.status === "uptodate") {
       // Ya contiene la base: si quedaba una marca de conflictos de antes, sobra.
       if (feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
     } else if (sync?.status === "conflicts") {
       conflicts = sync.files;
-      await store.event(id, "start", t("run.conflicts", { base: `${cfg.remote}/${cfg.baseBranch}`, files: conflicts.join(", ") }));
+      await store.event(id, "start", t("run.conflicts", { base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, files: conflicts.join(", ") }));
     }
   }
   // Dependencias listas antes de Claude (task-deps.ts): dentro del sandbox, instalarlas a menudo no acaba. Planificando
   // solo lee, así que se dejan para cuando se apruebe el plan.
   if (!planning) {
-    const deps = await prepareTaskDependencies({ worktree: wt.path, base: `${cfg.remote}/${cfg.baseBranch}` });
+    const deps = await prepareTaskDependencies({ worktree: wt.path, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}` });
     for (const d of deps) {
       const where = d.dir || t("act.root");
       await store.event(id, "start", d.ok ? t("run.deps", { cmd: d.cmd.join(" "), dir: where }) : t("run.depsFail", { cmd: d.cmd.join(" "), dir: where, error: d.error ?? "" }));
@@ -294,7 +295,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           if (prUrl) return fail(t("pr.already", { url: prUrl }));
 
           const files = await stageAll(wt.path);
-          if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, cfg.baseBranch)) === 0) {
+          if (files.length === 0 && (await commitsAhead(wt.path, cfg.remote, taskBase(cfg.baseBranch))) === 0) {
             return fail(t("pr.empty"));
           }
           const blocked = files.filter(isProtected);
@@ -304,7 +305,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
           const footer = `\n\n---\n${t("pr.footer", { id, n: files.length, branch: wt.branch })}\n\n${t("pr.generated")}`;
           try {
-            prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: cfg.baseBranch, branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
+            prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
             // Si la rama tenía conflictos con la base, ya están resueltos y subidos: se quita la marca (y el botón de
             // mergear vuelve a aparecer) sin esperar a la comprobación periódica.
             if (conflicts.length || feature.conflicts?.length) await store.setConflicts(id, []).catch(() => undefined);
@@ -459,7 +460,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: cfg.baseBranch, remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }),
+          append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
         settingSources: [],
@@ -658,7 +659,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       review = { ...review, state: "reviewing" };
       await save();
       await store.event(id, "start", t(review.passes ? "review.retry" : "review.start", { level }));
-      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${cfg.baseBranch}`, level, model, env: agentEnv(), isProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
+      const r = await runReview({ cwd: wt.path, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, level, model, env: agentEnv(), isProtected, denyRead: DENY_READ, allowedDomains: cfg.allowedDomains, maxTurns: cfg.maxTurns, maxBudgetUsd: cfg.maxBudgetUsd, signal: abort.signal });
       addSpend(r.spend);
       review = { ...review, passes: review.passes + 1, costUsd: review.costUsd + r.spend.costUsd, findings: r.findings ?? review.findings };
       return r;
@@ -717,7 +718,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       : justApproved
         ? buildApprovedPlanPrompt(replies)
         : resuming
-          ? buildFollowUpPrompt(replies, !!previousPr, { base: cfg.baseBranch, files: conflicts })
+          ? buildFollowUpPrompt(replies, !!previousPr, { base: taskBase(cfg.baseBranch), files: conflicts })
           : buildUserPrompt(id, feature, attachments);
     if (model) await store.event(id, "say", t("run.model", { model }));
     // Pedida desde la app con la tarea parada: primero Remote Control, y al volver sigue el runner.
@@ -805,7 +806,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 /** ¿Hay cambios sin publicar en el worktree (sin commitear o commits por delante de la base)? */
 async function hasWork(worktree: string): Promise<boolean> {
   const dirty = await git(worktree, ["status", "--porcelain"]).then((o) => o.trim().length > 0, () => false);
-  return dirty || (await commitsAhead(worktree, cfg.remote, cfg.baseBranch).catch(() => 0)) > 0;
+  return dirty || (await commitsAhead(worktree, cfg.remote, taskBase(cfg.baseBranch)).catch(() => 0)) > 0;
 }
 
 /** Una línea legible por herramienta para la actividad de la app: "Edit: src/x.ts", "Bash: npm test"… */
@@ -1080,6 +1081,29 @@ async function main(): Promise<void> {
     }
   });
   const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
+  // «Rama de preview» (opcional): solo cuenta si es válida y existe en el remoto; si no, todo sigue en la rama base.
+  const stopPreviewBranch = store.watchPreviewBranch((branch) => {
+    if (!branch) {
+      if (previewBranch()) console.log(`[backcode] ${t("env.previewOff", { base: cfg.baseBranch })}`);
+      setPreviewBranch(undefined);
+      return;
+    }
+    if (!validPreviewBranch(branch, cfg.baseBranch)) {
+      console.warn(`\x1b[33m⚠ ${t("env.previewInvalid", { branch })}\x1b[0m`);
+      setPreviewBranch(undefined);
+      return;
+    }
+    void remoteHead(cfg.repoPath, cfg.remote, branch).then(
+      () => {
+        if (previewBranch() !== branch) console.log(`[backcode] ${t("env.previewOn", { branch: `${cfg.remote}/${branch}`, base: cfg.baseBranch })}`);
+        setPreviewBranch(branch);
+      },
+      () => {
+        console.warn(`\x1b[33m⚠ ${t("env.previewMissing", { branch: `${cfg.remote}/${branch}`, base: cfg.baseBranch })}\x1b[0m`);
+        setPreviewBranch(undefined);
+      },
+    );
+  });
   const stopAutoMerge = store.watchAutoMerge(({ on, retries }) => {
     autoMergeSettings.on = on;
     autoMergeSettings.retries = clampRetries(retries);
@@ -1112,15 +1136,15 @@ async function main(): Promise<void> {
         }
         if (pr?.state === "closed") continue; // cerrado sin mergear: nada que vigilar
       }
-      if (!(await fetchBranches(cfg.repoPath, cfg.remote, cfg.baseBranch, f.branch).then(() => true, () => false))) continue;
-      const key = `${await remoteSha(cfg.repoPath, cfg.remote, cfg.baseBranch)}:${await remoteSha(cfg.repoPath, cfg.remote, f.branch)}`;
+      if (!(await fetchBranches(cfg.repoPath, cfg.remote, taskBase(cfg.baseBranch), f.branch).then(() => true, () => false))) continue;
+      const key = `${await remoteSha(cfg.repoPath, cfg.remote, taskBase(cfg.baseBranch))}:${await remoteSha(cfg.repoPath, cfg.remote, f.branch)}`;
       if (checked.get(f.id) === key) continue;
-      const files = await findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, cfg.baseBranch, f.branch).catch(() => null);
+      const files = await findConflicts(cfg.repoPath, cfg.worktreesDir, cfg.remote, taskBase(cfg.baseBranch), f.branch).catch(() => null);
       if (files === null) continue;
       checked.set(f.id, key);
       if (files.join("\n") !== f.conflicts.join("\n")) {
         await store.setConflicts(f.id, files).catch(() => undefined);
-        if (files.length) console.warn(`\x1b[33m⚠ ${t("main.clash", { id: f.id, base: cfg.baseBranch, files: files.join(", ") })}\x1b[0m`);
+        if (files.length) console.warn(`\x1b[33m⚠ ${t("main.clash", { id: f.id, base: taskBase(cfg.baseBranch), files: files.join(", ") })}\x1b[0m`);
       }
     }
   };
@@ -1475,6 +1499,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopPreviewBranch();
     stopAutoMerge();
     autoMergeAbort.abort();
     clearInterval(machineTimer);
@@ -1525,6 +1550,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopPreviewBranch();
     stopAutoMerge();
     autoMergeAbort.abort();
     clearInterval(machineTimer);
