@@ -959,6 +959,35 @@ export class Store {
     }).catch(() => false);
   }
 
+  /**
+   * Candado de despliegue del proyecto (locks/deploy): un solo despliegue, OTA o paso de «Desplegarlo todo» a la vez,
+   * de cualquier runner. Lo toma (o renueva) si está libre, caducado o es mío; si no, devuelve lo que se despliega.
+   */
+  async takeDeployLock(action: string, step: string, leaseMs: number): Promise<{ ok: true } | { ok: false; step: string }> {
+    const ref = doc(this.project(), "locks", "deploy");
+    return runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      const holder = lock.get("holder") as string | undefined;
+      const until = (lock.get("until") as Timestamp | undefined)?.toMillis() ?? 0;
+      if (holder && holder !== this.uid && until > Date.now()) return { ok: false as const, step: String(lock.get("step") ?? "") };
+      tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(Date.now() + leaseMs), action: action.slice(0, 64) || "-", step: step.slice(0, 120) || "-" });
+      return { ok: true as const };
+    });
+  }
+
+  async releaseDeployLock(action: string): Promise<void> {
+    const ref = doc(this.project(), "locks", "deploy");
+    await runTransaction(this.db, async (tx) => {
+      const lock = await tx.get(ref);
+      if (lock.get("holder") === this.uid && lock.get("action") === (action.slice(0, 64) || "-")) tx.set(ref, { holder: this.uid, until: Timestamp.fromMillis(0) });
+    }).catch(() => undefined);
+  }
+
+  /** Progreso de una acción en marcha («Desplegarlo todo»: paso actual y pasos hechos), para verlo en vivo en la app. */
+  async actionProgress(id: string, result: Record<string, unknown>): Promise<void> {
+    await updateDoc(doc(this.project(), "actions", id), { result: JSON.parse(JSON.stringify(result)) as Record<string, unknown>, updatedAt: serverTimestamp() });
+  }
+
   async releaseMergeTurn(): Promise<void> {
     const ref = doc(this.project(), "locks", "autoMerge");
     await runTransaction(this.db, async (tx) => {

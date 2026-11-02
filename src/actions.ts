@@ -19,6 +19,7 @@ import { otaScriptArgs, promoteCheck } from "./ota.js";
 import { appScheme, nativeFiles, prChannel, prNumberOf, prOtaArgs, prOtaLink } from "./pr-ota.js";
 import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
+import { type CurrentStep, type DeployLock, DeployProgress, isTransientDeployError, retryTransient, withDeployLock } from "./deploy-progress.js";
 import { scopeOf } from "./pending.js";
 import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from "./versions.js";
 
@@ -79,10 +80,17 @@ export interface StepResult {
   updateId?: string;
   url?: string;
   error?: string;
+  /** Cuándo empezó de verdad (ya con el candado de despliegue; ms del reloj del runner) y cuánto duró. */
+  startedAt?: number;
+  durationMs?: number;
 }
 export interface ActionResult {
   /** «Desplegarlo todo»: cómo fue cada paso (los que no llegaron a ejecutarse no aparecen). */
   steps?: StepResult[];
+  /** «Desplegarlo todo»: los pasos en el orden en que el runner los ejecuta. */
+  order?: string[];
+  /** Mientras corre: el paso que se está haciendo (o esperando el candado). Desaparece en el resultado final. */
+  current?: CurrentStep;
   url?: string;
   sha?: string;
   /**
@@ -173,18 +181,71 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
     return done;
   }
   if (action.type === "deployAll") {
-    const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "", action.skipSmoke === true);
+    const done = await deployAll(cfg, store, host, action.steps ?? [], action.message ?? "", action.skipSmoke === true, action.id);
     await syncLocal(cfg);
     return done;
   }
-  const done =
-    action.type === "build"
-      ? await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)))
-      : action.type === "deploy"
-        ? await withTasks(cfg, store, `deploy:${action.target ?? ""}`, await runDeploy(cfg, host, action.target ?? ""))
-        : await publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true, action.promote === true);
+  if (action.type === "build") {
+    const done = await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)));
+    await syncLocal(cfg);
+    return done;
+  }
+  // Despliegue u OTA sueltos: también de uno en uno en el proyecto (candado de despliegue), como cada paso de deployAll.
+  const step = action.type === "deploy" ? `deploy:${action.target ?? ""}` : `ota:${action.channel ?? "preview"}`;
+  const id = action.id ?? "";
+  const since = Date.now();
+  const progress = (waitingFor?: string) => (id ? store.actionProgress(id, { current: { id: step, index: 0, startedAt: since, ...(waitingFor ? { waitingFor } : {}) } }).catch(() => undefined) : Promise.resolve());
+  const done = await withDeployLock(deployLock(store), id || step, stepLabel(step), async () =>
+    action.type === "deploy"
+      ? withTasks(cfg, store, step, await deployWithRetry(cfg, store, host, action.target ?? ""))
+      : publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true, action.promote === true),
+  {
+    onWait: async (busy) => {
+      console.log(`[action] ${t("deploy.waitLock", { step: busy })}`);
+      await progress(busy);
+    },
+    onAcquired: () => progress(),
+  });
   await syncLocal(cfg);
   return done;
+}
+
+/** Nombre corto de un paso para el log y el candado: `deploy:functions#functions` → functions, `ota:preview` → OTA preview. */
+function stepLabel(id: string): string {
+  return id.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ");
+}
+
+/** Lo que dura el candado de despliegue sin renovarse: si el runner se cae a medias, otro puede desplegar tras esto. */
+const DEPLOY_LOCK_LEASE_MS = 5 * 60_000;
+const deployLock = (store: Store): DeployLock => ({
+  take: (action, step) => store.takeDeployLock(action, step, DEPLOY_LOCK_LEASE_MS),
+  release: (action) => store.releaseDeployLock(action),
+});
+
+/**
+ * Despliegue de un destino reintentando (como mucho 2 veces, tras 20 s y 60 s) los errores transitorios de Firebase
+ * («Failed to list functions», 429/503, cuota…), que suelen salir cuando otro despliegue del mismo proyecto de Firebase
+ * coincide o la API falla un momento. Un error de compilación o del código no se reintenta. Queda en el log.
+ */
+async function deployWithRetry(cfg: RunnerConfig, store: Store, host: PrHost | undefined, targetId: string, onRetry?: (attempt: number) => Promise<void>) {
+  const firebase = store.capabilities.deploys.find((d) => d.id === targetId)?.provider === "firebase";
+  const label = stepLabel(`deploy:${targetId}`);
+  const notes: string[] = [];
+  const done = await retryTransient(() => runDeploy(cfg, host, targetId), {
+    transient: (error) => (firebase || /Failed to list functions/i.test(error)) && isTransientDeployError(error),
+    onRetry: async (attempt, waitMs, error) => {
+      const line = t("deploy.retrying", { step: label, n: attempt + 1, s: Math.round(waitMs / 1000), error: error.split("\n").find((l) => isTransientDeployError(l))?.trim().slice(0, 300) ?? "" });
+      console.log(`[action] ${line}`);
+      notes.push(line);
+      await onRetry?.(attempt);
+    },
+  });
+  const { attempts, ...rest } = done;
+  if (attempts > 1 && rest.ok) notes.push(t("deploy.retried", { step: label, n: attempts }));
+  if (!notes.length) return rest;
+  const result: ActionResult = { ...rest.result, log: `${notes.join("\n")}\n${rest.result.log ?? ""}`.slice(-2000) };
+  if (!rest.ok && result.error) result.error = `${notes.join("\n")}\n${result.error}`.slice(-3000);
+  return { ok: rest.ok, result };
 }
 
 /**
@@ -700,31 +761,68 @@ const STEP_RE = /^(ota:(production|preview)|deploy:[A-Za-z0-9._/@-]{0,200}#[a-z0
  * publicar la app nueva si sus reglas o sus functions no han salido. skipSmoke (perfil «sin comprobaciones por defecto»)
  * solo afecta al paso OTA.
  */
-async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefined, requested: string[], message: string, skipSmoke = false): Promise<{ ok: boolean; result: ActionResult }> {
+export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | undefined, requested: string[], message: string, skipSmoke = false, actionId?: string, run: DeployAllRunner = {}): Promise<{ ok: boolean; result: ActionResult }> {
   const wanted = [...new Set(requested)].filter((s) => STEP_RE.test(s)).slice(0, 10);
   if (!wanted.length) return { ok: false, result: { error: t("plan.noSteps") } };
   const order = (store.plan?.steps ?? []).map((s) => s.id);
   const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : 100 + (id.startsWith("ota:") ? 1 : 0));
   const steps = wanted.sort((a, b) => rank(a) - rank(b));
-  const results: StepResult[] = [];
   const log: string[] = [];
   const features: DeployedTask[] = [];
+  // Progreso en vivo en el documento de la acción (paso actual y pasos hechos): la app lo ve avanzar.
+  const progress = new DeployProgress<StepResult>(steps, (r) => (actionId ? store.actionProgress(actionId, r as unknown as Record<string, unknown>) : Promise.resolve()));
+  const runStep =
+    run.step ??
+    ((id: string, onRetry: (attempt: number) => Promise<void>) =>
+      id.startsWith("ota:")
+        ? publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode", undefined, false, skipSmoke)
+        : deployWithRetry(cfg, store, host, id.slice("deploy:".length), onRetry).then((done) => withTasks(cfg, store, id, done)));
+  const lock = run.lock ?? deployLock(store);
+  const finalResult = async (r: { ok: boolean; result: ActionResult }) => {
+    await progress.settled();
+    return r;
+  };
   for (const [i, id] of steps.entries()) {
-    const label = `${i + 1}. ${id.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`;
+    const label = `${i + 1}. ${stepLabel(id)}`;
     console.log(`[action] deployAll ${label}`);
-    const done = id.startsWith("ota:")
-      ? await publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode", undefined, false, skipSmoke)
-      : await withTasks(cfg, store, id, await runDeploy(cfg, host, id.slice("deploy:".length)));
-    const { ok, result } = await Promise.resolve(done).catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult }));
+    await progress.start(id);
+    // Antes de cada paso, el candado de despliegue del proyecto: si otro runner (u otra acción) despliega, se espera.
+    const startedAt = Date.now();
+    const done = withDeployLock(
+      lock,
+      actionId ?? id,
+      stepLabel(id),
+      async () => {
+        const began = Date.now();
+        const out = await runStep(id, (attempt) => progress.retrying(id, attempt));
+        return { ...out, began };
+      },
+      {
+        onWait: async (busy) => {
+          console.log(`[action] ${t("deploy.waitLock", { step: busy })}`);
+          await progress.start(id, busy);
+        },
+        onAcquired: () => progress.running(id),
+        ...(run.sleep ? { sleep: run.sleep } : {}),
+      },
+    );
+    const { ok, result, began } = await done.catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult, began: startedAt }));
     for (const f of result.features ?? []) if (features.length < MAX_DEPLOYED_TASKS && !features.some((g) => g.id === f.id)) features.push(f);
-    results.push({ id, ok, ...(result.sha ? { sha: result.sha } : {}), ...(result.version ? { version: result.version } : {}), ...(result.updateId ? { updateId: result.updateId } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
+    await progress.finish({ id, ok, startedAt: began, durationMs: Date.now() - began, ...(result.sha ? { sha: result.sha } : {}), ...(result.version ? { version: result.version } : {}), ...(result.updateId ? { updateId: result.updateId } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
     log.push(`${ok ? "✓" : "✗"} ${label}${result.url ? ` · ${result.url}` : ""}`);
     if (!ok) {
-      const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${s.replace(/^deploy:[^#]*#/, "").replace(/^ota:/, "OTA ")}`);
-      return { ok: false, result: { steps: results, ...(features.length ? { features } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } };
+      const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${stepLabel(s)}`);
+      return finalResult({ ok: false, result: { order: steps, steps: progress.steps, ...(features.length ? { features } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } });
     }
   }
-  return { ok: true, result: { steps: results, sha: results.at(-1)?.sha, features, log: log.join("\n") } };
+  return finalResult({ ok: true, result: { order: steps, steps: progress.steps, sha: progress.steps.at(-1)?.sha, features, log: log.join("\n") } });
+}
+
+/** Para los tests: cómo se hace cada paso, el candado y las esperas (por defecto, los de verdad). */
+export interface DeployAllRunner {
+  step?: (id: string, onRetry: (attempt: number) => Promise<void>) => Promise<{ ok: boolean; result: ActionResult }>;
+  lock?: DeployLock;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Tras instalar la versión de desarrollo, Metro con la rama principal si no estaba en marcha (para que la app arranque). */
