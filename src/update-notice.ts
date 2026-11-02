@@ -1,7 +1,7 @@
 import { httpsCallable, type Functions } from "firebase/functions";
 import { latestPublished, newer, UPDATE_MODE, VERSION } from "./autoupdate.js";
 import { lang } from "./i18n.js";
-import { olderThan, PLUGIN_VERSION, pluginInstalls } from "./plugin.js";
+import { migrateStaleMarketplace, olderThan, PLUGIN_VERSION, pluginInstalls } from "./plugin.js";
 import { installedClaude } from "./preflight.js";
 
 // Push al móvil y a la web cuando hay versión nueva del runner o el plugin de Claude Code instalado es más antiguo que el
@@ -30,6 +30,8 @@ let reported = "";
 export async function reportUpdates(fns: Functions, projectId: string): Promise<void> {
   try {
     const claude = installedClaude();
+    // El marketplace del repo antiguo no trae novedades: se cambia solo antes de mirar qué versión hay.
+    if (claude) await migrateStaleMarketplace(claude);
     const report = updateReport(await latestPublished(), claude ? await pluginInstalls(claude) : null);
     const key = JSON.stringify(report);
     if (!report || key === reported) return;

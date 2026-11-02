@@ -198,6 +198,16 @@ never with a commit to the main branch:
 
 Tell the user the PR is on the board, ready to review and merge from the app.
 
+**Repos set up before the plugin moved to `hernanmateo/backcode-dist`**: if the repo's `.claude/settings.json` (on the main
+branch: `git show <remote>/<base>:.claude/settings.json`) has `extraKnownMarketplaces.backcode.source.repo` set to
+`hernanmateo/backcode-runner`, that old repo no longer gets the plugin or its updates. Say it in one line and offer to change
+it to `hernanmateo/backcode-dist`, the same way (**in a PR, the Backcode way**, never on the main branch):
+`backcode task start "Apuntar el marketplace de Backcode a backcode-dist"` (in the user's language), change only that value in
+the worktree (keep every other key), commit and `backcode task pr --title "<same title>" --body "<one line: why>"`. If the
+marketplace on this computer also points at the old repo, `backcode status` says so: the runner switches it by itself, or
+`! claude plugin marketplace remove backcode`, `! claude plugin marketplace add hernanmateo/backcode-dist` and
+`! claude plugin install backcode@backcode --scope user`.
+
 ### 6.5 Keep this computer awake
 
 Ask: "Do you want this computer to keep picking up tasks while you're not using it? **No** / **Plugged in** (recommended on

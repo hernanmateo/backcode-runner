@@ -6,7 +6,7 @@ import { parseEnv } from "./config.js";
 import { t } from "./i18n.js";
 import { MACHINE_BEAT_MS, machineId, machineStatus } from "./machines.js";
 import { projectFiles } from "./paths.js";
-import { PLUGIN_UPDATE_CMDS } from "./plugin.js";
+import { PLUGIN_UPDATE_CMDS, backcodeMarketplace, installOrUpdatePlugin } from "./plugin.js";
 import { installedClaude } from "./preflight.js";
 import { connect } from "./store.js";
 import type { Supervisor } from "./supervisor.js";
@@ -72,10 +72,17 @@ export interface ControlOutcome {
   after?: () => void | Promise<void>;
 }
 
-/** Los comandos fijos de PLUGIN_UPDATE_CMDS con la Claude Code de este ordenador. */
+/**
+ * Los comandos fijos de PLUGIN_UPDATE_CMDS con la Claude Code de este ordenador. Si el marketplace aún lee del repo
+ * antiguo, `marketplace update` no trae nada: se cambia a MARKETPLACE_REPO y se reinstala (installOrUpdatePlugin).
+ */
 export async function updatePlugin(): Promise<string | null> {
   const claude = installedClaude();
   if (!claude) return "claude";
+  if ((await backcodeMarketplace(claude))?.state === "stale") {
+    const r = await installOrUpdatePlugin(claude);
+    return r.ok ? null : r.output.slice(-500);
+  }
   try {
     for (const cmd of PLUGIN_UPDATE_CMDS) {
       const [bin, ...args] = cmd.split(" ");

@@ -22,6 +22,11 @@ ask for the configuration in the chat, no `sudo`, and ask before changing anythi
    Ask first: a task in progress goes back to the queue.
 3. Running by hand? `ps -Ao pid,command | grep -E "backcode|dist/(cli|index|all)\.js" | grep -v grep`.
 4. **CI** (only when you're in a project's repo): does its main branch have CI? See [CI](#ci) below.
+5. **Old marketplace in the repo** (only when you're in a project's repo): if `.claude/settings.json` on the main branch
+   (`git show <remote>/<base>:.claude/settings.json`) has `extraKnownMarketplaces.backcode.source.repo` =
+   `hernanmateo/backcode-runner`, the plugin now lives in `hernanmateo/backcode-dist` and that repo no longer gets updates.
+   Offer to change it **in a PR, the Backcode way**, like the last part of step **6.4** of `/backcode:setup`
+   (`backcode task start …`, change only that value, `backcode task pr …`); never edit or commit it on the main branch.
 
 ## CI
 
@@ -57,6 +62,7 @@ own PR, never on the main branch).
 | Panel doesn't open | Nothing listening on 127.0.0.1:47474, or another program on that port | `backcode` starts it; `BACKCODE_PANEL_PORT=47475 backcode` for another port |
 | Stuck on an old version | Updates fail (no network, a git copy with local changes) | The log says why; reinstall with the Mac app or `install.sh` |
 | Guidelines or `/backcode:feature` not working, or `backcode status` says the plugin has a new version | The Claude Code plugin is missing or old: Claude Code doesn't update this marketplace by itself | `! claude plugin marketplace update backcode` and `! claude plugin update backcode@backcode` (or **Update the plugin** in the panel), then restart Claude Code. To keep it current: /plugin › Marketplaces › backcode › enable auto-update |
+| `backcode status` says the «backcode» marketplace reads from `hernanmateo/backcode-runner` (or another repo) | It was added before the plugin moved to `hernanmateo/backcode-dist`: updates (and `marketplace add`) fail | The runner switches it by itself within half an hour, or **Update the plugin** in the panel. By hand: `! claude plugin marketplace remove backcode`, `! claude plugin marketplace add hernanmateo/backcode-dist`, `! claude plugin install backcode@backcode --scope user`, then restart Claude Code. A local folder marketplace (for development) is left alone |
 | Guidelines not showing in a repo | An admin set the project to **Free** (off) in the app (the default is **Remind**), or this computer's runner isn't connected to that project | An admin sets **Remind** in the app (Edit project); connect the runner to the project. Then a new Claude Code session |
 | «No CI» badge in the app, PRs merged with no checks | The repo's main branch has no CI | See [CI](#ci): offer to create it in its own PR |
 
