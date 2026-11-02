@@ -9,12 +9,16 @@ import { readState, updateState } from "./paths.js";
 // (hook session-start), en el panel y en `backcode status`, con un botón o los comandos para ponerlo al día.
 
 /** La versión del plugin que va con este runner (= plugins/backcode/.claude-plugin/plugin.json; lo comprueba un test). */
-export const PLUGIN_VERSION = "1.1.10";
+export const PLUGIN_VERSION = "1.1.11";
 export const PLUGIN_ID = "backcode@backcode";
 export const MARKETPLACE_REPO = "hernanmateo/backcode-dist";
 /** Lo que hay que escribir en Claude Code para actualizarlo a mano (con `!`, o en una terminal sin él). */
 export const PLUGIN_UPDATE_CMDS = ["claude plugin marketplace update backcode", `claude plugin update ${PLUGIN_ID}`];
 export const PLUGIN_INSTALL_CMDS = [`claude plugin marketplace add ${MARKETPLACE_REPO}`, `claude plugin install ${PLUGIN_ID} --scope user`];
+/** El repo de antes de publicar el plugin en backcode-dist: quien lo añadió entonces tiene el marketplace apuntando aquí. */
+export const OLD_MARKETPLACE_REPO = "hernanmateo/backcode-runner";
+/** Para pasar a mano el marketplace `backcode` de otro repo a MARKETPLACE_REPO. */
+export const PLUGIN_MIGRATE_CMDS = ["claude plugin marketplace remove backcode", ...PLUGIN_INSTALL_CMDS];
 
 /** ¿a es más antigua que b? (x.y.z; lo que no se entiende, nunca es «más antiguo»). */
 export function olderThan(a: string, b: string): boolean {
@@ -91,30 +95,132 @@ export async function pluginInRepos(claude: string, installs: PluginInstall[], r
   return Object.fromEntries(entries);
 }
 
+/**
+ * El marketplace `backcode` de este ordenador: `missing` (no está), `current` (MARKETPLACE_REPO), `stale` (otro repo o URL,
+ * p. ej. el antiguo hernanmateo/backcode-runner: hay que quitarlo y volver a añadirlo) o `local` (una carpeta o un archivo,
+ * para desarrollar: no se toca).
+ */
+export type MarketplaceState = "missing" | "current" | "stale" | "local";
+export interface BackcodeMarketplace {
+  state: MarketplaceState;
+  /** De dónde lee: el repo de GitHub, la URL o la ruta. */
+  source?: string;
+}
+type MarketplaceSource = { source?: string; repo?: string; url?: string; path?: string };
+
+/** Un repo de GitHub (`owner/repo`) o una URL de git de github.com, como `owner/repo` en minúsculas; null si no lo es. */
+function githubRepo(s: string): string | null {
+  const m = /^(?:(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[/:])?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(s.trim());
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Clasifica la fuente de un marketplace (`{ source, repo | url | path }`, como en `marketplace list --json` o known_marketplaces.json). */
+export function classifyMarketplace(src: MarketplaceSource | null | undefined): BackcodeMarketplace {
+  if (!src) return { state: "missing" };
+  const remote = src.source === "github" ? src.repo : src.source === "git" || src.source === "url" ? src.url : undefined;
+  if (!remote) return { state: "local", source: src.path ?? src.repo ?? src.url };
+  return { state: githubRepo(remote) === MARKETPLACE_REPO.toLowerCase() ? "current" : "stale", source: remote };
+}
+
+/** El marketplace `backcode` según `claude plugin marketplace list --json` (los demás no se miran). null si no se entiende. */
+export function parseMarketplaceList(json: string): BackcodeMarketplace | null {
+  try {
+    const list = JSON.parse(json) as ({ name?: string } & MarketplaceSource)[];
+    return Array.isArray(list) ? classifyMarketplace(list.find((m) => m.name === "backcode")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Lo mismo desde ~/.claude/plugins/known_marketplaces.json (solo la entrada `backcode`). */
+export function parseKnownMarketplaces(json: string): BackcodeMarketplace | null {
+  try {
+    const known = JSON.parse(json) as Record<string, { source?: MarketplaceSource } | undefined> | null;
+    return known && typeof known === "object" && !Array.isArray(known) ? classifyMarketplace(known.backcode?.source) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** De dónde lee el marketplace `backcode` (solo lectura). null si no se pudo saber. */
+export async function backcodeMarketplace(claude: string, knownFile = join(homedir(), ".claude", "plugins", "known_marketplaces.json")): Promise<BackcodeMarketplace | null> {
+  const r = await claudeRun(claude, ["plugin", "marketplace", "list", "--json"], undefined, 20_000);
+  const listed = r.ok ? parseMarketplaceList(r.output) : null;
+  if (listed) return listed;
+  // Claude Code sin `--json`: el archivo donde guarda los marketplaces.
+  try {
+    return existsSync(knownFile) ? parseKnownMarketplaces(readFileSync(knownFile, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Activa el plugin desactivado (para tu usuario). */
 export function enablePlugin(claude: string): Promise<{ ok: boolean; output: string }> {
   return claudeRun(claude, ["plugin", "enable", PLUGIN_ID, "--scope", "user"]);
 }
 
-/** Instala el plugin (para tu usuario) o pone al día cada instalación antigua. Lo mismo que los comandos de la guía. */
-export async function installOrUpdatePlugin(claude: string): Promise<{ ok: boolean; output: string }> {
+/**
+ * Instala el plugin (para tu usuario) o pone al día cada instalación antigua. Lo mismo que los comandos de la guía. Si el
+ * marketplace `backcode` lee de otro repo (el antiguo hernanmateo/backcode-runner), lo quita, lo vuelve a añadir desde
+ * MARKETPLACE_REPO y reinstala el plugin con los mismos alcances. Uno local (para desarrollar) y los demás no se tocan.
+ */
+export async function installOrUpdatePlugin(claude: string, knownFile?: string): Promise<{ ok: boolean; output: string }> {
   const out: string[] = [];
   const step = async (args: string[], cwd?: string) => {
     const r = await claudeRun(claude, args, cwd, 120_000);
     out.push(`$ claude ${args.join(" ")}`, r.output);
     return r.ok;
   };
-  // El marketplace: se actualiza, o se añade si no estaba.
-  if (!(await step(["plugin", "marketplace", "update", "backcode"])) && !(await step(["plugin", "marketplace", "add", MARKETPLACE_REPO]))) return { ok: false, output: out.join("\n") };
-  const installs = (await pluginInstalls(claude)) ?? [];
+  const market = await backcodeMarketplace(claude, knownFile);
+  const before = (await pluginInstalls(claude)) ?? [];
+  // `add` falla si ya hay un marketplace `backcode`, aunque lea de otro repo: primero se quita (si no estaba, da igual).
+  const readd = async () => {
+    await step(["plugin", "marketplace", "remove", "backcode"]);
+    return step(["plugin", "marketplace", "add", MARKETPLACE_REPO]);
+  };
+  const marketOk =
+    market?.state === "stale" ? await readd()
+    : market?.state === "missing" ? await step(["plugin", "marketplace", "add", MARKETPLACE_REPO])
+    // Existe (o no se sabe): se actualiza; si falla (repo privado, borrado…), otra vez desde MARKETPLACE_REPO, salvo si es local.
+    : (await step(["plugin", "marketplace", "update", "backcode"])) || (market?.state !== "local" && (await readd()));
+  if (!marketOk) return { ok: false, output: out.join("\n").split("\n").slice(-16).join("\n") };
+  let installs = (await pluginInstalls(claude)) ?? [];
   let ok = true;
-  if (!installs.length) ok = await step(["plugin", "install", PLUGIN_ID, "--scope", "user"]);
+  // Lo que se perdió al quitar el marketplace, otra vez con el mismo alcance (los de proyecto, desde ese proyecto).
+  const same = (a: PluginInstall, b: PluginInstall) => a.scope === b.scope && (a.scope === "user" || a.projectPath === b.projectPath);
+  const lost = before.filter((b) => !installs.some((i) => same(i, b)) && (b.scope === "user" || (!!b.projectPath && existsSync(b.projectPath))));
+  for (const b of lost) ok = (await step(["plugin", "install", PLUGIN_ID, "--scope", b.scope], b.scope === "user" ? undefined : b.projectPath)) && ok;
+  if (lost.length) installs = (await pluginInstalls(claude)) ?? installs;
+  else if (!installs.length) ok = await step(["plugin", "install", PLUGIN_ID, "--scope", "user"]);
   for (const i of installs.filter((i) => olderThan(i.version, PLUGIN_VERSION))) {
     // Las de proyecto se actualizan desde ese proyecto.
     if (i.scope !== "user" && (!i.projectPath || !existsSync(i.projectPath))) continue;
     ok = (await step(["plugin", "update", PLUGIN_ID, "--scope", i.scope], i.scope === "user" ? undefined : i.projectPath)) && ok;
   }
   return { ok, output: out.join("\n").split("\n").slice(-16).join("\n") };
+}
+
+let migrating: Promise<boolean> | null = null;
+
+/**
+ * Sin que nadie haga nada: si el marketplace `backcode` aún lee de otro repo (el antiguo hernanmateo/backcode-runner), lo
+ * pasa a MARKETPLACE_REPO y reinstala el plugin. Solo toca la configuración de Claude Code de este ordenador, nunca los
+ * repos. Uno a la vez (varios runners en el mismo proceso); si falla, se reintenta la próxima vez. true si lo cambió.
+ */
+export function migrateStaleMarketplace(claude: string): Promise<boolean> {
+  migrating ??= (async () => {
+    try {
+      const market = await backcodeMarketplace(claude);
+      if (market?.state !== "stale") return false;
+      const r = await installOrUpdatePlugin(claude);
+      console.log(`[plugin] marketplace backcode: ${market.source} → ${MARKETPLACE_REPO} ${r.ok ? "✓" : `✗\n${r.output}`}`);
+      return r.ok;
+    } finally {
+      migrating = null;
+    }
+  })();
+  return migrating;
 }
 
 /** La versión del plugin que está ejecutando el hook (Claude Code pasa su carpeta en CLAUDE_PLUGIN_ROOT). */

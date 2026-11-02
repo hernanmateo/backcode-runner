@@ -160,9 +160,13 @@ export async function machineReport(): Promise<Check[]> {
   const ghAuth = gh ? await exec(ghBin, ["auth", "status"], { timeout: 15_000 }).then(() => true, () => false) : false;
   // El plugin de Claude Code (opcional: para trabajar con Claude Code fuera de las tareas). Solo con el `claude` instalado.
   if (installed && cli) {
-    const { PLUGIN_INSTALL_CMDS, PLUGIN_UPDATE_CMDS, PLUGIN_VERSION, olderThan, pluginInstalls } = await import("./plugin.js");
-    const plugins = await pluginInstalls(installed);
-    if (plugins) {
+    const { MARKETPLACE_REPO, PLUGIN_INSTALL_CMDS, PLUGIN_MIGRATE_CMDS, PLUGIN_UPDATE_CMDS, PLUGIN_VERSION, backcodeMarketplace, olderThan, pluginInstalls } = await import("./plugin.js");
+    const [plugins, market] = await Promise.all([pluginInstalls(installed), backcodeMarketplace(installed)]);
+    // El marketplace aún lee del repo antiguo (antes de backcode-dist): ni el plugin ni sus novedades llegan de ahí.
+    // `outdated`: el botón «Actualizar el plugin» del panel lo cambia (quitar y añadir) y reinstala.
+    if (market?.state === "stale") {
+      checks.push({ id: "plugin", status: "warn", outdated: true, detail: t("panel.check.pluginOldMarketplace", { source: market.source ?? "?", repo: MARKETPLACE_REPO }), fix: PLUGIN_MIGRATE_CMDS.join(" && ") });
+    } else if (plugins) {
       const old = plugins.find((p) => olderThan(p.version, PLUGIN_VERSION));
       const newest = plugins.map((p) => p.version).sort((a, b) => (olderThan(a, b) ? 1 : -1))[0];
       // Dónde: para tu usuario (todos tus repos), y/o en proyectos concretos; y si está desactivado.
