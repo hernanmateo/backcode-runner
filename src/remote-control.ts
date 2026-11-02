@@ -8,6 +8,7 @@ import { MACHINE_BEAT_MS, machineId, machineStatus } from "./machines.js";
 import { projectFiles } from "./paths.js";
 import { PLUGIN_UPDATE_CMDS, backcodeMarketplace, installOrUpdatePlugin } from "./plugin.js";
 import { installedClaude } from "./preflight.js";
+import { invalidateServices, currentServices, isUpdatableService, type UpdatableService } from "./services.js";
 import { connect } from "./store.js";
 import type { Supervisor } from "./supervisor.js";
 
@@ -16,11 +17,13 @@ import type { Supervisor } from "./supervisor.js";
 // supervisor (el panel/servicio o `backcode start`), no el runner de un proyecto: así sigue escuchando con todo en pausa.
 // Cada petición se valida aquí (ids con las mismas regex, el proyecto conectado en este ordenador), se reclama una sola
 // vez (pending -> running en una transacción) y deja su resultado. Nunca hay comandos libres: cada tipo hace algo fijo.
-// Además publica en el documento del ordenador el estado de cada proyecto (`control`): solo metadatos, nunca tokens.
+// Además publica en el documento del ordenador el estado de cada proyecto (`control`) y de sus herramientas (`services`,
+// services.ts): solo metadatos, nunca tokens. `updateService` solo acepta un servicio de una lista cerrada y ejecuta
+// comandos fijos: nunca lo que mande la app.
 
 const run = promisify(execFile);
 
-export const CONTROL_TYPES = ["stopProject", "startProject", "restartProject", "restartAll", "updateNow", "pauseAll", "resumeAll", "shutdown"] as const;
+export const CONTROL_TYPES = ["stopProject", "startProject", "restartProject", "restartAll", "updateNow", "pauseAll", "resumeAll", "shutdown", "updateService"] as const;
 export type ControlType = (typeof CONTROL_TYPES)[number];
 const PROJECT_TYPES: readonly ControlType[] = ["stopProject", "startProject", "restartProject"];
 
@@ -30,7 +33,10 @@ const STATE_EVERY_MS = 5_000;
 /** Reintento de la conexión (sin red al iniciar sesión, ningún proyecto conectado aún…). */
 const RETRY_MS = 60_000;
 
-export type ControlRequest = { type: Exclude<ControlType, "stopProject" | "startProject" | "restartProject"> } | { type: "stopProject" | "startProject" | "restartProject"; projectId: string };
+export type ControlRequest =
+  | { type: Exclude<ControlType, "stopProject" | "startProject" | "restartProject" | "updateService"> }
+  | { type: "stopProject" | "startProject" | "restartProject"; projectId: string }
+  | { type: "updateService"; service: UpdatableService };
 
 /** ¿Es una petición de control (y no una de «Conectar en <host>», que atiende el runner de un proyecto)? */
 export function isControlRequest(raw: Record<string, unknown>): boolean {
@@ -41,9 +47,15 @@ export function isControlRequest(raw: Record<string, unknown>): boolean {
 export function parseControlRequest(raw: Record<string, unknown>, connected: Iterable<string>): ControlRequest | { error: string } {
   const type = raw.type;
   if (typeof type !== "string" || !(CONTROL_TYPES as readonly string[]).includes(type)) return { error: t("scaffold.bad", { field: "type" }) };
+  if (type === "updateService") {
+    if (raw.projectId !== undefined) return { error: t("scaffold.bad", { field: "projectId" }) };
+    if (!isUpdatableService(raw.service)) return { error: t("scaffold.bad", { field: "service" }) };
+    return { type, service: raw.service };
+  }
+  if (raw.service !== undefined) return { error: t("scaffold.bad", { field: "service" }) };
   if (!PROJECT_TYPES.includes(type as ControlType)) {
     if (raw.projectId !== undefined) return { error: t("scaffold.bad", { field: "projectId" }) };
-    return { type: type as Exclude<ControlType, "stopProject" | "startProject" | "restartProject"> };
+    return { type: type as Exclude<ControlType, "stopProject" | "startProject" | "restartProject" | "updateService"> };
   }
   const projectId = raw.projectId;
   if (typeof projectId !== "string" || !ID_RE.test(projectId)) return { error: t("scaffold.bad", { field: "projectId" }) };
@@ -63,6 +75,8 @@ export interface ControlHooks {
   onPower?: (on: boolean) => void;
   /** Actualizar el plugin de Claude Code (por defecto, PLUGIN_UPDATE_CMDS). Devuelve el error, si lo hay. */
   updatePlugin?: () => Promise<string | null>;
+  /** Actualizar Claude Code o EAS CLI (por defecto, SERVICE_UPDATE_CMDS). Devuelve el error, si lo hay. */
+  updateTool?: (service: "claude" | "eas") => Promise<string | null>;
 }
 
 export interface ControlOutcome {
@@ -94,6 +108,24 @@ export async function updatePlugin(): Promise<string | null> {
   }
 }
 
+/** Comandos fijos (sin shell) para poner al día cada herramienta que no es el runner ni el plugin. */
+export const SERVICE_UPDATE_CMDS: Record<"claude" | "eas", string[]> = {
+  claude: ["claude", "update"],
+  eas: ["npm", "install", "-g", "eas-cli@latest", "--no-audit", "--no-fund"],
+};
+
+export async function updateTool(service: "claude" | "eas"): Promise<string | null> {
+  const [bin, ...args] = SERVICE_UPDATE_CMDS[service];
+  const exe = bin === "claude" ? installedClaude() : bin;
+  if (!exe) return bin;
+  try {
+    await run(exe, args, { timeout: 5 * 60_000 });
+    return null;
+  } catch (err) {
+    return String((err as Error).message ?? err).slice(0, 500);
+  }
+}
+
 /** Ejecuta una petición ya validada. */
 export async function runControlRequest(target: ControlTarget, hooks: ControlHooks, req: ControlRequest): Promise<ControlOutcome> {
   switch (req.type) {
@@ -116,6 +148,15 @@ export async function runControlRequest(target: ControlTarget, hooks: ControlHoo
         // Con versión nueva, el supervisor ya ha pedido los reinicios (y el panel se relanza tras ellos).
         after: updated ? undefined : () => target.restartAllWhenIdle(),
       };
+    }
+    case "updateService": {
+      if (req.service === "runner" || req.service === "macApp") {
+        // El runner y la app de Mac van juntos; con versión nueva, el supervisor ya pide los reinicios al quedar libres.
+        const updated = await target.checkUpdateNow().catch(() => false);
+        return { status: "done", result: { updated } };
+      }
+      const error = req.service === "plugin" ? await (hooks.updatePlugin ?? updatePlugin)() : await (hooks.updateTool ?? updateTool)(req.service);
+      return error ? { status: "failed", result: { error: t("control.serviceFailed", { error }) } } : { status: "done", result: { updated: true } };
     }
     case "pauseAll":
       await target.setPower(false);
@@ -208,9 +249,10 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
             await finish(id, { status: "failed", result: { error: req.error } });
             continue;
           }
-          log(t("control.request", { type: "projectId" in req ? `${req.type} ${req.projectId}` : req.type }));
+          log(t("control.request", { type: "projectId" in req ? `${req.type} ${req.projectId}` : "service" in req ? `${req.type} ${req.service}` : req.type }));
           const outcome = await runControlRequest(supervisor, hooks, req).catch((err): ControlOutcome => ({ status: "failed", result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
           await finish(id, outcome);
+          if (req.type === "updateService" || req.type === "updateNow") invalidateServices();
           await publish(true);
           if (outcome.after) {
             await outcome.after();
@@ -226,12 +268,13 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
     let lastAt = 0;
     const publish = async (force = false) => {
       const control = controlState(supervisor);
-      const key = JSON.stringify(control);
+      const services = currentServices();
+      const key = JSON.stringify([control, services]);
       if (!force && key === last && Date.now() - lastAt < MACHINE_BEAT_MS) return;
       last = key;
       lastAt = Date.now();
       // Con todo en pausa no queda ningún runner que dé el latido: lo da el supervisor (así la app deja reanudar).
-      await setDoc(machineRef, { ...(await machineStatus()), control, lastSeen: serverTimestamp() }, { merge: true }).catch((err) => log((err as Error).message));
+      await setDoc(machineRef, { ...(await machineStatus()), control, ...(services ? { services } : {}), lastSeen: serverTimestamp() }, { merge: true }).catch((err) => log((err as Error).message));
     };
     void publish(true);
     const timer = setInterval(() => void publish(), STATE_EVERY_MS);

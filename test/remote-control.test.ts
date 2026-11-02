@@ -90,3 +90,22 @@ test("actualizar ahora: con versión nueva no repite los reinicios y avisa si el
   assert.match(r.result.pluginError ?? "", /boom/);
   assert.equal(r.after, undefined);
 });
+
+test("actualizar un servicio: solo los de la lista cerrada, nunca comandos", async () => {
+  for (const service of ["runner", "macApp", "plugin", "claude", "eas"]) assert.deepEqual(parseControlRequest({ type: "updateService", service }, connected), { type: "updateService", service });
+  for (const service of ["git", "gh", "xcode", "npm install -g x", "", null, 3, undefined]) assert.ok("error" in parseControlRequest({ type: "updateService", service }, connected), String(service));
+  assert.ok("error" in parseControlRequest({ type: "updateService", service: "plugin", projectId: "p1" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "updateNow", service: "plugin" }, connected));
+
+  const { target, calls } = fakeTarget();
+  const tools: string[] = [];
+  const hooks = { shutdown: () => undefined, updatePlugin: async () => (calls.push("plugin"), null), updateTool: async (s: "claude" | "eas") => (tools.push(s), s === "eas" ? "EACCES" : null) };
+  assert.deepEqual((await runControlRequest(target, hooks, { type: "updateService", service: "runner" })).result, { updated: false });
+  assert.deepEqual((await runControlRequest(target, hooks, { type: "updateService", service: "plugin" })).result, { updated: true });
+  assert.deepEqual(calls, ["update", "plugin"]);
+  assert.equal((await runControlRequest(target, hooks, { type: "updateService", service: "claude" })).status, "done");
+  const eas = await runControlRequest(target, hooks, { type: "updateService", service: "eas" });
+  assert.equal(eas.status, "failed");
+  assert.match(eas.result.error ?? "", /EACCES/);
+  assert.deepEqual(tools, ["claude", "eas"]);
+});
