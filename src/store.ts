@@ -775,9 +775,9 @@ export class Store {
   }
 
   /** PR y rama de una tarea (para «Arreglar con Claude» los conflictos, aunque no sea mía). */
-  async prOf(featureId: string): Promise<{ prUrl?: string; branch?: string }> {
+  async prOf(featureId: string): Promise<{ prUrl?: string; branch?: string; kind?: string }> {
     const d = await getDoc(this.feature(featureId));
-    return { prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl, branch: (d.get("branch") as string | undefined) || undefined };
+    return { prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl, branch: (d.get("branch") as string | undefined) || undefined, kind: (d.get("kind") as string | undefined) || undefined };
   }
 
   /** Mis tareas con PR abierto (terminadas y sin mergear), para vigilar si chocan con la rama base. */
