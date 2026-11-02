@@ -39,7 +39,7 @@ import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
 import { refineIdea } from "./refine.js";
-import { runChat, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
+import { promptMessage, runChat, VIDEO_WAIT_MS, videosPending, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
 import { machineInfo, resolveProjectsDir } from "./machine.js";
 import { linkProject, machineId, machineStatus, MACHINE_BEAT_MS, parseLinkRequest } from "./machines.js";
@@ -420,6 +420,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let userMessages: ThreadMessage[] = [];
   const handled = new Set<string>(); // ids de mensajes ya entregados (o incluidos en el prompt)
   const outstanding = new Map<string, string>(); // uuid enviado -> id del mensaje, pendiente de que Claude lo lea
+  let liveChain: Promise<void> = Promise.resolve();
   let liveQuery: Query | null = null;
   // Coste y tokens de las fases anteriores (con Remote Control de por medio hay varias): se suman.
   let spent = { costUsd: 0, turns: 0, input: 0, output: 0, cache: 0 };
@@ -430,10 +431,21 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     if (!inputOpen) return;
     for (const m of userMessages) {
       if (!m.id || m.read || handled.has(m.id) || m.kind !== "message") continue;
+      // Con vídeo, se espera al análisis del servidor (processFeatureVideo): al acabar, el hilo vuelve a avisar. Los
+      // siguientes también esperan, para que lleguen en orden.
+      if (videosPending([m])) break;
       handled.add(m.id);
       const uuid = randomUUID();
-      outstanding.set(uuid, m.id);
-      inputQueue.push({ type: "user", message: { role: "user", content: buildLiveMessage(m.text) }, parent_tool_use_id: null, uuid, priority: "next" });
+      const mid = m.id;
+      outstanding.set(uuid, mid);
+      // Los adjuntos se descargan en la copia de trabajo antes de pasárselo (en cadena, para mantener el orden).
+      liveChain = liveChain.then(async () => {
+        const prepared = await promptMessage(store, cfg.projectId, wt.path, m).catch((err: Error) => (console.warn(`[messages] ${err.message}`), { text: m.text }));
+        // Si la fase acabó mientras tanto, el mensaje ya vuelve a estar pendiente (se entrega en la siguiente).
+        if (!inputOpen || outstanding.get(uuid) !== mid) return;
+        inputQueue.push({ type: "user", message: { role: "user", content: buildLiveMessage(prepared) }, parent_tool_use_id: null, uuid, priority: "next" });
+        wake?.();
+      });
     }
     wake?.();
   };
@@ -736,17 +748,29 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   }
 
   try {
-    const thread = history;
+    let thread = history;
     // Lo que escribió quien la ejecuta y Claude aún no ha recibido. Las tareas de antes de los mensajes en directo no
     // tienen marcas de leído: ahí cuenta lo escrito desde el último mensaje de Claude, y lo anterior se da por leído.
-    const fromUser = thread.filter((m) => m.author === "user");
-    const lastClaude = thread.map((m) => m.author).lastIndexOf("claude");
-    const legacy = !fromUser.some((m) => m.read);
-    const replies = legacy ? thread.slice(lastClaude + 1).filter((m) => m.author === "user") : fromUser.filter((m) => !m.read);
-    const seen = legacy ? fromUser.filter((m) => !replies.includes(m)) : [];
+    const pendingOf = (list: ThreadMessage[]) => {
+      const fromUser = list.filter((m) => m.author === "user");
+      const lastClaude = list.map((m) => m.author).lastIndexOf("claude");
+      const legacy = !fromUser.some((m) => m.read);
+      const replies = legacy ? list.slice(lastClaude + 1).filter((m) => m.author === "user") : fromUser.filter((m) => !m.read);
+      return { replies, seen: legacy ? fromUser.filter((m) => !replies.includes(m)) : [] };
+    };
+    // Un vídeo recién enviado: se espera al análisis del servidor (processFeatureVideo) como en la conversación con el runner.
+    const videoStart = Date.now();
+    if (videosPending(pendingOf(thread).replies)) await store.event(id, "start", t("ch.analyzingVideo"));
+    while (videosPending(pendingOf(thread).replies) && Date.now() - videoStart < VIDEO_WAIT_MS && !abort.signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      thread = await store.thread(id);
+    }
+    const { replies: pendingReplies, seen } = pendingOf(thread);
+    // Sus adjuntos (y los fotogramas del vídeo) se descargan en la copia de trabajo para que Claude los lea.
+    const replies = await Promise.all(pendingReplies.map((m) => promptMessage(store, cfg.projectId, wt.path, m).catch((err: Error) => (console.warn(`[messages] ${err.message}`), { text: m.text }))));
     // Todo lo ya existente cuenta como entregado: lo de antes ya lo recibió en vueltas anteriores y lo nuevo va en el prompt.
-    for (const m of [...replies, ...seen]) if (m.id) handled.add(m.id);
-    const delivered = [...replies, ...seen].map((m) => m.id).filter((m): m is string => !!m);
+    for (const m of [...pendingReplies, ...seen]) if (m.id) handled.add(m.id);
+    const delivered = [...pendingReplies, ...seen].map((m) => m.id).filter((m): m is string => !!m);
     if (delivered.length) void store.markRead(id, delivered);
     // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
     const justApproved = !!feature.planApproved && !previousPr && thread.filter((m) => m.author === "claude").pop()?.kind === "plan";

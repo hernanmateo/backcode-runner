@@ -146,6 +146,16 @@ export interface ThreadMessage {
   request?: Permissions;
   /** kind "grant": lo que decidió la persona (once / always / deny) y lo concedido. */
   grant?: Permissions & { decision: "once" | "always" | "deny" };
+  /** Mensajes de una persona (hilo de una tarea o conversación con el runner): imágenes y documentos, y un vídeo. */
+  attachments?: Attachment[];
+  video?: { path: string; durationMs: number };
+  /** Análisis del vídeo que deja el servidor (processRunnerChatVideo o processFeatureVideo). */
+  videoDone?: boolean;
+  videoError?: string;
+  /** Lo que se dice en el vídeo, por tramos con su tiempo ([m:ss]). */
+  transcript?: string;
+  /** Fotogramas de los momentos que se comentan (`at`: segundo del vídeo), en la carpeta de adjuntos de quien escribe. */
+  frames?: { path: string; at: number }[];
 }
 
 /** Encargo de refinado que prepara refineFeature: instrucciones, petición (con contexto) y adjuntos. */
@@ -158,15 +168,6 @@ export interface RefineJob {
 
 /** Mensaje de la persona en la conversación con su runner: texto y, como en «Nueva idea», imágenes y un vídeo. */
 export interface ChatUserMessage extends ThreadMessage {
-  attachments?: Attachment[];
-  video?: { path: string; durationMs: number };
-  /** Análisis del vídeo que deja el servidor (processRunnerChatVideo, el mismo que el del chat del proyecto). */
-  videoDone?: boolean;
-  videoError?: string;
-  /** Lo que se dice en el vídeo, por tramos con su tiempo ([m:ss]). */
-  transcript?: string;
-  /** Fotogramas de los momentos que se comentan (`at`: segundo del vídeo), en la carpeta de adjuntos de quien escribe. */
-  frames?: { path: string; at: number }[];
   /** Dicho en el modo conversación por voz de la app: la respuesta se escucha, no se lee. */
   voice?: boolean;
 }
