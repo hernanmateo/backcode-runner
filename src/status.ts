@@ -4,7 +4,7 @@ import { panelAlive } from "./panel-client.js";
 import { CONFIG_DIR, IS_BINARY, projectFiles, readState } from "./paths.js";
 import { installedClaude, machineReport } from "./preflight.js";
 import { pluginInRepos, pluginInstalls } from "./plugin.js";
-import { serviceInstalled } from "./service.js";
+import { serviceInstalled, serviceLoaded } from "./service.js";
 import { valueIn } from "./setup.js";
 import { readFileSync } from "node:fs";
 
@@ -14,7 +14,8 @@ import { readFileSync } from "node:fs";
 const mark = { ok: "✓", warn: "⚠", fail: "✗" } as const;
 const names = readState().names ?? {};
 console.log(`Backcode runner ${VERSION} (${IS_BINARY ? "executable" : "npm"}, updates: ${UPDATE_MODE})`);
-console.log(`${t("status.service")}: ${serviceInstalled() ? t("status.on") : t("status.off")} · ${t("status.panel")}: ${(await panelAlive()) ? "http://127.0.0.1:47474" : t("status.off")}`);
+const serviceState = !serviceInstalled() ? t("status.off") : (await serviceLoaded()) === false ? t("status.onNotLoaded") : t("status.on");
+console.log(`${t("status.service")}: ${serviceState} · ${t("status.panel")}: ${(await panelAlive()) ? "http://127.0.0.1:47474" : t("status.off")}`);
 console.log(`\n${t("status.machine")}`);
 for (const c of await machineReport()) console.log(`  ${mark[c.status]} ${c.id}: ${c.detail}${c.status !== "ok" && c.fix ? `  →  ${c.fix}` : ""}`);
 const projects = projectFiles();

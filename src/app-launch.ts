@@ -8,7 +8,7 @@ import { openBrowser } from "./panel.js";
 import { panelAlive, panelUrl, panelVersion } from "./panel-client.js";
 import { BIN_DIR, readState } from "./paths.js";
 import { diagnose, systemDiagnoseDeps, type Diagnosis } from "./app-diagnose.js";
-import { installService, kickService, launchesExecutable, restartService, serviceInstalled, serviceProgram } from "./service.js";
+import { installService, kickService, launchesExecutable, loadService, restartService, serviceInstalled, serviceLoaded, serviceProgram } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
 // actualizaciones del runner van a esa copia; la app la sustituye entera mac-app-update.ts), deja el runner como servicio («Arrancar al
@@ -60,6 +60,8 @@ export async function prepareApp(opts: { retry?: boolean; noService?: boolean; o
     install: () => installService({ executable: installed }),
     kick: kickService,
     restart: restartService,
+    loaded: serviceLoaded,
+    load: loadService,
     executable: installed,
     program: serviceProgram,
     version: target,
@@ -86,6 +88,8 @@ export async function bringUpPanel(d: {
   install: () => Promise<void>;
   kick: () => Promise<void>;
   restart: () => Promise<void>;
+  loaded?: () => Promise<boolean | null>;
+  load?: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   step: (step: string) => void;
   url: () => string;
@@ -170,6 +174,8 @@ async function waitForPanel(alive: () => Promise<boolean>, wait: (ms: number) =>
  * Servicio ya instalado y el panel no responde. Primera vez: `kickstart` sin -k (instalado pero sin arrancar, launchd lo
  * deja en espera; si solo está arrancando, no se toca). Solo con el panel ya visto sin responder (tras la espera, o al
  * darle a «Reintentar» en la app) se relanza con -k: el proceso puede existir colgado o con un ejecutable viejo.
+ * Si launchd no lo tiene cargado (plist en su sitio tras «Apagar», que hace `bootout`, o macOS no lo cargó al iniciar
+ * sesión), ni `kickstart` ni `-k` hacen nada: primero se carga (`load`: bootstrap + kickstart, por macOS 27).
  * Las esperas suman como mucho ~40 s, para que la app reciba el diagnóstico antes de su propio límite (60 s).
  */
 export async function wakeService(d: {
@@ -179,9 +185,22 @@ export async function wakeService(d: {
   restart: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   step?: (step: string) => void;
+  /** ¿Cargado en launchd? false: no; null o sin la función: no se sabe (se sigue como si lo estuviera). */
+  loaded?: () => Promise<boolean | null>;
+  load?: () => Promise<void>;
 }): Promise<boolean> {
   const step = d.step ?? (() => undefined);
   if (await d.alive()) return true;
+  if (d.loaded && d.load && (await d.loaded().catch(() => null)) === false) {
+    step("Loading the service…");
+    await d.load().catch(() => undefined);
+    step("Waiting for the panel…");
+    if (await waitForPanel(d.alive, d.sleep, 15_000)) return true;
+    step("Restarting the service…");
+    await d.restart().catch(() => undefined);
+    step("Waiting for the panel…");
+    return waitForPanel(d.alive, d.sleep, 22_000);
+  }
   if (d.retry) {
     step("Restarting the service…");
     await d.restart().catch(() => undefined);

@@ -85,3 +85,50 @@ test("kickstartSelf: kickstart -k aparte (detached, sin stdio) y unref; false si
   assert.equal(await kickstartSelf(failing as never), false);
   assert.equal(await kickstartSelf((() => { throw new Error("boom"); }) as never), false);
 });
+
+/** Como `fake`, pero con el servicio sin cargar en launchd hasta que se llama a `load`. */
+function unloaded(upAfter: number, retry = false) {
+  const f = fake(upAfter, retry);
+  let isLoaded = false;
+  return {
+    calls: f.calls,
+    deps: {
+      ...f.deps,
+      loaded: async () => isLoaded,
+      load: async () => {
+        isLoaded = true;
+        f.calls.push("load");
+      },
+    },
+  };
+}
+
+test("wakeService: plist sin cargar (tras «Apagar»): primero se carga, sin kickstart suelto", async () => {
+  const f = unloaded(5);
+  assert.equal(await wakeService(f.deps), true);
+  assert.deepEqual(f.calls, ["load"]);
+});
+
+test("wakeService: plist sin cargar y sigue sin responder tras cargarlo: kickstart -k (macOS 27)", async () => {
+  const f = unloaded(Infinity);
+  assert.equal(await wakeService(f.deps), false);
+  assert.deepEqual(f.calls, ["load", "restart"]);
+});
+
+test("wakeService: «Reintentar» con el plist sin cargar también lo carga", async () => {
+  const f = unloaded(1, true);
+  assert.equal(await wakeService(f.deps), true);
+  assert.deepEqual(f.calls, ["load"]);
+});
+
+test("wakeService: si no se sabe si está cargado (null), como siempre", async () => {
+  const f = fake(10);
+  assert.equal(await wakeService({ ...f.deps, loaded: async () => null, load: async () => void f.calls.push("load") }), true);
+  assert.deepEqual(f.calls, ["kick"]);
+});
+
+test("wakeService: con el panel en marcha ni mira si está cargado", async () => {
+  const f = unloaded(0);
+  assert.equal(await wakeService(f.deps), true);
+  assert.deepEqual(f.calls, []);
+});

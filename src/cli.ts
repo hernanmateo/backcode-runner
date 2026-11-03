@@ -100,7 +100,7 @@ switch (command) {
     await import("./all.js");
     break;
   case "service": {
-    const { installService, restartService, serviceInstalled, uninstallService, SERVICE_LOG } = await import("./service.js");
+    const { installService, restartService, serviceInstalled, serviceLoaded, uninstallService, SERVICE_LOG } = await import("./service.js");
     const sub = rest[0] ?? "status";
     if (sub === "install") {
       await installService();
@@ -121,7 +121,7 @@ switch (command) {
         process.exit(1);
       }
       console.log(t("cli.serviceRestarted", { log: SERVICE_LOG }));
-    } else console.log(t(serviceInstalled() ? "cli.serviceIsOn" : "cli.serviceIsOff"));
+    } else console.log(t(!serviceInstalled() ? "cli.serviceIsOff" : (await serviceLoaded()) === false ? "cli.serviceIsOnNotLoaded" : "cli.serviceIsOn"));
     break;
   }
   case "help":
