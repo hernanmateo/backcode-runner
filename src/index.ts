@@ -38,6 +38,7 @@ import { computePlan } from "./pending.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
+import { planLimitFromEvent, planLimitFromText, quotaBlockedUntil, waitUntil, type PlanLimitHit } from "./plan-limit.js";
 import { refineIdea } from "./refine.js";
 import { promptMessage, runChat, VIDEO_WAIT_MS, videosPending, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
@@ -117,6 +118,13 @@ let monitorTimer: NodeJS.Timeout | undefined;
 /** Hay versión nueva: se termina lo que esté en marcha, no se coge nada más y se reinicia. */
 let restarting = false;
 let stopping = false;
+/**
+ * Límite del plan de Claude Code (plan-limit.ts): hasta cuándo no se arranca ninguna tarea nueva (fallarían igual),
+ * salvo las que alguien pidió reanudar ya desde la app. Y las tareas en espera del límite: hasta cuándo e intentos.
+ */
+let quotaUntil = 0;
+const quotaWaits = new Map<string, { until: number; tries: number }>();
+let quotaChecking = false;
 
 // «Modo auto» del proyecto (auto-merge.ts): las tareas que este runner termina con PR se mergean solas, de una en una
 // (y con el turno del proyecto, entre runners). Nunca se despliega ni se publica nada.
@@ -169,7 +177,8 @@ async function drainAutoMerge(): Promise<void> {
 }
 
 // "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
-type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string };
+// planLimit: se paró por el límite del plan de Claude Code (queda en espera del límite, no fallida).
+type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string; planLimit?: PlanLimitHit };
 
 /**
  * Informe para Backcode de una acción fallida (diagnostics.ts decide si es de Backcode y lo limpia). En un despliegue
@@ -414,6 +423,13 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}) };
   let sessionId = feature.sessionId;
   const model = modelFor(feature, cfg.model);
+  // Límite del plan de Claude Code: el último rate_limit_event rechazado y, si la vuelta acaba en error por él, el motivo.
+  let rateRejected: PlanLimitHit | null = null;
+  let planLimit: PlanLimitHit | null = null;
+  const noteLimit = (hit: PlanLimitHit | null) => {
+    if (!hit) return;
+    planLimit = { reason: hit.reason, ...((hit.resetsAt ?? rateRejected?.resetsAt) ? { resetsAt: hit.resetsAt ?? rateRejected?.resetsAt } : {}) };
+  };
 
   // --- Conversación en directo: lo que la persona escribe en el hilo mientras Claude trabaja le llega en su siguiente
   // paso. Cada mensaje va con un uuid; cuando Claude lo incorpora (user_message_uuids) se marca como leído.
@@ -563,8 +579,15 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         } else if (msg.type === "system" && msg.subtype === "init") {
           if (msg.session_id && msg.session_id !== sessionId) await store.setSession(id, msg.session_id);
           sessionId = msg.session_id;
+        } else if (msg.type === "rate_limit_event") {
+          rateRejected = planLimitFromEvent(msg.rate_limit_info);
         } else if (msg.type === "result") {
           sessionId = msg.session_id;
+          // Acabó en error por el límite del plan (texto de Claude Code, un 429 o un rate_limit_event rechazado).
+          if (msg.is_error || msg.subtype !== "success") {
+            const text = msg.subtype === "success" ? msg.result : msg.errors.join("; ");
+            noteLimit(planLimitFromText(text) ?? rateRejected ?? ("api_error_status" in msg && msg.api_error_status === 429 ? { reason: "429" } : null));
+          }
           const models = Object.values(msg.modelUsage ?? {});
           result = {
             ...result,
@@ -814,8 +837,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     }
   } catch (err) {
     result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
+    // Claude Code se cerró por el límite del plan: no es un fallo (ni de Backcode).
+    if (!abort.signal.aborted) noteLimit(planLimitFromText(String(err)) ?? rateRejected);
     // Un error interno del runner (no parar ni agotar el tiempo): a Backcode, si quien lo usa lo permite.
-    if (!abort.signal.aborted) void report(store, buildReport({ action: "feature", error: String(err), log: (err as Error)?.stack, thrown: true }, diagCtx));
+    if (!abort.signal.aborted && !planLimit) void report(store, buildReport({ action: "feature", error: String(err), log: (err as Error)?.stack, thrown: true }, diagCtx));
   } finally {
     clearTimeout(timeout);
     clearInterval(lease);
@@ -844,6 +869,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   // vuelta. Vuelve a la cola y la siguiente empieza abriendo Remote Control, en vez de dejar la app esperando para siempre.
   if (remoteWanted && !stopping && sessionId) {
     return { status: "execute", result: { ...result, prUrl: prUrl ?? previousPr, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
+  }
+  // Parada por el límite del plan de Claude Code: en espera del límite (no fallida); el runner la retoma sola, en la
+  // misma sesión y rama, cuando vuelve la cuota. Lo que respondió Claude Code (el aviso del límite) no va al hilo.
+  const limitHit = planLimit as PlanLimitHit | null;
+  if (limitHit && !question && !permissionAsked && !planned) {
+    return { status: "waiting", result: { ...result, prUrl: prUrl ?? previousPr, summary: undefined, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId, planLimit: limitHit };
   }
   // El resumen de cada vuelta queda en el hilo; si preguntó o propuso un plan, eso ya está publicado.
   if (!question && !permissionAsked && !planned && result.summary) await store.postMessage(id, "summary", result.summary).catch(() => undefined);
@@ -915,7 +946,7 @@ async function drain(): Promise<void> {
   let reason: QueueReason | null = null;
   try {
     while (!stopping && !restarting) {
-      const pick = nextTask(pending, [...running.values()], effectiveProjectLimit(limits.project, limits.machine));
+      const pick = nextTask(pending, [...running.values()], effectiveProjectLimit(limits.project, limits.machine), quotaUntil > Date.now());
       if (!pick.task) {
         reason = pick.reason;
         break;
@@ -952,6 +983,8 @@ async function drain(): Promise<void> {
   }
   // Esperando por RAM, disco o el total del ordenador (que liberan otros procesos): se vuelve a mirar en 30 s.
   if (reason === "memory" || reason === "disk" || reason === "machine") drainRetry = setTimeout(() => void drain(), 30_000);
+  // Límite del plan: se vuelve a mirar al acabar (como mucho cada 30 min; la represa también despierta la cola).
+  else if (reason === "quota") drainRetry = setTimeout(() => void drain(), Math.min(Math.max(quotaUntil - Date.now(), 0) + 1_000, 30 * 60_000));
   await publishQueue(reason);
 }
 
@@ -968,11 +1001,18 @@ async function runOne(id: string, feature: Feature): Promise<void> {
   console.log(`[run] ${id} · ${feature.title}`);
   const release = awake.hold();
   try {
-    const { status, result, sessionId } = await runFeature(id, feature);
+    const { status, result, sessionId, planLimit } = await runFeature(id, feature);
     if (status === "released") {
       console.log(`[released] ${id} ${result.prUrl ?? ""}`);
       return;
     }
+    if (planLimit) {
+      await waitForQuota(id, feature, planLimit, result, sessionId);
+      return;
+    }
+    // Ha trabajado con Claude sin toparse con el límite: la cuota está disponible.
+    if ((result.turns ?? 0) > 0) quotaUntil = 0;
+    quotaWaits.delete(id);
     if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
       await store.requeue(id);
     } else {
@@ -992,6 +1032,64 @@ async function runOne(id: string, feature: Feature): Promise<void> {
   } finally {
     release();
   }
+}
+
+/**
+ * La tarea se paró por el límite del plan de Claude Code: queda en espera del límite (waiting + waitingQuota) con la hora
+ * prevista de represa, y no se arranca ninguna otra hasta entonces (fallarían igual).
+ */
+async function waitForQuota(id: string, feature: Feature, hit: PlanLimitHit, result: FeatureResult, sessionId: string | undefined): Promise<void> {
+  // Intentos seguidos: los que llevaba la tarea (en memoria, o en la marca si la reanudaron desde la app) más este.
+  const tries = (quotaWaits.get(id)?.tries ?? feature.waitingQuota?.tries ?? 0) + 1;
+  const quota = hit.resetsAt ? null : await readQuota(agentEnv()).catch(() => null);
+  const until = waitUntil(hit, quota, tries - 1);
+  quotaWaits.set(id, { until, tries });
+  quotaUntil = Math.max(quotaUntil, until);
+  const time = new Date(until).toLocaleTimeString(lang(), { hour: "2-digit", minute: "2-digit" });
+  // Con reglas antiguas (sin waitingQuota) queda esperando igualmente, no fallida; la represa automática sigue en memoria.
+  await store.finish(id, "waiting", result, sessionId, { until, reason: hit.reason, tries }).catch(() => store.finish(id, "waiting", result, sessionId));
+  await store.event(id, "say", t("run.planLimit", { time, reason: hit.reason.slice(0, 200) }));
+  console.log(`[quota] ${id} ${t("run.planLimit", { time, reason: hit.reason.slice(0, 200) })}`);
+  void refreshQuota();
+  void publishSession(id, sessionId ?? feature.sessionId);
+}
+
+/**
+ * Represa automática: las tareas en espera del límite cuya hora ya pasó vuelven a la cola (misma sesión y rama) si la
+ * cuota lo confirma (quota.ts); si aún está agotada, se aplaza a su reinicio. Sin datos de cuota (API key), por la hora.
+ */
+async function checkQuotaWaits(): Promise<void> {
+  if (quotaChecking || stopping || restarting) return;
+  const now = Date.now();
+  const due = [...quotaWaits].filter(([, w]) => w.until <= now);
+  if (!due.length) return;
+  quotaChecking = true;
+  try {
+    const still = quotaBlockedUntil(await readQuota(agentEnv()).catch(() => null));
+    if (still) {
+      const until = still + 60_000;
+      quotaUntil = Math.max(quotaUntil, until);
+      for (const [id, w] of due) {
+        const ok = await store.postponeQuota(id, until, w.tries).catch(() => true);
+        if (ok) quotaWaits.set(id, { until, tries: w.tries });
+        else quotaWaits.delete(id);
+      }
+      return;
+    }
+    if (quotaUntil <= now) quotaUntil = 0;
+    for (const [id] of due) {
+      // Se conserva la cuenta de intentos (para el backoff) hasta que la tarea trabaje sin toparse con el límite.
+      const ok = await store.resumeFromQuota(id).catch((err: Error) => (console.warn(`[quota] ${id} ${err.message}`), null));
+      if (ok === false) quotaWaits.delete(id);
+      else if (ok) {
+        quotaWaits.set(id, { until: Number.MAX_SAFE_INTEGER, tries: quotaWaits.get(id)?.tries ?? 0 });
+        console.log(`[quota] ${id} ${t("run.planLimitResume")}`);
+      }
+    }
+  } finally {
+    quotaChecking = false;
+  }
+  void drain();
 }
 
 /** Mensaje claro en la terminal al conectar: qué está pasando y qué hacer ahora. */
@@ -1298,6 +1396,13 @@ async function main(): Promise<void> {
   };
   void refreshQuota();
   const quotaTimer = setInterval(() => void refreshQuota(), 5 * 60_000);
+  // Tareas en espera del límite del plan (de antes de arrancar): no se arranca nada hasta su hora y luego se retoman solas.
+  for (const w of await store.quotaWaits().catch(() => [])) {
+    quotaWaits.set(w.id, { until: w.until, tries: w.tries });
+    if (w.until > Date.now()) quotaUntil = Math.max(quotaUntil, w.until);
+  }
+  const quotaWaitTimer = setInterval(() => void checkQuotaWaits(), 60_000);
+  void checkQuotaWaits();
   const stopQuotaRequests = await store.watchQuotaRequests(() => void refreshQuota()).catch(() => () => undefined);
 
   // Solo las tareas que este usuario aceptó en este proyecto, por prioridad y orden de aceptación.
@@ -1307,9 +1412,9 @@ async function main(): Promise<void> {
     pending = [...queued.mine, ...queued.shared]
       // Las archivadas se quedan en la cola sin ejecutarse: al desarchivarlas, el snapshot cambia y vuelven aquí.
       .filter((d) => store.executes(d.data() as Feature) && d.get("archivedAt") == null)
-      .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
+      .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, resumeNow: d.get("waitingQuota") != null, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
       .sort((a, b) => a.priority - b.priority || a.at - b.at)
-      .map((d) => ({ id: d.id, chatId: d.chatId }));
+      .map((d) => ({ id: d.id, chatId: d.chatId, ...(d.resumeNow ? { resumeNow: true } : {}) }));
     if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
     void drain();
   };
@@ -1663,6 +1768,7 @@ async function main(): Promise<void> {
     clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
+    clearInterval(quotaWaitTimer);
     clearInterval(conflictsTimer);
     clearInterval(sessionsTimer);
     stopQuotaRequests();
@@ -1717,6 +1823,7 @@ async function main(): Promise<void> {
     clearInterval(prsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
+    clearInterval(quotaWaitTimer);
     clearInterval(conflictsTimer);
     clearInterval(sessionsTimer);
     clearInterval(updateTimer);

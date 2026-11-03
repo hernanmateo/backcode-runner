@@ -97,6 +97,15 @@ export interface Feature {
   /** Plan aprobado (desde ahí, la sesión implementa). */
   planApproved?: { by: string };
   result?: FeatureResult;
+  /** En espera del límite del plan de Claude Code (plan-limit.ts): status 'waiting' y hasta cuándo. Solo lo pone y lo quita su runner. */
+  waitingQuota?: WaitingQuota;
+}
+
+export interface WaitingQuota {
+  until: Timestamp;
+  reason: string;
+  /** Veces seguidas que se ha parado por el límite (para el backoff si no se sabe cuándo vuelve). */
+  tries: number;
 }
 
 /** Control en directo de una tarea: lo escribe la app (parar, pedir Remote Control o volver) y el runner (abierto). */
@@ -459,6 +468,8 @@ export class Store {
         startedAt: serverTimestamp(),
         leaseUntil: Timestamp.fromMillis(Date.now() + FEATURE_LEASE_MS),
         attempts,
+        // «Reprèn ara» desde la app con la tarea en espera del límite del plan: al reclamarla, la marca se quita.
+        ...(d.get("waitingQuota") != null ? { waitingQuota: deleteField() } : {}),
       });
       return { ...(d.data() as Feature), attempts };
     });
@@ -1203,12 +1214,13 @@ export class Store {
       .catch((err) => console.error("[event]", err.message));
   }
 
-  async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string): Promise<void> {
+  async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string, waitingQuota?: { until: number; reason: string; tries: number }): Promise<void> {
     const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
     await updateDoc(this.feature(id), {
       status,
       result: clean,
       ...(sessionId ? { sessionId } : {}),
+      ...(status === "waiting" && waitingQuota ? { waitingQuota: { until: Timestamp.fromMillis(waitingQuota.until), reason: waitingQuota.reason.slice(0, 300) || "limit", tries: Math.min(50, waitingQuota.tries) } } : {}),
       finishedAt: serverTimestamp(),
       leaseUntil: deleteField(),
       runnerId: deleteField(),
@@ -1218,5 +1230,46 @@ export class Store {
   /** Devuelve la tarea a la cola (p. ej. al parar el runner con Ctrl+C). */
   async requeue(id: string): Promise<void> {
     await updateDoc(this.feature(id), { status: "execute", runnerId: deleteField(), leaseUntil: deleteField() });
+  }
+
+  /** Mis tareas en espera del límite del plan (al arrancar el runner): id, hasta cuándo e intentos. */
+  async quotaWaits(): Promise<{ id: string; until: number; tries: number }[]> {
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("status", "==", "waiting"), where("assignee", "==", this.uid))),
+      getDocs(query(this.features(), where("status", "==", "waiting"), where("runnerUid", "==", this.uid))),
+    ]);
+    const seen = new Set<string>();
+    return [...mine.docs, ...shared.docs].flatMap((d) => {
+      const w = d.get("waitingQuota") as WaitingQuota | undefined;
+      if (seen.has(d.id) || !w?.until || !this.executes(d.data() as Feature)) return [];
+      seen.add(d.id);
+      return [{ id: d.id, until: w.until.toMillis(), tries: w.tries ?? 0 }];
+    });
+  }
+
+  /**
+   * Ha vuelto la cuota: waiting (en espera del límite) -> execute, sin la marca. Solo si sigue en espera del límite (si
+   * la cancelaron o la retomaron a mano, no se toca). Devuelve si la ha devuelto a la cola.
+   */
+  async resumeFromQuota(id: string): Promise<boolean> {
+    const ref = this.feature(id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "waiting" || d.get("waitingQuota") == null) return false;
+      tx.update(ref, { status: "execute", waitingQuota: deleteField() });
+      return true;
+    });
+  }
+
+  /** La cuota aún no ha vuelto a la hora prevista: nueva hora de represa (la app la enseña). */
+  async postponeQuota(id: string, until: number, tries: number): Promise<boolean> {
+    const ref = this.feature(id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      const w = d.get("waitingQuota") as WaitingQuota | undefined;
+      if (!d.exists() || d.get("status") !== "waiting" || !w) return false;
+      tx.update(ref, { waitingQuota: { until: Timestamp.fromMillis(until), reason: w.reason, tries: Math.min(50, tries) } });
+      return true;
+    });
   }
 }

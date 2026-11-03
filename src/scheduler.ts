@@ -6,10 +6,12 @@ export interface QueuedTask {
   id: string;
   /** Conversación del runner que la creó (chat), si viene de una. */
   chatId?: string;
+  /** Estaba en espera del límite del plan y alguien pidió «Reprèn ara» desde la app: arranca aunque dure el límite. */
+  resumeNow?: boolean;
 }
 
-/** Motivo por el que una tarea espera en cola (lo ve la app en su tarjeta). */
-export type QueueReason = "project" | "machine" | "chat" | "memory" | "disk";
+/** Motivo por el que una tarea espera en cola (lo ve la app en su tarjeta). quota: límite del plan de Claude Code. */
+export type QueueReason = "project" | "machine" | "chat" | "memory" | "disk" | "quota";
 
 /** Límites por defecto: 1 por proyecto (como siempre) y sin tope en el ordenador. */
 export const DEFAULT_PROJECT_LIMIT = 1;
@@ -28,8 +30,14 @@ export function effectiveProjectLimit(project: number | null, machine: number | 
   return machine === null ? p : Math.max(1, Math.min(p, machine));
 }
 
-export function nextTask(pending: QueuedTask[], running: QueuedTask[], limit: number): { task: QueuedTask } | { task: null; reason: QueueReason | null } {
-  if (!pending.length) return { task: null, reason: null };
+/**
+ * `quotaBlocked`: el plan de Claude Code está en su límite; solo arrancan las que alguien pidió reanudar ya (el resto
+ * fallaría igual y espera en cola con el motivo «quota»).
+ */
+export function nextTask(all: QueuedTask[], running: QueuedTask[], limit: number, quotaBlocked = false): { task: QueuedTask } | { task: null; reason: QueueReason | null } {
+  if (!all.length) return { task: null, reason: null };
+  const pending = quotaBlocked ? all.filter((p) => p.resumeNow) : all;
+  if (!pending.length) return { task: null, reason: "quota" };
   if (running.length >= limit) return { task: null, reason: "project" };
   const busyChats = new Set(running.map((r) => r.chatId).filter(Boolean));
   const task = pending.find((p) => !p.chatId || !busyChats.has(p.chatId));
