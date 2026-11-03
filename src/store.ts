@@ -53,6 +53,7 @@ import { readState, updateState } from "./paths.js";
 import { isShareOpen, type ShareScope } from "./runner-share.js";
 import { firestoreSource, LiveQuery } from "./live-query.js";
 import { quotaWaitsOf } from "./quota-waits.js";
+import { CHAT_TEXT_MAX, EVENT_TEXT_MAX, LEGACY_EVENT_TEXT_MAX, splitText } from "./text-limits.js";
 
 /**
  * Qué hacer al arrancar con una tarea mía en 'running': volver a la cola, darla por fallida (sin intentos) o dejarla.
@@ -733,9 +734,12 @@ export class Store {
 
   /** Lo que dice o hace Claude en la conversación (texto, herramientas, errores). */
   async postChatMessage(id: string, kind: "say" | "tool" | "error" | "summary", text: string): Promise<void> {
-    const clean = text.trim().slice(0, 4000);
+    const clean = text.trim();
     if (!clean) return;
-    await addDoc(collection(this.project(), "chats", id, "messages"), { author: "claude", kind, text: clean, at: serverTimestamp() }).catch((err: Error) => console.warn(`[chat] ${err.message}`));
+    // Un texto más largo que el límite de las reglas se parte en varios mensajes consecutivos (no se corta en silencio).
+    for (const piece of splitText(clean, CHAT_TEXT_MAX)) {
+      await addDoc(collection(this.project(), "chats", id, "messages"), { author: "claude", kind, text: piece, at: serverTimestamp() }).catch((err: Error) => console.warn(`[chat] ${err.message}`));
+    }
   }
 
   /** Claude pide permisos en la conversación (request_permission): la app muestra la misma tarjeta que en las tareas. */
@@ -1284,9 +1288,38 @@ export class Store {
     await updateDoc(this.feature(id), { leaseUntil: Timestamp.fromMillis(Date.now() + FEATURE_LEASE_MS) });
   }
 
-  async event(id: string, type: string, text: string): Promise<void> {
-    await addDoc(collection(this.feature(id), "events"), { at: serverTimestamp(), type, text: text.slice(0, 1000) })
-      .catch((err) => console.error("[event]", err.message));
+  /** Límite de texto de los events: baja a LEGACY_EVENT_TEXT_MAX si las reglas publicadas aún son las antiguas. */
+  private eventMax = EVENT_TEXT_MAX;
+  /** Cola de escritura de events por tarea: los trozos de un texto largo no se intercalan con otros events. */
+  private eventQueues = new Map<string, Promise<void>>();
+
+  /** Añade un event al log de la tarea; un texto más largo que el límite se parte en varios events consecutivos. */
+  event(id: string, type: string, text: string): Promise<void> {
+    const prev = this.eventQueues.get(id) ?? Promise.resolve();
+    const next = prev.then(() => this.writeEvent(id, type, text));
+    this.eventQueues.set(id, next);
+    void next.then(() => {
+      if (this.eventQueues.get(id) === next) this.eventQueues.delete(id);
+    });
+    return next;
+  }
+
+  private async writeEvent(id: string, type: string, text: string): Promise<void> {
+    const add = (piece: string) => addDoc(collection(this.feature(id), "events"), { at: serverTimestamp(), type, text: piece });
+    for (const piece of splitText(text, this.eventMax)) {
+      try {
+        await add(piece);
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        if (e.code !== "permission-denied" || piece.length <= LEGACY_EVENT_TEXT_MAX) {
+          console.error("[event]", e.message);
+          continue;
+        }
+        // Reglas antiguas (≤ 1000): no se pierde el event, se reparte en trozos que caben y se recuerda el límite.
+        this.eventMax = LEGACY_EVENT_TEXT_MAX;
+        for (const small of splitText(piece, LEGACY_EVENT_TEXT_MAX)) await add(small).catch((e2: Error) => console.error("[event]", e2.message));
+      }
+    }
   }
 
   async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string, waitingQuota?: { until: number; reason: string; tries: number }): Promise<void> {

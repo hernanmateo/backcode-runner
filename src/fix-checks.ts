@@ -150,7 +150,7 @@ export async function fixChecks(
     await git(path, ["push", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
     await followLocalWorktree(cfg, featureId, branch);
     const text = t("checksFix.done");
-    await store.event(featureId, "start", summary ? `${text}\n${summary}`.slice(0, 1000) : text);
+    await store.event(featureId, "start", summary ? `${text}\n${summary}` : text);
     return { ok: true, result: { url: prUrl, log: summary || text } };
   } finally {
     await removeWorktree(cfg.repoPath, path);
