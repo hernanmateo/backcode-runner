@@ -49,7 +49,7 @@ import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
-import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
@@ -495,7 +495,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         const prepared = await promptMessage(store, cfg.projectId, wt.path, m).catch((err: Error) => (console.warn(`[messages] ${err.message}`), { text: m.text }));
         // Si la fase acabó mientras tanto, el mensaje ya vuelve a estar pendiente (se entrega en la siguiente).
         if (!inputOpen || outstanding.get(uuid) !== mid) return;
-        inputQueue.push({ type: "user", message: { role: "user", content: buildLiveMessage(prepared) }, parent_tool_use_id: null, uuid, priority: "next" });
+        inputQueue.push({ type: "user", message: { role: "user", content: buildLiveContent(prepared) }, parent_tool_use_id: null, uuid, priority: "next" });
         wake?.();
       });
     }

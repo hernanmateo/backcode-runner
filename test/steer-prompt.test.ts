@@ -1,6 +1,62 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt } from "../src/prompt.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promptMessage } from "../src/chat.js";
+import { buildFollowUpPrompt, buildLiveContent, buildLiveMessage, buildPlanFollowUpPrompt } from "../src/prompt.js";
+import type { Store, ThreadMessage } from "../src/store.js";
+
+const png = Buffer.from("iVBORw0KGgo=", "base64");
+// Como en el runner, la copia de trabajo es un repo git (los adjuntos se excluyen en .git/info/exclude).
+function worktree(): string {
+  const wt = mkdtempSync(join(tmpdir(), "bc-att-"));
+  execFileSync("git", ["init", "-q", wt]);
+  return wt;
+}
+
+const att = { path: "projects/p1/attachments/u1/1793-abc-foto.jpg", name: "foto.jpg", contentType: "image/jpeg", size: png.length };
+
+test("hilo de la tarea: una imagen adjunta llega al modelo como bloque de imagen", async () => {
+  const wt = worktree();
+  try {
+    const store = { download: async () => png } as unknown as Store;
+    const m = { id: "m1", author: "user", kind: "message", text: "hi ha això", attachments: [att] } as ThreadMessage;
+    const prepared = await promptMessage(store, "p1", wt, m);
+    assert.equal(prepared.images?.length, 1);
+    const content = buildLiveContent(prepared);
+    assert.ok(Array.isArray(content));
+    const image = content.find((b) => b.type === "image");
+    assert.ok(image && image.type === "image");
+    assert.equal(image.source.media_type, "image/jpeg");
+    assert.equal(image.source.data, png.toString("base64"));
+    assert.match((content[0] as { text: string }).text, /hi ha això/);
+    assert.match((content[0] as { text: string }).text, /1-foto\.jpg/);
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+  }
+});
+
+test("hilo de la tarea: si el adjunto no se puede descargar, el texto llega y Claude lo sabe", async () => {
+  const wt = worktree();
+  try {
+    const store = { download: async () => { throw new Error("boom"); } } as unknown as Store;
+    const m = { id: "m2", author: "user", kind: "message", text: "mira", attachments: [att] } as ThreadMessage;
+    const prepared = await promptMessage(store, "p1", wt, m);
+    assert.equal(prepared.text, "mira");
+    assert.match(prepared.attachmentError ?? "", /boom/);
+    const content = buildLiveContent(prepared);
+    assert.equal(typeof content, "string");
+    assert.match(content as string, /could not download/);
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+  }
+});
+
+test("mensaje de solo texto: sin cambios", () => {
+  assert.equal(buildLiveContent({ text: "hola" }), buildLiveMessage({ text: "hola" }));
+});
 
 test("follow-up: los mensajes del gestor o de un admin llegan como datos, igual que los del asignado", () => {
   const msgs = [
