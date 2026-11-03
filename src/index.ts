@@ -24,6 +24,7 @@ import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
 import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setDeployRetry, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
+import { clampRetryMax, decideRetry } from "./auto-retry.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
@@ -176,9 +177,44 @@ async function drainAutoMerge(): Promise<void> {
   }
 }
 
+// «Reintenta las tareas fallidas por errores temporales» (auto-retry.ts): con la opción del proyecto activa, una tarea que
+// falla por la red, una API caída o una parada del runner vuelve sola a la cola tras una espera, como mucho `max` veces y
+// sin pasar del tope de coste. Sin tope propio, el de una ejecución (BACKCODE_MAX_BUDGET_USD).
+const autoRetrySettings = { on: false, max: clampRetryMax(undefined), maxCostUsd: undefined as number | undefined };
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleRetry(id: string, at: number): void {
+  clearTimeout(retryTimers.get(id));
+  retryTimers.set(
+    id,
+    setTimeout(() => {
+      retryTimers.delete(id);
+      if (stopping || restarting) return;
+      void store
+        .fireAutoRetry(id)
+        .then((fired) => fired && console.log(`[retry] ${id}`))
+        .catch((err) => console.warn(`[retry] ${id} ${(err as Error).message}`));
+    }, Math.max(0, at - Date.now())),
+  );
+}
+
+/** Tras fallar: decide si se reintenta y lo deja escrito en la tarea (la app lo enseña). */
+async function afterFailure(id: string, feature: Feature, result: FeatureResult, cancelled: boolean): Promise<void> {
+  const prev = feature.autoRetry ? { ...feature.autoRetry, nextAt: undefined } : undefined;
+  const settings = { on: autoRetrySettings.on, max: autoRetrySettings.max, maxCostUsd: autoRetrySettings.maxCostUsd ?? cfg.maxBudgetUsd };
+  const next = decideRetry(prev, { error: result.error, errorCode: result.errorCode, cancelled, costUsd: result.costUsd }, settings, Date.now());
+  if (!next) return;
+  await store.setAutoRetry(id, next);
+  if (next.state === "scheduled" && next.nextAt) {
+    await store.event(id, "say", t("retry.scheduled", { n: next.count, max: next.max, min: Math.round((next.nextAt - Date.now()) / 60_000) }));
+    scheduleRetry(id, next.nextAt);
+  }
+}
+
 // "released": la movieron a mano (ya no está en marcha) y el runner la suelta sin escribir su estado.
+// cancelled: quien la dirige pidió pararla (no se reintenta nunca sola).
 // planLimit: se paró por el límite del plan de Claude Code (queda en espera del límite, no fallida).
-type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string; planLimit?: PlanLimitHit };
+type RunOutcome = { status: "done" | "failed" | "waiting" | "execute" | "released"; result: FeatureResult; sessionId?: string; cancelled?: boolean; planLimit?: PlanLimitHit };
 
 /**
  * Informe para Backcode de una acción fallida (diagnostics.ts decide si es de Backcode y lo limpia). En un despliegue
@@ -889,7 +925,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   if ((question || permissionAsked) && !result.error) return { status: "waiting", result: { ...result, error: undefined }, sessionId };
   // Plan propuesto: espera a que lo aprueben o pidan cambios (como una pregunta).
   if (planned && !result.error) return { status: "waiting", result: { ...result, planReady: true, error: undefined }, sessionId };
-  if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan"), ...(result.error ? {} : { errorCode: "noPlan" as const }) }, sessionId };
+  if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan"), ...(result.error ? {} : { errorCode: "noPlan" as const }) }, sessionId, cancelled: stopRequested && !released };
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
   if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
@@ -899,7 +935,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     await store.event(id, "say", t("run.noPrWaiting"));
     return { status: "waiting", result: { ...result, error: undefined }, sessionId };
   }
-  return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr"), ...(result.error ? {} : { errorCode: "noPr" as const }) }, sessionId };
+  return { status: "failed", result: { ...result, error: result.error ?? t("run.noPr"), ...(result.error ? {} : { errorCode: "noPr" as const }) }, sessionId, cancelled: stopRequested && !released };
 }
 
 /** ¿Hay cambios sin publicar en el worktree (sin commitear o commits por delante de la base)? */
@@ -1004,7 +1040,7 @@ async function runOne(id: string, feature: Feature): Promise<void> {
   console.log(`[run] ${id} · ${feature.title}`);
   const release = awake.hold();
   try {
-    const { status, result, sessionId, planLimit } = await runFeature(id, feature);
+    const { status, result, sessionId, cancelled, planLimit } = await runFeature(id, feature);
     if (status === "released") {
       console.log(`[released] ${id} ${result.prUrl ?? ""}`);
       return;
@@ -1025,13 +1061,16 @@ async function runOne(id: string, feature: Feature): Promise<void> {
       await store.event(id, status, result.prUrl ?? result.error ?? "");
       // Un PR de CI nunca entra en el modo auto: se revisa y se mergea a mano.
       if (status === "done" && result.prUrl?.startsWith("https://") && !isCiTask(feature)) queueAutoMerge(id);
+      if (status === "failed") await afterFailure(id, feature, result, !!cancelled).catch((err) => console.warn(`[retry] ${id} ${(err as Error).message}`));
     }
     console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
     void refreshQuota();
     void publishSession(id, sessionId ?? feature.sessionId);
   } catch (err) {
     console.error(`[error] ${id}`, err);
-    await store.finish(id, "failed", { error: String(err).slice(0, 2000) }).catch(() => undefined);
+    const result = { error: String(err).slice(0, 2000) };
+    await store.finish(id, "failed", result).catch(() => undefined);
+    await afterFailure(id, feature, result, false).catch(() => undefined);
   } finally {
     release();
   }
@@ -1328,6 +1367,16 @@ async function main(): Promise<void> {
     autoMergeSettings.on = on;
     autoMergeSettings.retries = clampRetries(retries);
   });
+  const stopAutoRetry = store.watchAutoRetry(({ on, max, maxCostUsd }) => {
+    autoRetrySettings.on = on;
+    autoRetrySettings.max = clampRetryMax(max);
+    autoRetrySettings.maxCostUsd = typeof maxCostUsd === "number" && maxCostUsd > 0 ? maxCostUsd : undefined;
+  });
+  // Reintentos que quedaron programados antes de reiniciar el runner.
+  void store
+    .scheduledRetries()
+    .then((list) => list.forEach((r) => scheduleRetry(r.id, r.nextAt)))
+    .catch((err) => console.warn(`[retry] ${(err as Error).message}`));
   // Para que el panel muestre el nombre del proyecto (las configuraciones antiguas no lo traen).
   if (project.name && readState().names?.[cfg.projectId] !== project.name) updateState({ names: { ...readState().names, [cfg.projectId]: project.name } });
   if (cfg.keepAwake === "always") console.log(`[backcode] ${t("awake.always")}`);
@@ -1756,6 +1805,7 @@ async function main(): Promise<void> {
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
+    stopAutoRetry();
     autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);
@@ -1813,6 +1863,7 @@ async function main(): Promise<void> {
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
+    stopAutoRetry();
     autoMergeAbort.abort();
     clearInterval(machineTimer);
     clearTimeout(updateNoticeStart);

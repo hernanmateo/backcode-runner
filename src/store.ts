@@ -39,6 +39,7 @@ import type { DeployVia } from "./deploy-log.js";
 import type { TaskBuild } from "./deploy-tasks.js";
 import type { OpenPr } from "./hosts.js";
 import type { DiagnosticPayload } from "./diagnostics.js";
+import type { AutoRetryState } from "./auto-retry.js";
 
 /** PR externo para el tablero: el del host más sus checks y si choca con la rama base. */
 export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
@@ -82,6 +83,8 @@ export interface Feature {
   branch?: string;
   promptHash?: string;
   attempts?: number;
+  /** Reintento automático por un error temporal (auto-retry.ts); nextAt llega como Timestamp. */
+  autoRetry?: Omit<AutoRetryState, "nextAt"> & { nextAt?: Timestamp | number };
   /** Imágenes y documentos que adjuntó quien propuso la tarea. */
   attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
@@ -460,7 +463,9 @@ export class Store {
       if (d.get("archivedAt") != null) return null;
       const attempts = ((d.get("attempts") as number | undefined) ?? 0) + 1;
       // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
-      const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
+      // Los reintentos automáticos (auto-retry.ts) tienen su propio tope: no se descuentan de este.
+      const retried = d.get("autoRetry.state") === "retrying" ? Number(d.get("autoRetry.count")) || 0 : 0;
+      const limit = (d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts) + Math.min(3, retried);
       if (attempts > limit) {
         tx.update(ref, { status: "failed", result: { error: t("store.maxAttempts") }, finishedAt: serverTimestamp() });
         return null;
@@ -954,6 +959,19 @@ export class Store {
     );
   }
 
+  /** «Reintenta las tareas fallidas por errores temporales» (auto-retry.ts): si está activo, el máximo y el tope de coste. */
+  watchAutoRetry(onChange: (settings: { on: boolean; max?: number; maxCostUsd?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => {
+        const max = d.get("autoRetryMax");
+        const cost = d.get("autoRetryMaxCostUsd");
+        onChange({ on: d.get("autoRetry") === true, max: typeof max === "number" ? max : undefined, maxCostUsd: typeof cost === "number" ? cost : undefined });
+      },
+      () => undefined,
+    );
+  }
+
   /** «Reintentar automáticamente los despliegues fallidos por errores temporales» (activado por defecto) y cuántas veces. */
   watchDeployRetry(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
     return onSnapshot(
@@ -961,6 +979,43 @@ export class Store {
       (d) => onChange({ on: d.get("deployAutoRetry") !== false, retries: typeof d.get("deployAutoRetries") === "number" ? (d.get("deployAutoRetries") as number) : undefined }),
       () => undefined,
     );
+  }
+
+  /** Decisión de reintento de una tarea recién fallida (auto-retry.ts): la app la enseña en la tarjeta. */
+  async setAutoRetry(featureId: string, state: AutoRetryState): Promise<void> {
+    const { nextAt, costCap, ...rest } = state;
+    await updateDoc(this.feature(featureId), {
+      autoRetry: { ...rest, ...(costCap ? { costCap: true } : {}), ...(nextAt ? { nextAt: Timestamp.fromMillis(nextAt) } : {}), at: serverTimestamp() },
+    });
+  }
+
+  /** Lanza un reintento programado: failed -> execute (la misma sesión y rama), solo si sigue fallida y programada. */
+  async fireAutoRetry(featureId: string): Promise<boolean> {
+    const ref = this.feature(featureId);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      const f = d.data() as Feature | undefined;
+      if (!f || f.status !== "failed" || !this.executes(f) || d.get("archivedAt") != null || f.autoRetry?.state !== "scheduled") return false;
+      const { nextAt: _nextAt, ...rest } = f.autoRetry as NonNullable<Feature["autoRetry"]> & { at?: unknown };
+      tx.update(ref, { status: "execute", autoRetry: { ...rest, state: "retrying", at: serverTimestamp() } });
+      return true;
+    });
+  }
+
+  /** Mis tareas fallidas con un reintento automático programado (para no perderlo si el runner se reinicia). */
+  async scheduledRetries(): Promise<{ id: string; nextAt: number }[]> {
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("status", "==", "failed"), where("assignee", "==", this.uid))),
+      getDocs(query(this.features(), where("status", "==", "failed"), where("runnerUid", "==", this.uid))),
+    ]);
+    const out = new Map<string, number>();
+    for (const d of [...mine.docs, ...shared.docs]) {
+      const f = d.data() as Feature;
+      if (f.autoRetry?.state !== "scheduled" || !this.executes(f)) continue;
+      const at = f.autoRetry.nextAt;
+      out.set(d.id, typeof at === "number" ? at : (at?.toMillis() ?? 0));
+    }
+    return [...out].map(([id, nextAt]) => ({ id, nextAt }));
   }
 
   /** Estado del modo auto en una tarea con PR listo (auto-merge.ts): lo enseña la app y avisa al agotar los reintentos. */
