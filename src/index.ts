@@ -22,7 +22,7 @@ import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployC
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
-import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setDeployRetry, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
@@ -1199,6 +1199,7 @@ async function main(): Promise<void> {
     }
   });
   const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
+  const stopDeployRetry = store.watchDeployRetry(setDeployRetry);
   // «Rama de preview» (opcional): solo cuenta si es válida y existe en el remoto; si no, todo sigue en la rama base.
   const stopPreviewBranch = store.watchPreviewBranch((branch) => {
     if (!branch) {
@@ -1644,6 +1645,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
     autoMergeAbort.abort();
@@ -1699,6 +1701,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
     autoMergeAbort.abort();

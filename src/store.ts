@@ -940,6 +940,15 @@ export class Store {
     );
   }
 
+  /** «Reintentar automáticamente los despliegues fallidos por errores temporales» (activado por defecto) y cuántas veces. */
+  watchDeployRetry(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => onChange({ on: d.get("deployAutoRetry") !== false, retries: typeof d.get("deployAutoRetries") === "number" ? (d.get("deployAutoRetries") as number) : undefined }),
+      () => undefined,
+    );
+  }
+
   /** Estado del modo auto en una tarea con PR listo (auto-merge.ts): lo enseña la app y avisa al agotar los reintentos. */
   async setAutoMerge(featureId: string, state: { state: string; attempts: number; reason?: string }): Promise<void> {
     await updateDoc(this.feature(featureId), { autoMerge: { state: state.state, attempts: state.attempts, ...(state.reason ? { reason: state.reason.slice(0, 500) } : {}), at: serverTimestamp() } });
