@@ -81,7 +81,7 @@ export async function fixConflicts(cfg: RunnerConfig, store: Store, host: PrHost
     }
     await store.setConflicts(featureId, []).catch(() => undefined);
     const text = sync.status === "conflicts" ? t("fix.done", { files: sync.files.join(", ") }) : sync.status === "merged" ? t("fix.merged", { base: `${remote}/${baseBranch}` }) : t("fix.uptodate");
-    await store.event(featureId, "start", summary ? `${text}\n${summary}`.slice(0, 1000) : text);
+    await store.event(featureId, "start", summary ? `${text}\n${summary}` : text);
     return { ok: true, result: { url: prUrl, log: summary || text } };
   } finally {
     await removeWorktree(cfg.repoPath, path);

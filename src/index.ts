@@ -616,7 +616,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           for (const block of msg.message.content) {
             if (block.type === "text" && block.text.trim()) {
               // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
-              await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
+              await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n"));
             } else if (block.type === "tool_use") {
               await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
             }
@@ -717,7 +717,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       const message = entry.message as { role?: string; content?: unknown } | undefined;
       if (entry.type !== "assistant" || !Array.isArray(message?.content)) return;
       for (const block of message.content as { type: string; text?: string; name?: string; input?: Record<string, unknown> }[]) {
-        if (block.type === "text" && block.text?.trim()) void store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n").slice(0, 1000));
+        if (block.type === "text" && block.text?.trim()) void store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n"));
         else if (block.type === "tool_use" && block.name) void store.event(id, "tool", describeTool(block.name, block.input ?? {}, wt.path));
       }
     });
@@ -792,7 +792,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       const before = await git(wt.path, ["rev-parse", "HEAD"]);
       await runPhase(reviewFixPrompt(r.findings!));
       // El resumen de la tarea sigue siendo el de su implementación; el del arreglo va a la actividad.
-      if (result.summary && result.summary !== summary) await store.event(id, "say", result.summary.slice(0, 1000));
+      if (result.summary && result.summary !== summary) await store.event(id, "say", result.summary);
       result = { ...result, summary, error: undefined };
       const pushed = await pushReviewFix(before).catch(async (err: Error) => {
         await store.event(id, "error", t("review.pushFailed", { error: err.message.slice(0, 300) }));
