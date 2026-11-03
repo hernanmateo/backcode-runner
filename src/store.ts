@@ -44,6 +44,7 @@ import type { DiagnosticPayload } from "./diagnostics.js";
 export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
 import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
+import type { NotOursCategory } from "./not-ours.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
 import { isShareOpen, type ShareScope } from "./runner-share.js";
@@ -223,6 +224,8 @@ export interface FeatureResult {
   error?: string;
   /** Error conocido, para que la app lo muestre en el idioma de quien lo ve (error va en el del runner). */
   errorCode?: "noPr" | "noPlan";
+  /** El fallo no es de Backcode (not-ours.ts): la app explica el motivo (plan, presupuesto, proyecto…). */
+  notOurs?: NotOursCategory;
 }
 
 const LOCK_LEASE_MS = 60_000;

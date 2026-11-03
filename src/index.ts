@@ -49,7 +49,7 @@ import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveMessage, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
-import { buildReport, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
+import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
@@ -839,6 +839,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     result.error = abort.signal.aborted ? (stopping ? t("run.stopped") : t("run.timeout", { min: cfg.timeoutMinutes })) : String(err);
     // Claude Code se cerró por el límite del plan: no es un fallo (ni de Backcode).
     if (!abort.signal.aborted) noteLimit(planLimitFromText(String(err)) ?? rateRejected);
+    // Si no es de Backcode (plan, presupuesto, proyecto…), la app lo explica en la tarea.
+    const category = abort.signal.aborted ? null : notOurs(String(err));
+    if (category) result.notOurs = category;
     // Un error interno del runner (no parar ni agotar el tiempo): a Backcode, si quien lo usa lo permite.
     if (!abort.signal.aborted && !planLimit) void report(store, buildReport({ action: "feature", error: String(err), log: (err as Error)?.stack, thrown: true }, diagCtx));
   } finally {
