@@ -68,6 +68,17 @@ export function quotaBlockedUntil(quota: Quota | null | undefined, now = Date.no
   return until;
 }
 
+/**
+ * La cuota leída dice que ha vuelto: alguna ventana con datos y ninguna agotada. Sin datos (API key, sin sesión) no se
+ * sabe: null, y se espera a la hora prevista.
+ */
+export function quotaAvailable(quota: Quota | null | undefined, now = Date.now()): boolean | null {
+  if (!quota) return null;
+  const windows = [quota.fiveHour, quota.sevenDay].filter((w) => w && w.pct !== null);
+  if (!windows.length) return null;
+  return quotaBlockedUntil(quota, now) === null;
+}
+
 /** Reintento prudente cuando no se sabe cuándo vuelve: 15 min, 30, 1 h, 2 h… hasta 3 h. */
 export function backoffMs(tries: number): number {
   return Math.min(15 * 60_000 * 2 ** Math.max(0, tries), 3 * 60 * 60_000);

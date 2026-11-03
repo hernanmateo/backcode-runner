@@ -39,7 +39,8 @@ import { computePlan } from "./pending.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
-import { planLimitFromEvent, planLimitFromText, quotaBlockedUntil, waitUntil, type PlanLimitHit } from "./plan-limit.js";
+import { planLimitFromEvent, planLimitFromText, quotaAvailable, quotaBlockedUntil, waitUntil, type PlanLimitHit } from "./plan-limit.js";
+import { parkForQuota, QuotaWaits, resumeDue, type QuotaWaitStore } from "./quota-waits.js";
 import { refineIdea } from "./refine.js";
 import { promptMessage, runChat, VIDEO_WAIT_MS, videosPending, type ChatTaskInput, type ChatTaskMessage } from "./chat.js";
 import { detectCi } from "./ci.js";
@@ -120,11 +121,11 @@ let monitorTimer: NodeJS.Timeout | undefined;
 let restarting = false;
 let stopping = false;
 /**
- * Límite del plan de Claude Code (plan-limit.ts): hasta cuándo no se arranca ninguna tarea nueva (fallarían igual),
- * salvo las que alguien pidió reanudar ya desde la app. Y las tareas en espera del límite: hasta cuándo e intentos.
+ * Límite del plan de Claude Code (plan-limit.ts): las tareas en espera del límite de este runner (hasta cuándo, intentos
+ * y cómo quedaron), también en un fichero local que sobrevive a los reinicios (quota-waits.ts). Mientras alguna espera,
+ * no se arranca ninguna tarea nueva (fallarían igual), salvo las que alguien pidió reanudar ya desde la app.
  */
-let quotaUntil = 0;
-const quotaWaits = new Map<string, { until: number; tries: number }>();
+let quotaWaits = new QuotaWaits();
 let quotaChecking = false;
 
 // «Modo auto» del proyecto (auto-merge.ts): las tareas que este runner termina con PR se mergean solas, de una en una
@@ -985,7 +986,9 @@ async function drain(): Promise<void> {
   let reason: QueueReason | null = null;
   try {
     while (!stopping && !restarting) {
-      const pick = nextTask(pending, [...running.values()], effectiveProjectLimit(limits.project, limits.machine), quotaUntil > Date.now());
+      // Las ya reanudadas por el runner (sin marca, p. ej. con reglas antiguas) también pasan aunque otras sigan esperando.
+      const queue = pending.map((p) => (!p.resumeNow && quotaWaits.isResumed(p.id) ? { ...p, resumeNow: true } : p));
+      const pick = nextTask(queue, [...running.values()], effectiveProjectLimit(limits.project, limits.machine), quotaWaits.blockedUntil() > 0);
       if (!pick.task) {
         reason = pick.reason;
         break;
@@ -1011,6 +1014,8 @@ async function drain(): Promise<void> {
         continue;
       }
       running.set(task.id, task);
+      // Reanudada (sola o con «Reprèn ara»): ya no retiene la cola; conserva los intentos por si vuelve a toparse con el límite.
+      quotaWaits.markResumed(task.id);
       void runOne(task.id, feature).finally(() => {
         releaseSlot();
         running.delete(task.id);
@@ -1023,7 +1028,7 @@ async function drain(): Promise<void> {
   // Esperando por RAM, disco o el total del ordenador (que liberan otros procesos): se vuelve a mirar en 30 s.
   if (reason === "memory" || reason === "disk" || reason === "machine") drainRetry = setTimeout(() => void drain(), 30_000);
   // Límite del plan: se vuelve a mirar al acabar (como mucho cada 30 min; la represa también despierta la cola).
-  else if (reason === "quota") drainRetry = setTimeout(() => void drain(), Math.min(Math.max(quotaUntil - Date.now(), 0) + 1_000, 30 * 60_000));
+  else if (reason === "quota") drainRetry = setTimeout(() => void drain(), Math.min(Math.max(quotaWaits.blockedUntil() - Date.now(), 0) + 1_000, 30 * 60_000));
   await publishQueue(reason);
 }
 
@@ -1049,9 +1054,9 @@ async function runOne(id: string, feature: Feature): Promise<void> {
       await waitForQuota(id, feature, planLimit, result, sessionId);
       return;
     }
-    // Ha trabajado con Claude sin toparse con el límite: la cuota está disponible.
-    if ((result.turns ?? 0) > 0) quotaUntil = 0;
     quotaWaits.delete(id);
+    // Ha trabajado con Claude sin toparse con el límite: la cuota está disponible y las demás en espera se reanudan ya.
+    if ((result.turns ?? 0) > 0 && quotaWaits.release()) void checkQuotaWaits();
     if (stopping && !result.prUrl && status !== "waiting" && status !== "execute") {
       await store.requeue(id);
     } else {
@@ -1078,55 +1083,52 @@ async function runOne(id: string, feature: Feature): Promise<void> {
 
 /**
  * La tarea se paró por el límite del plan de Claude Code: queda en espera del límite (waiting + waitingQuota) con la hora
- * prevista de represa, y no se arranca ninguna otra hasta entonces (fallarían igual).
+ * prevista de represa, y no se arranca ninguna otra hasta entonces (fallarían igual). Si las reglas desplegadas aún no
+ * aceptan la marca, vuelve a la cola ('execute', la transición de siempre) retenida hasta su hora (quota-waits.ts, que
+ * sobrevive a los reinicios); y si ni eso, queda en espera sin marca y se avisa en la tarea: nunca en silencio.
  */
 async function waitForQuota(id: string, feature: Feature, hit: PlanLimitHit, result: FeatureResult, sessionId: string | undefined): Promise<void> {
   // Intentos seguidos: los que llevaba la tarea (en memoria, o en la marca si la reanudaron desde la app) más este.
   const tries = (quotaWaits.get(id)?.tries ?? feature.waitingQuota?.tries ?? 0) + 1;
   const quota = hit.resetsAt ? null : await readQuota(agentEnv()).catch(() => null);
   const until = waitUntil(hit, quota, tries - 1);
-  quotaWaits.set(id, { until, tries });
-  quotaUntil = Math.max(quotaUntil, until);
   const time = new Date(until).toLocaleTimeString(lang(), { hour: "2-digit", minute: "2-digit" });
-  // Con reglas antiguas (sin waitingQuota) queda esperando igualmente, no fallida; la represa automática sigue en memoria.
-  await store.finish(id, "waiting", result, sessionId, { until, reason: hit.reason, tries }).catch(() => store.finish(id, "waiting", result, sessionId));
-  await store.event(id, "say", t("run.planLimit", { time, reason: hit.reason.slice(0, 200) }));
-  console.log(`[quota] ${id} ${t("run.planLimit", { time, reason: hit.reason.slice(0, 200) })}`);
+  const reason = hit.reason.slice(0, 200);
+  const mode = await parkForQuota(quotaWaits, quotaStore(result, sessionId, { until, reason: hit.reason, tries }), id, until, tries, (msg) => console.warn(`[quota] ${msg}`));
+  const say = mode === "unmarked" ? t("run.planLimitManual", { time, reason }) : t("run.planLimit", { time, reason });
+  await store.event(id, "say", say);
+  console.log(`[quota] ${id} ${say}`);
   void refreshQuota();
   void publishSession(id, sessionId ?? feature.sessionId);
+}
+
+/** Las operaciones de Firestore de la espera del límite (quota-waits.ts). */
+function quotaStore(result: FeatureResult = {}, sessionId?: string, wait?: { until: number; reason: string; tries: number }): QuotaWaitStore {
+  return {
+    markWaiting: (id) => (wait ? store.finish(id, "waiting", result, sessionId, wait) : Promise.reject(new Error("no wait"))),
+    requeue: (id) => store.requeue(id),
+    plainWaiting: (id) => store.finish(id, "waiting", result, sessionId),
+    resumeFromQuota: (id) => store.resumeFromQuota(id),
+    postponeQuota: (id, until, tries) => store.postponeQuota(id, until, tries),
+  };
 }
 
 /**
  * Represa automática: las tareas en espera del límite cuya hora ya pasó vuelven a la cola (misma sesión y rama) si la
  * cuota lo confirma (quota.ts); si aún está agotada, se aplaza a su reinicio. Sin datos de cuota (API key), por la hora.
+ * La que no se puede reanudar sola (sin marca, con reglas antiguas) lo dice en la tarea: la app ofrece «Reprèn ara».
  */
 async function checkQuotaWaits(): Promise<void> {
   if (quotaChecking || stopping || restarting) return;
-  const now = Date.now();
-  const due = [...quotaWaits].filter(([, w]) => w.until <= now);
-  if (!due.length) return;
+  if (!quotaWaits.due().length) return;
   quotaChecking = true;
   try {
     const still = quotaBlockedUntil(await readQuota(agentEnv()).catch(() => null));
-    if (still) {
-      const until = still + 60_000;
-      quotaUntil = Math.max(quotaUntil, until);
-      for (const [id, w] of due) {
-        const ok = await store.postponeQuota(id, until, w.tries).catch(() => true);
-        if (ok) quotaWaits.set(id, { until, tries: w.tries });
-        else quotaWaits.delete(id);
-      }
-      return;
-    }
-    if (quotaUntil <= now) quotaUntil = 0;
-    for (const [id] of due) {
-      // Se conserva la cuenta de intentos (para el backoff) hasta que la tarea trabaje sin toparse con el límite.
-      const ok = await store.resumeFromQuota(id).catch((err: Error) => (console.warn(`[quota] ${id} ${err.message}`), null));
-      if (ok === false) quotaWaits.delete(id);
-      else if (ok) {
-        quotaWaits.set(id, { until: Number.MAX_SAFE_INTEGER, tries: quotaWaits.get(id)?.tries ?? 0 });
-        console.log(`[quota] ${id} ${t("run.planLimitResume")}`);
-      }
+    const out = await resumeDue(quotaWaits, quotaStore(), still, Date.now(), (msg) => console.warn(`[quota] ${msg}`));
+    for (const id of out.resumed) console.log(`[quota] ${id} ${t("run.planLimitResume")}`);
+    for (const id of out.manual) {
+      console.warn(`[quota] ${id} ${t("run.planLimitManualNow")}`);
+      await store.event(id, "say", t("run.planLimitManualNow"));
     }
   } finally {
     quotaChecking = false;
@@ -1201,6 +1203,8 @@ async function main(): Promise<void> {
     // Tareas de CI (ci-task.ts): la app ofrece «Prepararla con Claude Code» en «CI y checks» si el repo no tiene CI.
     ciSetup: !!prHost,
     chat: true,
+    // Las tareas en espera del límite del plan se reanudan solas (también sin la marca y tras reiniciar): la app avisa si falta.
+    quotaResume: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
   };
@@ -1442,24 +1446,33 @@ async function main(): Promise<void> {
       const quota = await readQuota(agentEnv());
       quotaAt = Date.now();
       if (quota) await store.saveQuota(quota).catch((err) => console.warn(`[quota] ${(err as Error).message}`));
+      // La cuota ha vuelto (ninguna ventana al 100 %): las tareas en espera se reanudan ya y la cola deja de estar retenida.
+      if (quotaAvailable(quota) && quotaWaits.release()) void checkQuotaWaits();
     } finally {
       quotaBusy = false;
     }
   };
   void refreshQuota();
   const quotaTimer = setInterval(() => void refreshQuota(), 5 * 60_000);
-  // Tareas en espera del límite del plan (de antes de arrancar): no se arranca nada hasta su hora y luego se retoman solas.
-  for (const w of await store.quotaWaits().catch(() => [])) {
-    quotaWaits.set(w.id, { until: w.until, tries: w.tries });
-    if (w.until > Date.now()) quotaUntil = Math.max(quotaUntil, w.until);
-  }
+  // Tareas en espera del límite del plan: las de antes de arrancar (fichero local, también las que las reglas no dejaron
+  // marcar) y, en directo, las marcadas en Firestore (mías y de compañeros con mi runner). Las que alguien cancela o
+  // reanuda a mano dejan de retener la cola. No se arranca nada hasta su hora y luego se retoman solas.
+  quotaWaits = new QuotaWaits(join(HOME_DIR, "quota", `${cfg.projectId}-${uid}.json`));
+  quotaWaits.load();
+  const stopQuotaWaits = store.watchQuotaWaits(
+    (waiting, marked) => {
+      if (quotaWaits.syncWaiting(waiting, marked).length) void drain();
+      void checkQuotaWaits();
+    },
+    (err) => console.warn(`[quota] ${err.message}`),
+  );
   const quotaWaitTimer = setInterval(() => void checkQuotaWaits(), 60_000);
   void checkQuotaWaits();
   const stopQuotaRequests = await store.watchQuotaRequests(() => void refreshQuota()).catch(() => () => undefined);
 
   // Solo las tareas que este usuario aceptó en este proyecto, por prioridad y orden de aceptación.
   // Más las de compañeros que se aceptaron con mi runner (runnerUid); las mías con el runner de otro, no.
-  const queued = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[] };
+  const queued = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[], loaded: { mine: false, shared: false } };
   const requeue = () => {
     pending = [...queued.mine, ...queued.shared]
       // Las archivadas se quedan en la cola sin ejecutarse: al desarchivarlas, el snapshot cambia y vuelven aquí.
@@ -1467,6 +1480,8 @@ async function main(): Promise<void> {
       .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, resumeNow: d.get("waitingQuota") != null, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
       .sort((a, b) => a.priority - b.priority || a.at - b.at)
       .map((d) => ({ id: d.id, chatId: d.chatId, ...(d.resumeNow ? { resumeNow: true } : {}) }));
+    // Las que volvieron a la cola sin marca y ya no están (liberadas o descartadas) dejan de retenerla.
+    if (queued.loaded.mine && queued.loaded.shared) quotaWaits.syncQueued(new Set([...pending.map((p) => p.id), ...running.keys()]));
     if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);
     void drain();
   };
@@ -1474,6 +1489,7 @@ async function main(): Promise<void> {
     store.myQueue(),
     (snap) => {
       queued.mine = snap.docs;
+      queued.loaded.mine = true;
       requeue();
     },
     (err) => {
@@ -1485,6 +1501,7 @@ async function main(): Promise<void> {
     store.sharedQueue(),
     (snap) => {
       queued.shared = snap.docs;
+      queued.loaded.shared = true;
       requeue();
     },
     (err) => console.warn("[snapshot] shared:", err.message),
@@ -1822,6 +1839,7 @@ async function main(): Promise<void> {
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(quotaWaitTimer);
+    stopQuotaWaits();
     clearInterval(conflictsTimer);
     clearInterval(sessionsTimer);
     stopQuotaRequests();
@@ -1878,6 +1896,7 @@ async function main(): Promise<void> {
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(quotaWaitTimer);
+    stopQuotaWaits();
     clearInterval(conflictsTimer);
     clearInterval(sessionsTimer);
     clearInterval(updateTimer);
