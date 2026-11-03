@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -10,7 +10,7 @@ import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
 import { claudeExecutable } from "./preflight.js";
-import { buildChatPrompt, buildChatSystemAppend, type ChatVideo, type PromptMessage } from "./prompt.js";
+import { buildChatPrompt, buildChatSystemAppend, type ChatVideo, type PromptImage, type PromptMessage } from "./prompt.js";
 import type { Attachment, ChatUserMessage, RunnerChat, Store, ThreadMessage } from "./store.js";
 
 // Conversación libre con mi runner (botón junto a «Proponer una idea»): projects/{pid}/chats/{id}. No hay tarea: la
@@ -79,11 +79,46 @@ async function chatVideo(store: Store, projectId: string, worktree: string, m: T
  * en su subcarpeta de .backcode-attachments (excluida de git y protegida) y, si trae vídeo, su análisis.
  */
 export async function promptMessage(store: Store, projectId: string, worktree: string, m: ThreadMessage): Promise<PromptMessage> {
+  let files: LocalAttachment[] = [];
+  let attachmentError: string | undefined;
+  if (m.attachments?.length) {
+    try {
+      files = await materializeAttachments(store, projectId, worktree, m.attachments, m.id);
+    } catch (err) {
+      // No se pierde en silencio: el texto llega y Claude sabe que había adjuntos que no ha podido ver.
+      attachmentError = String((err as Error).message ?? err);
+      console.warn(`[messages] ${attachmentError}`);
+    }
+  }
+  const images = imageBlocks(worktree, files);
   return {
     text: m.text,
-    files: m.attachments?.length ? await materializeAttachments(store, projectId, worktree, m.attachments, m.id) : [],
+    files,
+    ...(images.length ? { images } : {}),
+    ...(attachmentError ? { attachmentError } : {}),
     ...(m.video ? { video: await chatVideo(store, projectId, worktree, m) } : {}),
   };
+}
+
+const IMAGE_TYPES: Record<string, PromptImage["mediaType"]> = { "image/jpeg": "image/jpeg", "image/jpg": "image/jpeg", "image/png": "image/png", "image/gif": "image/gif", "image/webp": "image/webp" };
+const MAX_INLINE_IMAGES = 5;
+const MAX_INLINE_IMAGE_BYTES = 3_500_000;
+
+/** Las imágenes descargadas como bloques base64 para el modelo (las demasiado grandes siguen disponibles por su ruta). */
+export function imageBlocks(worktree: string, files: LocalAttachment[]): PromptImage[] {
+  const out: PromptImage[] = [];
+  for (const f of files) {
+    const mediaType = IMAGE_TYPES[f.contentType.toLowerCase()];
+    if (!mediaType || out.length >= MAX_INLINE_IMAGES) continue;
+    try {
+      const abs = join(worktree, f.file);
+      if (statSync(abs).size > MAX_INLINE_IMAGE_BYTES) continue;
+      out.push({ mediaType, data: readFileSync(abs).toString("base64") });
+    } catch {
+      // Sigue disponible por su ruta.
+    }
+  }
+  return out;
 }
 
 /** Una rama a la que la conversación puede cambiar: existente en el remoto (se comprueba al hacer fetch) y no la base. */
