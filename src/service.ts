@@ -141,6 +141,27 @@ WantedBy=default.target
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
+/**
+ * ¿launchd tiene el servicio cargado? El plist puede estar en ~/Library/LaunchAgents sin estar cargado: tras «Apagar» desde
+ * el panel o la app (`bootout`, sigue instalado para el próximo inicio de sesión) o si macOS no lo cargó. Entonces
+ * `kickstart` no hace nada y hay que volver a cargarlo (`loadService`). null: no se sabe (fuera de macOS).
+ */
+export async function serviceLoaded(): Promise<boolean | null> {
+  if (process.platform !== "darwin") return null;
+  return exec("launchctl", ["print", `gui/${userInfo().uid}/${LABEL}`], { timeout: 5000 }).then(() => true, () => false);
+}
+
+/**
+ * Carga en launchd el plist ya instalado sin reescribirlo (`launchctl bootstrap`) y lo arranca: RunAtLoad no basta, macOS
+ * 27 puede dejar el arranque en espera («speculative»), así que después va un `kickstart`. Falla si no se puede cargar
+ * (bloqueado en «Permitir en segundo plano», plist roto…): el diagnóstico de la app dice por qué. Solo macOS.
+ */
+export async function loadService(): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await exec("launchctl", ["bootstrap", `gui/${userInfo().uid}`, PLIST], { timeout: 15_000 });
+  await kickService();
+}
+
 /** Arranca el servicio ya instalado si no está en marcha (sin -k: si ya corre, no lo toca). Solo macOS. */
 export async function kickService(): Promise<void> {
   if (process.platform !== "darwin") return;
@@ -156,8 +177,11 @@ export const kickstartArgs = (kill: boolean, uid = userInfo().uid): string[] => 
  * `systemctl --user restart`. Falla si no está instalado.
  */
 export async function restartService(): Promise<void> {
-  if (process.platform === "darwin") await exec("launchctl", kickstartArgs(true), { timeout: 15_000 });
-  else if (process.platform === "linux") await exec("systemctl", ["--user", "restart", "backcode-runner.service"]);
+  if (process.platform === "darwin") {
+    // Con el plist instalado pero sin cargar (tras «Apagar», p. ej.) `kickstart -k` falla: se carga y se arranca.
+    if (serviceInstalled() && (await serviceLoaded()) === false) return loadService();
+    await exec("launchctl", kickstartArgs(true), { timeout: 15_000 });
+  } else if (process.platform === "linux") await exec("systemctl", ["--user", "restart", "backcode-runner.service"]);
   else throw new Error(`unsupported platform: ${process.platform}`);
 }
 
