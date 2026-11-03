@@ -220,7 +220,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   const step = action.type === "deploy" ? `deploy:${action.target ?? ""}` : `ota:${action.channel ?? "preview"}`;
   const id = action.id ?? "";
   const since = Date.now();
-  const progress = (waitingFor?: string) => (id ? store.actionProgress(id, { current: { id: step, index: 0, startedAt: since, ...(waitingFor ? { waitingFor } : {}) } }).catch(() => undefined) : Promise.resolve());
+  const progress = (waitingFor?: string) => (id ? store.actionProgress(id, { current: { id: step, index: 0, startedAt: since, ...(waitingFor ? { waitingFor } : {}) } }).catch(progressFailed(id)) : Promise.resolve());
   const onRetry = singleRetryProgress(store, id, step);
   // «Commit y publicar» escribe en la rama base: no se reintenta solo (se pide a mano otra vez si hace falta).
   const commitDirty = action.commitDirty === true && !action.commit;
@@ -251,12 +251,19 @@ const deployLock = (store: Store): DeployLock => ({
   release: (action) => store.releaseDeployLock(action),
 });
 
+/**
+ * Escritura del progreso en vivo que ha fallado: al log del runner (sin ella la app no ve avanzar los pasos) y sin parar
+ * el despliegue.
+ */
+const progressFailed = (actionId: string) => (err: unknown) =>
+  console.error(`[action] ${actionId}: progress write failed: ${err instanceof Error ? err.message : String(err)}`);
+
 /** Aviso de reintento de un despliegue, OTA o build suelto: lo deja en `result.current` de la acción (la app lo enseña). */
 type RetryNotice = (attempt: number, max: number, reason: string) => Promise<void>;
 function singleRetryProgress(store: Store, actionId: string | undefined, step: string): RetryNotice {
   const since = Date.now();
   return (attempt, max, reason) =>
-    actionId ? store.actionProgress(actionId, { current: { id: step, index: 0, startedAt: since, attempt, maxRetries: max, reason: reason.slice(0, 300) } }).catch(() => undefined) : Promise.resolve();
+    actionId ? store.actionProgress(actionId, { current: { id: step, index: 0, startedAt: since, attempt, maxRetries: max, reason: reason.slice(0, 300) } }).catch(progressFailed(actionId)) : Promise.resolve();
 }
 
 /** Despliegue de un destino con los reintentos automáticos de los errores transitorios de su proveedor (withAutoRetry). */
@@ -835,7 +842,10 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
   const log: string[] = [];
   const features: DeployedTask[] = [];
   // Progreso en vivo en el documento de la acción (paso actual y pasos hechos): la app lo ve avanzar.
-  const progress = new DeployProgress<StepResult>(steps, (r) => (actionId ? store.actionProgress(actionId, r as unknown as Record<string, unknown>) : Promise.resolve()));
+  // Si una escritura falla (p. ej. la deniegan las reglas), queda en el log y el despliegue sigue.
+  const progress = new DeployProgress<StepResult>(steps, (r) => (actionId ? store.actionProgress(actionId, r as unknown as Record<string, unknown>) : Promise.resolve()), Date.now, {
+    onError: progressFailed(actionId ?? "-"),
+  });
   // Cada paso con sus reintentos automáticos (withAutoRetry); `run.step` (tests) sustituye solo el comando del paso.
   const providerOf = (id: string) => (id.startsWith("ota:") ? "eas" : store.capabilities?.deploys.find((d) => `deploy:${d.id}` === id)?.provider);
   const command = (id: string) =>
