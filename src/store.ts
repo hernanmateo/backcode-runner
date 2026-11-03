@@ -26,6 +26,7 @@ import {
   where,
   writeBatch,
   type Firestore,
+  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable, type Functions } from "firebase/functions";
 import { connectStorageEmulator, getBytes, getMetadata, getStorage, ref, uploadBytes, type FirebaseStorage } from "firebase/storage";
@@ -50,6 +51,7 @@ import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
 import { isShareOpen, type ShareScope } from "./runner-share.js";
 import { firestoreSource, LiveQuery } from "./live-query.js";
+import { quotaWaitsOf } from "./quota-waits.js";
 
 /**
  * Qué hacer al arrancar con una tarea mía en 'running': volver a la cola, darla por fallida (sin intentos) o dejarla.
@@ -296,7 +298,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -1290,19 +1292,22 @@ export class Store {
     await updateDoc(this.feature(id), { status: "execute", runnerId: deleteField(), leaseUntil: deleteField() });
   }
 
-  /** Mis tareas en espera del límite del plan (al arrancar el runner): id, hasta cuándo e intentos. */
-  async quotaWaits(): Promise<{ id: string; until: number; tries: number }[]> {
-    const [mine, shared] = await Promise.all([
-      getDocs(query(this.features(), where("status", "==", "waiting"), where("assignee", "==", this.uid))),
-      getDocs(query(this.features(), where("status", "==", "waiting"), where("runnerUid", "==", this.uid))),
-    ]);
-    const seen = new Set<string>();
-    return [...mine.docs, ...shared.docs].flatMap((d) => {
-      const w = d.get("waitingQuota") as WaitingQuota | undefined;
-      if (seen.has(d.id) || !w?.until || !this.executes(d.data() as Feature)) return [];
-      seen.add(d.id);
-      return [{ id: d.id, until: w.until.toMillis(), tries: w.tries ?? 0 }];
-    });
+  /**
+   * Mis tareas en 'waiting' (las que acepté sin runner de otro y las de compañeros aceptadas con mi runner: runnerUid),
+   * en directo: todas las ids y, de las que llevan la marca del límite del plan, hasta cuándo e intentos. Solo avisa
+   * cuando han llegado las dos consultas (con una sola, las de la otra parecerían canceladas).
+   */
+  watchQuotaWaits(onChange: (waiting: Set<string>, marked: { id: string; until: number; tries: number }[]) => void, onError: (err: Error) => void = () => undefined): () => void {
+    const docs: { mine?: QueryDocumentSnapshot[]; shared?: QueryDocumentSnapshot[] } = {};
+    const emit = () => {
+      if (docs.mine && docs.shared) onChange(...quotaWaitsOf([...docs.mine, ...docs.shared].map((d) => ({ id: d.id, data: d.data() as Feature })), (f) => this.executes(f)));
+    };
+    const offMine = onSnapshot(query(this.features(), where("status", "==", "waiting"), where("assignee", "==", this.uid)), (snap) => ((docs.mine = snap.docs), emit()), onError);
+    const offShared = onSnapshot(query(this.features(), where("status", "==", "waiting"), where("runnerUid", "==", this.uid)), (snap) => ((docs.shared = snap.docs), emit()), onError);
+    return () => {
+      offMine();
+      offShared();
+    };
   }
 
   /**
