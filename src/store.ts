@@ -202,7 +202,8 @@ export interface FeatureResult {
   /** Modelo pedido para la ejecución (vacío = el de la configuración de Claude Code). */
   model?: string;
   /** Coste y tokens por modelo realmente usado (Claude Code puede usar varios, p. ej. Haiku para subtareas). */
-  models?: Record<string, { costUsd: number; tokens: number }>;
+  /** `cache`: de esos tokens, los leídos o escritos en la memoria caché (falta en resultados anteriores). */
+  models?: Record<string, { costUsd: number; tokens: number; cache?: number }>;
   /** Pasos a mano tras mergear (desplegar reglas, migraciones…): la app los muestra con botón de copiar y, si el repo
    * declara un destino backcode:deploy:<deployTarget>, con botón para ejecutarlo con el runner de un admin. */
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];

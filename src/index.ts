@@ -570,7 +570,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             ...result,
             model,
             models: Object.fromEntries(
-              Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
+              Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens, cache: m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
             ),
             costUsd: msg.total_cost_usd + spent.costUsd,
             turns: msg.num_turns + spent.turns,
@@ -733,7 +733,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     }
     // Coste por modelo: el de las sesiones del review se suma al de la tarea.
     const models = { ...(result.models ?? {}) };
-    for (const [name, m] of Object.entries(reviewModels)) models[name] = { costUsd: (models[name]?.costUsd ?? 0) + m.costUsd, tokens: (models[name]?.tokens ?? 0) + m.tokens };
+    for (const [name, m] of Object.entries(reviewModels)) models[name] = { costUsd: (models[name]?.costUsd ?? 0) + m.costUsd, tokens: (models[name]?.tokens ?? 0) + m.tokens, cache: (models[name]?.cache ?? 0) + m.cache };
     result = { ...result, models };
 
     const left = majorOf(review.findings);
