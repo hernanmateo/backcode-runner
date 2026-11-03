@@ -27,28 +27,68 @@ export interface ProgressResult<S> {
 const retryOf = (c: CurrentStep | undefined): Partial<CurrentStep> =>
   c?.attempt ? { attempt: c.attempt, ...(c.maxRetries ? { maxRetries: c.maxRetries } : {}), ...(c.reason ? { reason: c.reason } : {}) } : {};
 
+/** Cada cuánto se vuelve a intentar la última escritura de progreso que falló (si no ha llegado otra más nueva). */
+export const PROGRESS_RETRY_MS = 15_000;
+
+export interface DeployProgressOptions {
+  /** Una escritura de progreso que ha fallado: por defecto, al log del runner (console.error). */
+  onError?: (err: unknown) => void;
+  /** Espera antes de reintentar la última escritura fallida (0: sin reintento). */
+  retryMs?: number;
+}
+
+const logProgressError = (err: unknown) => console.error(`[action] progress write failed: ${err instanceof Error ? err.message : String(err)}`);
+
 /**
- * Escribe el progreso con `write` (updateDoc del resultado). Nunca lanza: si una escritura falla, el despliegue sigue y
- * la siguiente lo pone al día. Las escrituras van en serie, en el orden en que se piden.
+ * Escribe el progreso con `write` (updateDoc del resultado). Nunca lanza: si una escritura falla, se registra en el log
+ * (onError), el despliegue sigue y, si en `retryMs` no ha llegado otra más nueva, se vuelve a escribir lo último (p. ej.
+ * reglas recién desplegadas que aún no se han propagado, o un corte de red). Las escrituras van en serie, en el orden en
+ * que se piden.
  */
 export class DeployProgress<S extends { id: string }> {
   private chain: Promise<void> = Promise.resolve();
   private current: CurrentStep | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private seq = 0;
+  private closed = false;
   readonly steps: S[] = [];
+  private readonly onError: (err: unknown) => void;
+  private readonly retryMs: number;
 
   constructor(
     readonly order: string[],
     private readonly write: (result: ProgressResult<S>) => Promise<void>,
     private readonly now: () => number = Date.now,
-  ) {}
+    opts: DeployProgressOptions = {},
+  ) {
+    this.onError = opts.onError ?? logProgressError;
+    this.retryMs = opts.retryMs ?? PROGRESS_RETRY_MS;
+  }
 
   snapshot(): ProgressResult<S> {
     return { order: [...this.order], steps: [...this.steps], ...(this.current ? { current: { ...this.current } } : {}) };
   }
 
   private flush(): Promise<void> {
+    if (this.closed) return this.chain;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     const data = this.snapshot();
-    this.chain = this.chain.then(() => this.write(data)).catch(() => undefined);
+    const seq = ++this.seq;
+    this.chain = this.chain
+      .then(() => this.write(data))
+      .catch((err: unknown) => {
+        try {
+          this.onError(err);
+        } catch {
+          // el log nunca para el despliegue
+        }
+        // Sin otra escritura más nueva pedida, se reintenta esta más tarde (la siguiente también lo pondría al día).
+        if (seq === this.seq && !this.closed && this.retryMs > 0) {
+          this.retryTimer = setTimeout(() => void this.flush(), this.retryMs);
+          this.retryTimer.unref?.();
+        }
+      });
     return this.chain;
   }
 
@@ -79,8 +119,14 @@ export class DeployProgress<S extends { id: string }> {
     return this.flush();
   }
 
-  /** Espera a que se hayan hecho todas las escrituras pedidas (antes del resultado final, para no pisarlo). */
+  /**
+   * Espera a que se hayan hecho todas las escrituras pedidas (antes del resultado final, para no pisarlo). Desde aquí ya
+   * no se escribe más progreso: se cancela el reintento pendiente.
+   */
   settled(): Promise<void> {
+    this.closed = true;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     return this.chain;
   }
 }

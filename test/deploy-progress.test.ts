@@ -138,3 +138,53 @@ test("deployAll escribe el progreso en la acción a medida que avanza y para al 
   assert.deepEqual(last.steps.map((s) => s.ok), [true, false]);
   assert.ok(written.some((w) => w.steps.length === 1 && w.current?.id === "deploy:functions#functions"), "se vio el paso 2 en curso con el 1 hecho");
 });
+
+test("DeployProgress: una escritura que falla va al log, no para nada y se reintenta si no llega otra más nueva", async () => {
+  const writes: unknown[] = [];
+  const errors: string[] = [];
+  let fail = 1;
+  const p = new DeployProgress<{ id: string; ok: boolean }>(
+    ["deploy:.#rules"],
+    async (r) => {
+      if (fail-- > 0) throw new Error("Missing or insufficient permissions.");
+      writes.push(r);
+    },
+    () => 1,
+    { onError: (e) => void errors.push((e as Error).message), retryMs: 1 },
+  );
+  await p.start("deploy:.#rules");
+  assert.deepEqual(errors, ["Missing or insufficient permissions."]);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(writes, [{ order: ["deploy:.#rules"], steps: [], current: { id: "deploy:.#rules", index: 0, startedAt: 1 } }], "reintenta lo último");
+  // Tras settled() ya no se escribe nada más (ni reintentos): no pisa el resultado final.
+  fail = 1;
+  await p.finish({ id: "deploy:.#rules", ok: true });
+  await p.settled();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(writes.length, 1);
+  await p.start("x");
+  assert.equal(writes.length, 1);
+});
+
+test("deployAll: cada paso pasa de en cola a en curso y a hecho, en vivo; si una escritura falla, se registra y sigue", async (t) => {
+  const logged = t.mock.method(console, "error", () => undefined);
+  const order = ["deploy:.#rules", "deploy:functions#functions", "ota:preview"];
+  const seen: string[] = [];
+  let writes = 0;
+  const store = {
+    plan: { steps: order.map((id) => ({ id })) },
+    actionProgress: async (_id: string, r: Record<string, unknown>) => {
+      // La segunda escritura (paso 1 hecho) la deniegan las reglas: la siguiente lo pone al día.
+      if (++writes === 2) throw new Error("PERMISSION_DENIED");
+      const p = JSON.parse(JSON.stringify(r)) as { steps: { id: string; ok: boolean }[]; current?: { id: string; startedAt: number } };
+      assert.ok(p.current === undefined || typeof p.current.startedAt === "number", "el paso en curso lleva su hora de inicio");
+      seen.push(order.map((id) => (p.steps.some((s) => s.id === id) ? "done" : p.current?.id === id ? "running" : "queued")).join(","));
+    },
+  } as unknown as Store;
+  const lock: DeployLock = { take: async () => ({ ok: true }), release: async () => undefined };
+  const done = await deployAll({} as RunnerConfig, store, undefined, order, "msg", false, "act1", { step: async () => ({ ok: true, result: { sha: "abc" } }), lock, sleep });
+  assert.equal(done.ok, true);
+  assert.deepEqual(seen, ["running,queued,queued", "done,running,queued", "done,done,queued", "done,done,running", "done,done,done"]);
+  assert.equal(logged.mock.callCount(), 1, "la escritura fallida queda en el log");
+  assert.match(String(logged.mock.calls[0].arguments[0]), /act1: progress write failed: PERMISSION_DENIED/);
+});
