@@ -24,7 +24,7 @@ function installedApp(): string | null {
 }
 
 async function appVersion(app: string): Promise<string> {
-  return (await exec("/usr/bin/defaults", ["read", join(app, "Contents", "Info.plist"), "CFBundleShortVersionString"])).stdout.trim();
+  return (await exec("/usr/bin/defaults", ["read", join(app, "Contents", "Info.plist"), "CFBundleShortVersionString"], { timeout: 10_000 })).stdout.trim();
 }
 
 /** Equipo de la firma de la app, solo si es válida y pasa Gatekeeper (Developer ID notarizado). */

@@ -27,7 +27,8 @@ export type ServiceId = (typeof SERVICE_IDS)[number];
 export const UPDATABLE_SERVICES = ["runner", "macApp", "plugin", "claude", "eas"] as const satisfies readonly ServiceId[];
 export type UpdatableService = (typeof UPDATABLE_SERVICES)[number];
 
-export type ServiceState = "ok" | "off" | "noSession" | "outdated" | "missing";
+/** `unknown`: su comprobación falló o no respondió a tiempo (no se sabe si está instalado). */
+export type ServiceState = "ok" | "off" | "noSession" | "outdated" | "missing" | "unknown";
 export interface ServiceRow {
   id: ServiceId;
   state: ServiceState;
@@ -62,6 +63,8 @@ export interface ServiceProbe {
   supabase: { version: string } | null;
   xcode: string | null;
   android: string | null;
+  /** Servicios cuya comprobación falló o se colgó: salen como `unknown` en vez de «no instalado». */
+  unknown?: ServiceId[];
 }
 
 const VERSION_RE = /\d+\.\d+(?:\.\d+)?/;
@@ -78,23 +81,25 @@ function row(id: ServiceId, version: string | null, latest: string | null, state
 
 /** Las filas de la app: solo los servicios relevantes para los proyectos de este ordenador. */
 export function serviceRows(p: ServiceProbe, needs: ServiceNeeds): ServiceRow[] {
+  const missing = (id: ServiceId, latest: string | null = null) => row(id, null, latest, p.unknown?.includes(id) ? "unknown" : "missing");
   const rows: ServiceRow[] = [row("runner", p.runner.version, p.runner.latest)];
   if (p.macApp) rows.push(row("macApp", p.macApp.version, p.macApp.latest));
-  rows.push(p.claude ? row("claude", p.claude.version, p.claude.latest, p.claude.loggedIn === false ? "noSession" : undefined) : row("claude", null, null, "missing"));
-  if (!p.plugin) rows.push(row("plugin", null, PLUGIN_VERSION, "missing"));
+  else if (p.unknown?.includes("macApp")) rows.push(missing("macApp"));
+  rows.push(p.claude ? row("claude", p.claude.version, p.claude.latest, p.claude.loggedIn === false ? "noSession" : undefined) : missing("claude"));
+  if (!p.plugin) rows.push(missing("plugin", PLUGIN_VERSION));
   else rows.push(row("plugin", p.plugin.version, PLUGIN_VERSION, !p.plugin.enabled ? "off" : olderThan(p.plugin.version, PLUGIN_VERSION) ? "outdated" : "ok"));
   const remote = p.platform === "darwin" || p.platform === "linux";
   rows.push(row("remoteControl", null, null, p.claude && remote ? "ok" : "off"));
-  rows.push(row("git", p.git, null, p.git ? undefined : "missing"));
-  rows.push(row("node", p.node, null, p.node ? undefined : "missing"));
-  if (needs.github) rows.push(p.gh ? row("gh", p.gh.version, null, p.gh.loggedIn ? undefined : "noSession") : row("gh", null, null, "missing"));
+  rows.push(p.git ? row("git", p.git, null) : missing("git"));
+  rows.push(p.node ? row("node", p.node, null) : missing("node"));
+  if (needs.github) rows.push(p.gh ? row("gh", p.gh.version, null, p.gh.loggedIn ? undefined : "noSession") : missing("gh"));
   if (needs.bitbucket) rows.push(row("bitbucket", null, null, p.bitbucket ? "ok" : "noSession"));
-  if (needs.expo) rows.push(p.eas ? row("eas", p.eas.version, p.eas.latest, p.eas.loggedIn === false ? "noSession" : undefined) : row("eas", null, null, "missing"));
-  if (needs.firebase) rows.push(p.firebase ? row("firebase", p.firebase.version, p.firebase.latest) : row("firebase", null, null, "missing"));
-  if (needs.wrangler) rows.push(p.wrangler ? row("wrangler", p.wrangler.version, p.wrangler.latest) : row("wrangler", null, null, "missing"));
-  if (needs.supabase) rows.push(p.supabase ? row("supabase", p.supabase.version, null) : row("supabase", null, null, "missing"));
-  if (needs.expo && p.platform === "darwin") rows.push(row("xcode", p.xcode, null, p.xcode ? undefined : "missing"));
-  if (needs.expo) rows.push(row("android", p.android, null, p.android ? undefined : "missing"));
+  if (needs.expo) rows.push(p.eas ? row("eas", p.eas.version, p.eas.latest, p.eas.loggedIn === false ? "noSession" : undefined) : missing("eas"));
+  if (needs.firebase) rows.push(p.firebase ? row("firebase", p.firebase.version, p.firebase.latest) : missing("firebase"));
+  if (needs.wrangler) rows.push(p.wrangler ? row("wrangler", p.wrangler.version, p.wrangler.latest) : missing("wrangler"));
+  if (needs.supabase) rows.push(p.supabase ? row("supabase", p.supabase.version, null) : missing("supabase"));
+  if (needs.expo && p.platform === "darwin") rows.push(p.xcode ? row("xcode", p.xcode, null) : missing("xcode"));
+  if (needs.expo) rows.push(p.android ? row("android", p.android, null) : missing("android"));
   return rows;
 }
 
@@ -187,38 +192,88 @@ async function runnerLatest(): Promise<string | null> {
   return version;
 }
 
+/** Lo que tarda como mucho cada comprobación (los comandos ya tienen el suyo, pero un proceso hijo puede dejar la salida abierta). */
+export const CHECK_TIMEOUT_MS = 20_000;
+
+type Check = (() => unknown) | null;
+type Settled<T extends Record<string, Check>> = { [K in keyof T]: NonNullable<T[K]> extends () => infer R ? Awaited<R> | null : null };
+
+/**
+ * Lanza todas las comprobaciones a la vez y espera cada una como mucho `ms`: la que falla o se cuelga vale null y se
+ * apunta en `failed` (y en el log), sin impedir que se publiquen las demás.
+ */
+export async function settleChecks<T extends Record<string, Check>>(
+  checks: T,
+  ms = CHECK_TIMEOUT_MS,
+  log: (msg: string) => void = (m) => console.warn(`[backcode] ${m}`),
+): Promise<{ values: Settled<T>; failed: string[] }> {
+  const failed: string[] = [];
+  const entries = await Promise.all(
+    Object.entries(checks).map(async ([name, fn]) => {
+      if (!fn) return [name, null] as const;
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        // Sin unref: si solo queda la comprobación colgada, el temporizador tiene que seguir vivo para cerrarla (se limpia en finally).
+        timer = setTimeout(() => reject(new Error(`no response after ${Math.round(ms / 1000)} s`)), ms);
+      });
+      try {
+        return [name, await Promise.race([Promise.resolve().then(fn), timeout])] as const;
+      } catch (err) {
+        failed.push(name);
+        log(`tools check «${name}» failed: ${err instanceof Error ? err.message : String(err)}`);
+        return [name, null] as const;
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+  return { values: Object.fromEntries(entries) as Settled<T>, failed };
+}
+
+/** A qué servicio corresponde cada comprobación (para marcarlo `unknown` si falla). */
+const CHECK_SERVICE: Record<string, ServiceId> = { claudeV: "claude", plugins: "plugin", git: "git", node: "node", ghV: "gh", easV: "eas", fbV: "firebase", wrV: "wrangler", sbV: "supabase", xcode: "xcode", adbV: "android", macV: "macApp" };
+
 /** Mira cada herramienta (solo las que hacen falta) con comandos fijos de solo lectura. */
 export async function probeServices(needs: ServiceNeeds): Promise<ServiceProbe> {
   const claudeBin = installedClaude();
   const gh = ghPath();
   const adb = adbPath();
   const darwin = process.platform === "darwin";
-  const [checks, claudeV, plugins, git, node, ghV, easV, easWho, fbV, wrV, sbV, xcode, adbV, macV] = await Promise.all([
-    machineChecks().catch(() => null),
-    claudeBin ? claudeVersion(claudeBin).catch(() => null) : null,
-    claudeBin ? pluginInstalls(claudeBin).catch(() => null) : null,
-    out("git", ["--version"]),
-    out("node", ["--version"]),
-    needs.github && gh ? out(gh, ["--version"]) : null,
-    needs.expo ? out("eas", ["--version"]) : null,
-    needs.expo ? run("eas", ["whoami"], { timeout: 20_000 }).then(() => true, (err: { code?: unknown }) => (err.code === "ENOENT" ? null : false)) : null,
-    needs.firebase ? out("firebase", ["--version"]) : null,
-    needs.wrangler ? out("wrangler", ["--version"]) : null,
-    needs.supabase ? out("supabase", ["--version"]) : null,
-    needs.expo && darwin ? out("xcodebuild", ["-version"]) : null,
-    needs.expo && adb ? out(adb, ["version"]) : null,
-    darwin ? macAppVersion().catch(() => null) : null,
-  ]);
-  const [runnerL, releaseL, claudeL, easL, fbL, wrL] = await Promise.all([
-    runnerLatest(),
-    macV ? releaseLatestCached() : null,
-    claudeV ? npmLatestOf("@anthropic-ai/claude-code") : null,
-    easV ? npmLatestOf("eas-cli") : null,
-    fbV ? npmLatestOf("firebase-tools") : null,
-    wrV ? npmLatestOf("wrangler") : null,
-  ]);
+  const first = await settleChecks({
+    checks: () => machineChecks(),
+    claudeV: claudeBin ? () => claudeVersion(claudeBin) : null,
+    plugins: claudeBin ? () => pluginInstalls(claudeBin) : null,
+    git: () => out("git", ["--version"]),
+    node: () => out("node", ["--version"]),
+    ghV: needs.github && gh ? () => out(gh, ["--version"]) : null,
+    easV: needs.expo ? () => out("eas", ["--version"]) : null,
+    easWho: needs.expo ? () => run("eas", ["whoami"], { timeout: 20_000 }).then(() => true, (err: { code?: unknown }) => (err.code === "ENOENT" ? null : false)) : null,
+    fbV: needs.firebase ? () => out("firebase", ["--version"]) : null,
+    wrV: needs.wrangler ? () => out("wrangler", ["--version"]) : null,
+    sbV: needs.supabase ? () => out("supabase", ["--version"]) : null,
+    xcode: needs.expo && darwin ? () => out("xcodebuild", ["-version"]) : null,
+    adbV: needs.expo && adb ? () => out(adb, ["version"]) : null,
+    macV: darwin ? () => macAppVersion() : null,
+  });
+  const { checks, claudeV, plugins, git, node, ghV, easV, easWho, fbV, wrV, sbV, xcode, adbV, macV } = first.values;
+  const { runnerL, releaseL, claudeL, easL, fbL, wrL } = (
+    await settleChecks({
+      runnerL: () => runnerLatest(),
+      releaseL: macV ? () => releaseLatestCached() : null,
+      claudeL: claudeV ? () => npmLatestOf("@anthropic-ai/claude-code") : null,
+      easL: easV ? () => npmLatestOf("eas-cli") : null,
+      fbL: fbV ? () => npmLatestOf("firebase-tools") : null,
+      wrL: wrV ? () => npmLatestOf("wrangler") : null,
+    })
+  ).values;
   const plugin = plugins?.find((p) => p.scope === "user") ?? plugins?.[0] ?? null;
   const easVersion = versionIn(easV?.match(/eas-cli\/(\S+)/)?.[1] ?? easV);
+  const unknown = first.failed.map((name) => CHECK_SERVICE[name]).filter((id): id is ServiceId => !!id);
+  // `claude plugin list` sin respuesta válida con Claude Code instalado: no se sabe, no es «no instalado».
+  if (claudeBin && plugins === null && !unknown.includes("plugin")) {
+    unknown.push("plugin");
+    console.warn("[backcode] tools check «plugins» failed: `claude plugin list --json` gave no answer");
+  }
   return {
     platform: process.platform,
     runner: { version: VERSION, latest: runnerL },
@@ -235,6 +290,7 @@ export async function probeServices(needs: ServiceNeeds): Promise<ServiceProbe> 
     supabase: sbV ? { version: versionIn(sbV) ?? "" } : null,
     xcode: versionIn(xcode),
     android: adbV ? (versionIn(/Version (\S+)/.exec(adbV)?.[1]) ?? versionIn(adbV)) : null,
+    unknown,
   };
 }
 
@@ -256,7 +312,7 @@ export async function machineServices(fresh = false): Promise<ServiceRow[]> {
 
 /** Lo último que se sabe, sin esperar (y lo vuelve a mirar en segundo plano si toca): para el latido de cada 5 s. */
 export function currentServices(): ServiceRow[] | null {
-  if (!cached || Date.now() - cached.at >= SERVICES_TTL_MS) void machineServices().catch(() => undefined);
+  if (!cached || Date.now() - cached.at >= SERVICES_TTL_MS) void machineServices().catch((err) => console.warn(`[backcode] tools check failed: ${err instanceof Error ? err.message : String(err)}`));
   return cached?.rows ?? null;
 }
 
