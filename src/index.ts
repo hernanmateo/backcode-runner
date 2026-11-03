@@ -55,6 +55,7 @@ import { buildReport, notOurs, report, type DeploySource, type SanitizeContext }
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
+import { cleanModelId, LiveUsage, throttled, usageFromResult } from "./live-usage.js";
 
 // Con `npm start` / `npm run connect` (sin pasar por cli.ts): git con la sesión de GitHub CLI.
 useGhForGit();
@@ -477,6 +478,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let liveQuery: Query | null = null;
   // Coste y tokens de las fases anteriores (con Remote Control de por medio hay varias): se suman.
   let spent = { costUsd: 0, turns: 0, input: 0, output: 0, cache: 0 };
+  // Consumo en directo (tokens y coste) y modelo real: la app los enseña mientras se ejecuta.
+  const live = new LiveUsage();
+  let runModel: string | undefined;
   let inputQueue: SDKUserMessage[] = [];
   let inputOpen = false;
   let wake: (() => void) | null = null;
@@ -591,10 +595,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       },
     });
     liveQuery = messages;
+    // Como mucho una escritura cada 20 s (y una al acabar cada turno).
+    const liveWrite = throttled(() => store.setLiveUsage(id, live.snapshot()), 20_000);
     try {
       for await (const msg of messages) {
         clearTimeout(quiet);
         if (msg.type === "assistant") {
+          live.assistant(msg.message.id, msg.message.model, msg.message.usage);
+          liveWrite.touch();
           // Mensajes de la persona que Claude acaba de incorporar.
           const read = (msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : [])).filter((u) => outstanding.has(u));
           if (read.length) {
@@ -616,6 +624,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         } else if (msg.type === "system" && msg.subtype === "init") {
           if (msg.session_id && msg.session_id !== sessionId) await store.setSession(id, msg.session_id);
           sessionId = msg.session_id;
+          // Modelo real (al empezar y al reanudar): con «por defecto», la app ya no tiene que esperar al final.
+          const real = cleanModelId(msg.model);
+          if (real && real !== runModel) {
+            runModel = real;
+            await store.setRunModel(id, real);
+          }
         } else if (msg.type === "rate_limit_event") {
           rateRejected = planLimitFromEvent(msg.rate_limit_info);
         } else if (msg.type === "result") {
@@ -625,20 +639,13 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             const text = msg.subtype === "success" ? msg.result : msg.errors.join("; ");
             noteLimit(planLimitFromText(text) ?? rateRejected ?? ("api_error_status" in msg && msg.api_error_status === 429 ? { reason: "429" } : null));
           }
-          const models = Object.values(msg.modelUsage ?? {});
+          const usage = usageFromResult(msg.modelUsage, msg.total_cost_usd, msg.num_turns, spent);
+          live.result(usage);
+          liveWrite.touch(true);
           result = {
             ...result,
             model,
-            models: Object.fromEntries(
-              Object.entries(msg.modelUsage ?? {}).map(([name, m]) => [name, { costUsd: m.costUSD, tokens: m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens, cache: m.cacheReadInputTokens + m.cacheCreationInputTokens }]),
-            ),
-            costUsd: msg.total_cost_usd + spent.costUsd,
-            turns: msg.num_turns + spent.turns,
-            tokens: {
-              input: models.reduce((n, m) => n + m.inputTokens, 0) + spent.input,
-              output: models.reduce((n, m) => n + m.outputTokens, 0) + spent.output,
-              cache: models.reduce((n, m) => n + m.cacheReadInputTokens + m.cacheCreationInputTokens, 0) + spent.cache,
-            },
+            ...usage,
             summary: msg.subtype === "success" ? msg.result.slice(0, 4000) : undefined,
             error: msg.subtype === "success" ? undefined : `${msg.subtype}: ${msg.errors.join("; ").slice(0, 2000)}`,
           };
@@ -662,6 +669,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         output: result.tokens?.output ?? 0,
         cache: result.tokens?.cache ?? 0,
       };
+      await liveWrite.stop();
+      live.endPhase(spent);
     }
   }
   /** Remote Control: Claude Code interactivo sobre la misma sesión, hasta que la persona sale o vuelve a Backcode. */

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
+import type { LiveUsageSnapshot } from "./live-usage.js";
 import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
@@ -103,6 +104,10 @@ export interface Feature {
   /** Plan aprobado (desde ahí, la sesión implementa). */
   planApproved?: { by: string };
   result?: FeatureResult;
+  /** Modelo real de la vuelta en curso (del mensaje system/init del SDK, p. ej. "claude-opus-5-5"). */
+  runModel?: string;
+  /** Consumo acumulado de la vuelta en curso (live-usage.ts); el final queda en `result`. */
+  liveUsage?: LiveUsageSnapshot & { updatedAt?: Timestamp };
   /** En espera del límite del plan de Claude Code (plan-limit.ts): status 'waiting' y hasta cuándo. Solo lo pone y lo quita su runner. */
   waitingQuota?: WaitingQuota;
 }
@@ -766,6 +771,16 @@ export class Store {
   /** La sesión de Claude se guarda en cuanto empieza: si el runner se cae, el reintento la continúa (no empieza de cero). */
   async setSession(id: string, sessionId: string): Promise<void> {
     await updateDoc(this.feature(id), { sessionId }).catch(() => undefined);
+  }
+
+  /** Modelo real con el que arranca (o se reanuda) la sesión: la app lo enseña mientras se ejecuta. */
+  async setRunModel(id: string, model: string): Promise<void> {
+    await updateDoc(this.feature(id), { runModel: model }).catch(() => undefined);
+  }
+
+  /** Consumo en directo de la vuelta en curso (con throttle desde index.ts). */
+  async setLiveUsage(id: string, usage: LiveUsageSnapshot): Promise<void> {
+    await updateDoc(this.feature(id), { liveUsage: { ...usage, updatedAt: serverTimestamp() } }).catch(() => undefined);
   }
 
   async finishAction(id: string, ok: boolean, result: Record<string, unknown>): Promise<void> {

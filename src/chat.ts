@@ -178,7 +178,13 @@ export interface ChatTaskInput {
   prompt: string;
   acceptanceCriteria: string[];
   planFirst?: boolean;
+  /** El modelo más barato que la hará bien, como en el refinado; createChatTask lo combina con la preferencia del perfil. */
+  suggestedModel?: SuggestedModel;
 }
+
+/** Los modelos que puede recomendar Claude (los mismos que valida createChatTask). */
+export const SUGGESTED_MODELS = ["haiku", "sonnet", "opus", "fable"] as const;
+export type SuggestedModel = (typeof SUGGESTED_MODELS)[number];
 
 /** Una tarea lanzada desde la conversación, para task_status. */
 export interface ChatTask {
@@ -191,12 +197,13 @@ export interface ChatTask {
 }
 
 /** Recorta y valida la entrada de create_task: null si falta título o encargo. */
-export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCriteria?: string[]; planFirst?: boolean }): ChatTaskInput | null {
+export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCriteria?: string[]; planFirst?: boolean; suggestedModel?: string }): ChatTaskInput | null {
   const title = raw.title.replaceAll(/\s+/g, " ").trim().slice(0, 200);
   const prompt = raw.prompt.trim().slice(0, 8000);
   if (!title || !prompt) return null;
   const acceptanceCriteria = (raw.acceptanceCriteria ?? []).map((c) => c.trim().slice(0, 500)).filter(Boolean).slice(0, 20);
-  return { title, prompt, acceptanceCriteria, ...(raw.planFirst ? { planFirst: true } : {}) };
+  const suggestedModel = SUGGESTED_MODELS.find((m) => m === raw.suggestedModel);
+  return { title, prompt, acceptanceCriteria, ...(raw.planFirst ? { planFirst: true } : {}), ...(suggestedModel ? { suggestedModel } : {}) };
 }
 
 /** Lo que pide Claude con message_task, ya limpio (quién, estado y límites los decide messageChatTask). */
@@ -326,12 +333,13 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       ),
       tool(
         "create_task",
-        `Create a real Backcode task for this member and queue it on this runner: it appears on the project board assigned to them and runs like any other task, in its own branch backcode/<handle>/<id> from ${remote}/${baseBranch}, ending with a draft pull request. Use it when they ask you to build or change something (not for questions). It returns at once and the task runs in the background, so you can create several. The prompt must be self-contained: the task does not see this conversation.`,
+        `Create a real Backcode task for this member and queue it on this runner: it appears on the project board assigned to them and runs like any other task, in its own branch backcode/<handle>/<id> from ${remote}/${baseBranch}, ending with a draft pull request. Use it when they ask you to build or change something (not for questions). It returns at once and the task runs in the background, so you can create several. The prompt must be self-contained: the task does not see this conversation. Set suggestedModel to the cheapest Claude model that will do it well (see the instructions).`,
         {
           title: z.string().min(1).max(200),
           prompt: z.string().min(1).max(8000),
           acceptanceCriteria: z.array(z.string().max(500)).max(20).optional(),
           planFirst: z.boolean().optional(),
+          suggestedModel: z.enum(SUGGESTED_MODELS).optional(),
         },
         async (raw) => {
           const input = chatTaskInput(raw);
