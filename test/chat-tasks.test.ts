@@ -29,6 +29,19 @@ test("chatTaskInput recorta y limpia lo que pide Claude con create_task", () => 
   assert.equal("planFirst" in chatTaskInput({ title: "t", prompt: "p", planFirst: false })!, false);
 });
 
+test("chatTaskInput pasa la recomendación de modelo solo si es válida", () => {
+  assert.equal(chatTaskInput({ title: "t", prompt: "p", suggestedModel: "opus" })?.suggestedModel, "opus");
+  assert.equal("suggestedModel" in chatTaskInput({ title: "t", prompt: "p", suggestedModel: "gpt" })!, false);
+  assert.equal("suggestedModel" in chatTaskInput({ title: "t", prompt: "p" })!, false);
+});
+
+test("buildChatSystemAppend explica cuándo recomendar cada modelo en create_task", () => {
+  const s = buildChatSystemAppend({ projectName: "P", projectContext: "", worktree: "/tmp/nope-chat", baseBranch: "main", remote: "origin", language: "Spanish" });
+  assert.match(s, /suggestedModel/);
+  assert.match(s, /"haiku" for trivial/);
+  assert.match(s, /"fable" only for the hardest/);
+});
+
 test("chatTaskInput rechaza una tarea sin título o sin encargo", () => {
   assert.equal(chatTaskInput({ title: "   ", prompt: "algo" }), null);
   assert.equal(chatTaskInput({ title: "algo", prompt: "\n\n" }), null);
