@@ -24,6 +24,32 @@ export function serviceInstalled(): boolean {
   return process.platform === "darwin" ? existsSync(PLIST) : process.platform === "linux" ? existsSync(UNIT) : false;
 }
 
+/**
+ * ProgramArguments del plist instalado (`plutil -extract … json`): qué lanza de verdad el servicio. null si no hay plist,
+ * no es macOS o no se puede leer (entonces no se toca nada).
+ */
+export async function serviceProgram(): Promise<string[] | null> {
+  if (process.platform !== "darwin" || !existsSync(PLIST)) return null;
+  return exec("plutil", ["-extract", "ProgramArguments", "json", "-o", "-", PLIST], { timeout: 5000 }).then(
+    (r) => parseProgramArguments(r.stdout),
+    () => null,
+  );
+}
+
+/** El array de ProgramArguments en JSON; null si no es una lista de textos. */
+export function parseProgramArguments(json: string): string[] | null {
+  try {
+    const v: unknown = JSON.parse(json);
+    return Array.isArray(v) && v.length > 0 && v.every((a) => typeof a === "string") ? (v as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ¿El servicio lanza `<executable> serve`? (y no node + cli.js, la copia de npm de la carpeta app, npx o una ruta antigua). */
+export const launchesExecutable = (program: string[], executable: string): boolean =>
+  program.length === 2 && program[0] === executable && program[1] === "serve";
+
 /** ¿Somos el proceso del servicio? (lo marca la propia definición del servicio). */
 export const isService = () => process.env.BACKCODE_SERVICE === "1";
 

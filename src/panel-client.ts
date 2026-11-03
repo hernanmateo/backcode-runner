@@ -36,6 +36,18 @@ export async function panelCall(method: "GET" | "POST", path: string, body?: unk
   });
 }
 
+/** Versión del panel en marcha (la da /api/hello); null si no responde o no la dice. */
+export async function panelVersion(): Promise<string | null> {
+  try {
+    const res = await panelCall("GET", "/api/hello");
+    if (!res.ok) return null;
+    const body = (await res.json()) as { app?: string; version?: unknown };
+    return body.app === "backcode-runner" && typeof body.version === "string" ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
 /** ¿Hay un panel de Backcode escuchando (y es el nuestro)? */
 export async function panelAlive(): Promise<boolean> {
   try {

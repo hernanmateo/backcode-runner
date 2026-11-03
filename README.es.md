@@ -780,6 +780,7 @@ cargado o en espera, bloqueado en Ítems de inicio, puerto 47474 ocupado, servic
 - **¿Lo bloquea macOS?** Configuración del Sistema › General › Ítems de inicio › *Permitir en segundo plano*: activa Backcode (o `backcode`). `launchctl print-disabled gui/$(id -u)` lo lista como desactivado si está apagado.
 - **¿Puerto ocupado?** `lsof -nP -iTCP:47474 -sTCP:LISTEN` dice quién escucha en el puerto del panel. Cierra ese proceso (`kill <PID>`) o usa `BACKCODE_PANEL_PORT`.
 - **¿Se cae al arrancar?** `tail -n 50 ~/.backcode/logs/service.log`.
+- **¿El servicio ejecuta una versión antigua?** Si lo creó una instalación anterior (`node …/cli.js serve`, `~/.backcode/app`), al abrir la app se reinstala. Para rehacerlo a mano: `~/.backcode/bin/backcode service install`.
 - `backcode` en la terminal arranca el panel sin el servicio y enseña el error.
 
 ## Diagnósticos de Backcode

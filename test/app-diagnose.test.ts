@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { diagnose, failedExit, logExcerpt, parseDisabled, parseLaunchctlPrint, parseLsof, type DiagnoseDeps } from "../src/app-diagnose.js";
 import { appLine, bringUpPanel } from "../src/app-launch.js";
+import { launchesExecutable, parseProgramArguments } from "../src/service.js";
 
 const PRINT_RUNNING = `gui/501/com.backcode.runner = {
 \tactive count = 1
@@ -213,4 +214,70 @@ test("appLine: progreso, dirección y error en una línea", () => {
   const line = appLine.result({ diagnosis: { kind: "blocked", message: "m\nx", hint: "h", loginItems: true } });
   assert.ok(line.startsWith("error: ") && !line.includes("\n"));
   assert.equal(JSON.parse(line.slice(7)).kind, "blocked");
+});
+
+const BIN = "/Users/me/.backcode/bin/backcode";
+const OLD_NODE = ["/usr/local/bin/node", "/Users/me/.backcode/app/node_modules/backcode/dist/cli.js", "serve"];
+
+test("parseProgramArguments y launchesExecutable", () => {
+  assert.deepEqual(parseProgramArguments(JSON.stringify([BIN, "serve"])), [BIN, "serve"]);
+  assert.equal(parseProgramArguments("nope"), null);
+  assert.equal(parseProgramArguments("[1,2]"), null);
+  assert.equal(launchesExecutable([BIN, "serve"], BIN), true);
+  assert.equal(launchesExecutable(OLD_NODE, BIN), false);
+  assert.equal(launchesExecutable(["/opt/old/backcode", "serve"], BIN), false);
+});
+
+/** bringUpPanel en modo wake con el plist (`program`) y la versión del panel que responde (`running`). */
+function wake(program: string[] | null, running: string | null, version = "1.4.1") {
+  const p = panel("wake", 0);
+  return { ...p, deps: { ...p.deps, executable: BIN, program: async () => program, version, panelVersion: async () => running } };
+}
+
+test("bringUpPanel: plist con node + cli.js, reinstala el servicio", async () => {
+  const p = wake(OLD_NODE, "1.4.1");
+  assert.ok("url" in (await bringUpPanel(p.deps)));
+  assert.deepEqual(p.calls, ["install"]);
+  assert.ok(p.steps.includes("Updating the service…"));
+});
+
+test("bringUpPanel: plist correcto y panel al día, no toca nada", async () => {
+  const p = wake([BIN, "serve"], "1.4.1");
+  assert.ok("url" in (await bringUpPanel(p.deps)));
+  assert.deepEqual(p.calls, []);
+  assert.ok(!p.steps.includes("Updating the service…"));
+});
+
+test("bringUpPanel: panel de una versión antigua, lo reinicia una sola vez", async () => {
+  const p = wake([BIN, "serve"], "1.0.33");
+  assert.ok("url" in (await bringUpPanel(p.deps)));
+  assert.deepEqual(p.calls, ["restart"]);
+  assert.ok(p.steps.includes("Updating the service…"));
+});
+
+test("bringUpPanel: ejecutable instalado más nuevo que la app, sin vuelta atrás", async () => {
+  // La copia instalada (1.5.0) ya se actualizó sola: la versión esperada es la suya y el panel la tiene.
+  const p = wake([BIN, "serve"], "1.5.0", "1.5.0");
+  assert.ok("url" in (await bringUpPanel(p.deps)));
+  assert.deepEqual(p.calls, []);
+  // Y un panel más nuevo que lo esperado tampoco se toca.
+  const q = wake([BIN, "serve"], "2.0.0", "1.4.1");
+  await bringUpPanel(q.deps);
+  assert.deepEqual(q.calls, []);
+});
+
+test("bringUpPanel: sin poder leer el plist, despierta el servicio como siempre", async () => {
+  const p = wake(null, "1.4.1");
+  assert.ok("url" in (await bringUpPanel(p.deps)));
+  assert.deepEqual(p.calls, []);
+});
+
+test("diagnose: el servicio lanza un ejecutable antiguo", async () => {
+  const d = await diagnose(deps({ program: async () => OLD_NODE, executable: BIN }));
+  assert.equal(d.kind, "stale-service");
+  assert.match(d.message, /cli\.js/);
+  assert.match(d.hint, /Retry/);
+  assert.match(d.hint, /service install/);
+  const ok = await diagnose(deps({ program: async () => [BIN, "serve"], executable: BIN }));
+  assert.notEqual(ok.kind, "stale-service");
 });

@@ -433,6 +433,7 @@ to **Retry**, **Open log**, **Open Login Items** and **Start without service**. 
 - **Blocked by macOS?** System Settings › General › Login Items › *Allow in the Background*: turn on Backcode (or `backcode`). `launchctl print-disabled gui/$(id -u)` lists it as disabled when it's off.
 - **Port taken?** `lsof -nP -iTCP:47474 -sTCP:LISTEN` shows who listens on the panel's port. Quit that process (`kill <PID>`) or set `BACKCODE_PANEL_PORT`.
 - **Crashing on start?** `tail -n 50 ~/.backcode/logs/service.log`.
+- **Service running an old version?** If the service was set up by an older install (`node …/cli.js serve`, `~/.backcode/app`), opening the app reinstalls it. To redo it by hand: `~/.backcode/bin/backcode service install`.
 - Running `backcode` in Terminal starts the panel without the service, which helps to see the error.
 
 ## FAQ

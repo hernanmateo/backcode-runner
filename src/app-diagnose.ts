@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { sanitize } from "./diagnostics.js";
 import { PANEL_PORT } from "./panel-client.js";
-import { SERVICE_LABEL, SERVICE_LOG } from "./service.js";
+import { BIN_DIR } from "./paths.js";
+import { launchesExecutable, SERVICE_LABEL, SERVICE_LOG, serviceProgram } from "./service.js";
 
 // Por qué no responde el panel cuando la app de Mac (`backcode app-url`) lo ha esperado en vano: el servicio de launchd
 // sin cargar o en espera, bloqueado en Ítems de inicio, el puerto en manos de otro proceso o un servicio que se cae al
@@ -15,7 +17,7 @@ const exec = promisify(execFile);
 /** Pantalla de Configuración del Sistema › General › Ítems de inicio (la abre la app con un botón). */
 export const LOGIN_ITEMS_URL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
 
-export type DiagnosisKind = "port-busy" | "blocked" | "not-loaded" | "not-running" | "crashed" | "no-panel" | "unknown";
+export type DiagnosisKind = "port-busy" | "blocked" | "not-loaded" | "stale-service" | "not-running" | "crashed" | "no-panel" | "unknown";
 
 export interface Diagnosis {
   kind: DiagnosisKind;
@@ -114,6 +116,10 @@ export interface DiagnoseDeps {
   /** Final de service.log (vacío si no existe). */
   readLog: () => string;
   port?: number;
+  /** ProgramArguments del plist del servicio (null si no se puede leer). */
+  program?: () => Promise<string[] | null>;
+  /** El ejecutable que debe lanzar el servicio (la copia de ~/.backcode/bin). */
+  executable?: string;
 }
 
 const LOG_HINT = "Check ~/.backcode/logs/service.log for details.";
@@ -121,10 +127,11 @@ const LOG_HINT = "Check ~/.backcode/logs/service.log for details.";
 /** El motivo más concreto que se pueda dar de por qué el panel no ha respondido. */
 export async function diagnose(d: DiagnoseDeps): Promise<Diagnosis> {
   const port = d.port ?? PANEL_PORT;
-  const [print, disabledText, owner] = await Promise.all([
+  const [print, disabledText, owner, program] = await Promise.all([
     d.service ? d.launchctlPrint().catch(() => null) : Promise.resolve(null),
     d.service ? d.printDisabled().catch(() => "") : Promise.resolve(""),
     d.portOwner().catch(() => null),
+    d.service && d.program && d.executable ? d.program().catch(() => null) : Promise.resolve(null),
   ]);
   const info = print ? parseLaunchctlPrint(print) : {};
   const excerpt = logExcerpt(safeRead(d.readLog));
@@ -171,6 +178,16 @@ export async function diagnose(d: DiagnoseDeps): Promise<Diagnosis> {
       message: "The Backcode service isn't loaded in launchd (com.backcode.runner).",
       hint: "Retry installs it again. If it still doesn't load, check that Backcode is allowed in System Settings › General › Login Items › Allow in the Background.",
       loginItems: true,
+      log,
+    };
+  }
+
+  // El servicio lanza otro ejecutable (node + cli.js de una instalación antigua, npx, una ruta vieja): corre una versión vieja.
+  if (program && d.executable && !launchesExecutable(program, d.executable)) {
+    return {
+      kind: "stale-service",
+      message: `The Backcode service runs an old or different executable (${program.join(" ")}) instead of the app's runner.`,
+      hint: `Retry reinstalls the service with the new version. By hand: \`${d.executable} service install\`.`,
       log,
     };
   }
@@ -240,5 +257,7 @@ export function systemDiagnoseDeps(service: boolean): DiagnoseDeps {
         () => null, // lsof sale con 1 si no hay nadie
       ),
     readLog: () => readTail(SERVICE_LOG),
+    program: serviceProgram,
+    executable: join(BIN_DIR, "backcode"),
   };
 }

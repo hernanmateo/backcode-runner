@@ -5,10 +5,10 @@ import { promisify } from "node:util";
 import { VERSION } from "./assets.js";
 import { newer } from "./autoupdate.js";
 import { openBrowser } from "./panel.js";
-import { panelAlive, panelUrl } from "./panel-client.js";
+import { panelAlive, panelUrl, panelVersion } from "./panel-client.js";
 import { BIN_DIR, readState } from "./paths.js";
 import { diagnose, systemDiagnoseDeps, type Diagnosis } from "./app-diagnose.js";
-import { installService, kickService, restartService, serviceInstalled } from "./service.js";
+import { installService, kickService, launchesExecutable, restartService, serviceInstalled, serviceProgram } from "./service.js";
 
 // «Backcode Runner.app» (macOS): al abrirla con doble clic no hay terminal. Copia su ejecutable a ~/.backcode/bin (las
 // actualizaciones del runner van a esa copia; la app la sustituye entera mac-app-update.ts), deja el runner como servicio («Arrancar al
@@ -47,6 +47,8 @@ export async function prepareApp(opts: { retry?: boolean; noService?: boolean; o
     await exec("xattr", ["-d", "com.apple.quarantine", tmp], { timeout: 10_000 }).catch(() => undefined);
     renameSync(tmp, installed);
   }
+  // La versión que debe tener el panel: la de la app o, si la copia instalada ya es más nueva, la suya (nunca hacia atrás).
+  const target = current && !newer(VERSION, current) ? current : VERSION;
   // BACKCODE_APP_NO_SERVICE (solo para probar la app sin instalar un LaunchAgent) o «Arrancar al iniciar sesión»
   // desactivado a mano: el panel en segundo plano, sin más (no se vuelve a activar por abrir la app).
   const noService = !!opts.noService || process.env.BACKCODE_APP_NO_SERVICE === "1" || !!readState().autostartOff;
@@ -58,6 +60,10 @@ export async function prepareApp(opts: { retry?: boolean; noService?: boolean; o
     install: () => installService({ executable: installed }),
     kick: kickService,
     restart: restartService,
+    executable: installed,
+    program: serviceProgram,
+    version: target,
+    panelVersion,
     sleep,
     step,
     url: panelUrl,
@@ -68,6 +74,9 @@ export async function prepareApp(opts: { retry?: boolean; noService?: boolean; o
 /**
  * El panel en marcha según el modo (`no-service`: proceso suelto; `install`: instalar el servicio; `wake`: despertar el
  * que ya está). Si no responde en el tiempo previsto, no devuelve la dirección como si nada: devuelve el diagnóstico.
+ * En `wake`, antes se comprueba que el servicio lance `executable serve` (`program`: ProgramArguments del plist); si
+ * lanza otra cosa (node + cli.js de una instalación antigua, npx…) se reinstala. Y si el panel responde con una versión
+ * más antigua que `version`, se relanza una sola vez para que coja el ejecutable nuevo (sin bucles ni vuelta atrás).
  */
 export async function bringUpPanel(d: {
   mode: "no-service" | "install" | "wake";
@@ -81,6 +90,10 @@ export async function bringUpPanel(d: {
   step: (step: string) => void;
   url: () => string;
   diagnose: () => Promise<Diagnosis>;
+  executable?: string;
+  program?: () => Promise<string[] | null>;
+  version?: string;
+  panelVersion?: () => Promise<string | null>;
 }): Promise<AppLaunch> {
   let up: boolean;
   if (d.mode === "no-service") {
@@ -92,14 +105,50 @@ export async function bringUpPanel(d: {
     up = await waitForPanel(d.alive, d.sleep, 20_000);
   } else if (d.mode === "install") {
     d.step("Installing the service…");
-    // Si launchctl falla al cargarlo, el diagnóstico de después dice por qué (no cargado, bloqueado…).
-    const installed = await d.install().then(() => true, () => false);
-    if (installed) d.step("Waiting for the panel…");
-    up = installed && (await waitForPanel(d.alive, d.sleep, 35_000));
-  } else up = await wakeService(d);
+    up = await installAndWait(d);
+  } else if (await staleProgram(d)) {
+    // El plist lanza otro ejecutable: despertarlo arrancaría la versión vieja. Se reescribe (bootout + bootstrap + kickstart).
+    d.step("Updating the service…");
+    up = await installAndWait(d);
+  } else {
+    up = await wakeService(d);
+    if (up && (await stalePanel(d))) {
+      d.step("Updating the service…");
+      await d.restart().catch(() => undefined);
+      d.step("Waiting for the panel…");
+      // Una sola vez: si sigue respondiendo el viejo (otro proceso con el puerto), se abre igualmente.
+      up = await waitForPanel(d.alive, d.sleep, 20_000);
+    }
+  }
   if (up) return { url: d.url() };
   d.step("Checking what went wrong…");
   return { diagnosis: await d.diagnose() };
+}
+
+/** Instala (o reinstala) el servicio y espera al panel. Si launchctl falla al cargarlo, el diagnóstico dirá por qué. */
+async function installAndWait(d: {
+  install: () => Promise<void>;
+  alive: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  step: (step: string) => void;
+}): Promise<boolean> {
+  const installed = await d.install().then(() => true, () => false);
+  if (installed) d.step("Waiting for the panel…");
+  return installed && (await waitForPanel(d.alive, d.sleep, 35_000));
+}
+
+/** ¿El plist instalado lanza algo distinto de `executable serve`? Sin plist legible, no (no se toca nada). */
+async function staleProgram(d: { executable?: string; program?: () => Promise<string[] | null> }): Promise<boolean> {
+  if (!d.executable || !d.program) return false;
+  const program = await d.program().catch(() => null);
+  return !!program && !launchesExecutable(program, d.executable);
+}
+
+/** ¿El panel que responde es de una versión más antigua que la esperada? (solo hacia delante: si es más nueva, no). */
+async function stalePanel(d: { version?: string; panelVersion?: () => Promise<string | null> }): Promise<boolean> {
+  if (!d.version || !d.panelVersion) return false;
+  const running = await d.panelVersion().catch(() => null);
+  return !!running && newer(d.version, running);
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
