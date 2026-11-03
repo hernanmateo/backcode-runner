@@ -3,6 +3,9 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import { VERSION } from "./assets.js";
 import { SECRET_PATTERNS } from "./git.js";
+import { notOurs } from "./not-ours.js";
+
+export { notOurs, type NotOursCategory } from "./not-ours.js";
 
 // Diagnósticos de Backcode: cuando algo falla por Backcode (no por el proyecto) y quien usa el runner activó «Enviar
 // diagnósticos a Backcode» en su perfil, se manda un informe limpio a diagnostics/{id} (firestore.rules). La Function
@@ -49,24 +52,6 @@ const EXEC_FAILED = /^.+ (terminó con código|exited with code|ha acabat amb el
 /** Fallos de nuestro código: excepciones de JavaScript y de Node que no vienen de la salida de un comando. */
 const INTERNAL = /\b(TypeError|ReferenceError|RangeError|SyntaxError|AssertionError)\b|Cannot read propert(y|ies) of (undefined|null)|is not a function|is not iterable|Maximum call stack|FirebaseError|ERR_[A-Z_]{4,}/;
 
-/**
- * Fallos del proyecto o del ordenador, no de Backcode: sesión y permisos de una herramienta, red, cuota, disco, tests que
- * fallan, dependencias sin lockfile, herramientas sin instalar. Esos no se envían nunca.
- */
-const NOT_OURS = new RegExp(
-  [
-    "not logged in|log ?in (again|first)|re-?authenticat|unauthori[sz]ed|forbidden|permission denied|access denied|invalid_grant|credentials?|authenticat(e|ion) (failed|required|error)|\\b40[13]\\b|token (has )?expired|expired token|EACCES|EPERM",
-    "ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|getaddrinfo|network (error|is unreachable)|offline",
-    // Caídas del servidor remoto (GitHub, la plataforma del despliegue): p. ej. `! [remote rejected] HEAD -> main (Internal Server Error)`.
-    "internal server error|bad gateway|service unavailable|gateway time-?out|\\b50[234]\\b|try again later",
-    "rate.?limit|usage limit|quota|\\b429\\b|overloaded|\\b529\\b",
-    "ENOSPC|no space left",
-    "tests? (failed|failing)|\\d+ failing|test suites?: \\d+ failed|npm ci.*(lockfile|package-lock)|can only install with an existing package-lock|update your lock ?file|missing from lock ?file|are in sync",
-    "command not found|not recognized as an internal|could not determine executable",
-  ].join("|"),
-  "i",
-);
-
 /** Salida de un comando que falló porque no encuentra módulos (tsc TS2307, Node «Cannot find module», webpack…). */
 export const MISSING_MODULES = /\bTS2307\b|Cannot find module ['"]|ERR_MODULE_NOT_FOUND|Module not found: (?:Error: )?Can't resolve/;
 
@@ -78,7 +63,8 @@ export const MISSING_MODULES = /\bTS2307\b|Cannot find module ['"]|ERR_MODULE_NO
  */
 export function classify(error: string, ctx: DiagnosticContext): DiagnosticKind | null {
   const text = error.trim();
-  if (!text || NOT_OURS.test(text)) return null;
+  // Lo que no es nuestro (not-ours.ts: plan, presupuesto, proyecto, red…) no se envía nunca.
+  if (!text || notOurs(text)) return null;
   const exec = EXEC_FAILED.test(text);
   if (!exec && INTERNAL.test(text)) return "backcode";
   if (!exec && ctx.thrown) return "backcode";

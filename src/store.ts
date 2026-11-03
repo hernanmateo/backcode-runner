@@ -39,11 +39,13 @@ import type { DeployVia } from "./deploy-log.js";
 import type { TaskBuild } from "./deploy-tasks.js";
 import type { OpenPr } from "./hosts.js";
 import type { DiagnosticPayload } from "./diagnostics.js";
+import type { AutoRetryState } from "./auto-retry.js";
 
 /** PR externo para el tablero: el del host más sus checks y si choca con la rama base. */
 export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
 import type { Device } from "./devices.js";
 import { setLang, t } from "./i18n.js";
+import type { NotOursCategory } from "./not-ours.js";
 import type { Quota } from "./quota.js";
 import { readState, updateState } from "./paths.js";
 import { isShareOpen, type ShareScope } from "./runner-share.js";
@@ -81,6 +83,8 @@ export interface Feature {
   branch?: string;
   promptHash?: string;
   attempts?: number;
+  /** Reintento automático por un error temporal (auto-retry.ts); nextAt llega como Timestamp. */
+  autoRetry?: Omit<AutoRetryState, "nextAt"> & { nextAt?: Timestamp | number };
   /** Imágenes y documentos que adjuntó quien propuso la tarea. */
   attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
@@ -97,6 +101,15 @@ export interface Feature {
   /** Plan aprobado (desde ahí, la sesión implementa). */
   planApproved?: { by: string };
   result?: FeatureResult;
+  /** En espera del límite del plan de Claude Code (plan-limit.ts): status 'waiting' y hasta cuándo. Solo lo pone y lo quita su runner. */
+  waitingQuota?: WaitingQuota;
+}
+
+export interface WaitingQuota {
+  until: Timestamp;
+  reason: string;
+  /** Veces seguidas que se ha parado por el límite (para el backoff si no se sabe cuándo vuelve). */
+  tries: number;
 }
 
 /** Control en directo de una tarea: lo escribe la app (parar, pedir Remote Control o volver) y el runner (abierto). */
@@ -214,6 +227,8 @@ export interface FeatureResult {
   error?: string;
   /** Error conocido, para que la app lo muestre en el idioma de quien lo ve (error va en el del runner). */
   errorCode?: "noPr" | "noPlan";
+  /** El fallo no es de Backcode (not-ours.ts): la app explica el motivo (plan, presupuesto, proyecto…). */
+  notOurs?: NotOursCategory;
 }
 
 const LOCK_LEASE_MS = 60_000;
@@ -448,7 +463,9 @@ export class Store {
       if (d.get("archivedAt") != null) return null;
       const attempts = ((d.get("attempts") as number | undefined) ?? 0) + 1;
       // Una tarea nueva tiene maxAttempts; una conversación (sesión existente) tiene un tope mayor.
-      const limit = d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts;
+      // Los reintentos automáticos (auto-retry.ts) tienen su propio tope: no se descuentan de este.
+      const retried = d.get("autoRetry.state") === "retrying" ? Number(d.get("autoRetry.count")) || 0 : 0;
+      const limit = (d.get("sessionId") ? MAX_CONVERSATION_RUNS : this.cfg.maxAttempts) + Math.min(3, retried);
       if (attempts > limit) {
         tx.update(ref, { status: "failed", result: { error: t("store.maxAttempts") }, finishedAt: serverTimestamp() });
         return null;
@@ -459,6 +476,8 @@ export class Store {
         startedAt: serverTimestamp(),
         leaseUntil: Timestamp.fromMillis(Date.now() + FEATURE_LEASE_MS),
         attempts,
+        // «Reprèn ara» desde la app con la tarea en espera del límite del plan: al reclamarla, la marca se quita.
+        ...(d.get("waitingQuota") != null ? { waitingQuota: deleteField() } : {}),
       });
       return { ...(d.data() as Feature), attempts };
     });
@@ -940,6 +959,65 @@ export class Store {
     );
   }
 
+  /** «Reintenta las tareas fallidas por errores temporales» (auto-retry.ts): si está activo, el máximo y el tope de coste. */
+  watchAutoRetry(onChange: (settings: { on: boolean; max?: number; maxCostUsd?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => {
+        const max = d.get("autoRetryMax");
+        const cost = d.get("autoRetryMaxCostUsd");
+        onChange({ on: d.get("autoRetry") === true, max: typeof max === "number" ? max : undefined, maxCostUsd: typeof cost === "number" ? cost : undefined });
+      },
+      () => undefined,
+    );
+  }
+
+  /** «Reintentar automáticamente los despliegues fallidos por errores temporales» (activado por defecto) y cuántas veces. */
+  watchDeployRetry(onChange: (settings: { on: boolean; retries?: number }) => void): () => void {
+    return onSnapshot(
+      this.project(),
+      (d) => onChange({ on: d.get("deployAutoRetry") !== false, retries: typeof d.get("deployAutoRetries") === "number" ? (d.get("deployAutoRetries") as number) : undefined }),
+      () => undefined,
+    );
+  }
+
+  /** Decisión de reintento de una tarea recién fallida (auto-retry.ts): la app la enseña en la tarjeta. */
+  async setAutoRetry(featureId: string, state: AutoRetryState): Promise<void> {
+    const { nextAt, costCap, ...rest } = state;
+    await updateDoc(this.feature(featureId), {
+      autoRetry: { ...rest, ...(costCap ? { costCap: true } : {}), ...(nextAt ? { nextAt: Timestamp.fromMillis(nextAt) } : {}), at: serverTimestamp() },
+    });
+  }
+
+  /** Lanza un reintento programado: failed -> execute (la misma sesión y rama), solo si sigue fallida y programada. */
+  async fireAutoRetry(featureId: string): Promise<boolean> {
+    const ref = this.feature(featureId);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      const f = d.data() as Feature | undefined;
+      if (!f || f.status !== "failed" || !this.executes(f) || d.get("archivedAt") != null || f.autoRetry?.state !== "scheduled") return false;
+      const { nextAt: _nextAt, ...rest } = f.autoRetry as NonNullable<Feature["autoRetry"]> & { at?: unknown };
+      tx.update(ref, { status: "execute", autoRetry: { ...rest, state: "retrying", at: serverTimestamp() } });
+      return true;
+    });
+  }
+
+  /** Mis tareas fallidas con un reintento automático programado (para no perderlo si el runner se reinicia). */
+  async scheduledRetries(): Promise<{ id: string; nextAt: number }[]> {
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("status", "==", "failed"), where("assignee", "==", this.uid))),
+      getDocs(query(this.features(), where("status", "==", "failed"), where("runnerUid", "==", this.uid))),
+    ]);
+    const out = new Map<string, number>();
+    for (const d of [...mine.docs, ...shared.docs]) {
+      const f = d.data() as Feature;
+      if (f.autoRetry?.state !== "scheduled" || !this.executes(f)) continue;
+      const at = f.autoRetry.nextAt;
+      out.set(d.id, typeof at === "number" ? at : (at?.toMillis() ?? 0));
+    }
+    return [...out].map(([id, nextAt]) => ({ id, nextAt }));
+  }
+
   /** Estado del modo auto en una tarea con PR listo (auto-merge.ts): lo enseña la app y avisa al agotar los reintentos. */
   async setAutoMerge(featureId: string, state: { state: string; attempts: number; reason?: string }): Promise<void> {
     await updateDoc(this.feature(featureId), { autoMerge: { state: state.state, attempts: state.attempts, ...(state.reason ? { reason: state.reason.slice(0, 500) } : {}), at: serverTimestamp() } });
@@ -1194,12 +1272,13 @@ export class Store {
       .catch((err) => console.error("[event]", err.message));
   }
 
-  async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string): Promise<void> {
+  async finish(id: string, status: "done" | "failed" | "waiting" | "execute", result: FeatureResult, sessionId?: string, waitingQuota?: { until: number; reason: string; tries: number }): Promise<void> {
     const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
     await updateDoc(this.feature(id), {
       status,
       result: clean,
       ...(sessionId ? { sessionId } : {}),
+      ...(status === "waiting" && waitingQuota ? { waitingQuota: { until: Timestamp.fromMillis(waitingQuota.until), reason: waitingQuota.reason.slice(0, 300) || "limit", tries: Math.min(50, waitingQuota.tries) } } : {}),
       finishedAt: serverTimestamp(),
       leaseUntil: deleteField(),
       runnerId: deleteField(),
@@ -1209,5 +1288,46 @@ export class Store {
   /** Devuelve la tarea a la cola (p. ej. al parar el runner con Ctrl+C). */
   async requeue(id: string): Promise<void> {
     await updateDoc(this.feature(id), { status: "execute", runnerId: deleteField(), leaseUntil: deleteField() });
+  }
+
+  /** Mis tareas en espera del límite del plan (al arrancar el runner): id, hasta cuándo e intentos. */
+  async quotaWaits(): Promise<{ id: string; until: number; tries: number }[]> {
+    const [mine, shared] = await Promise.all([
+      getDocs(query(this.features(), where("status", "==", "waiting"), where("assignee", "==", this.uid))),
+      getDocs(query(this.features(), where("status", "==", "waiting"), where("runnerUid", "==", this.uid))),
+    ]);
+    const seen = new Set<string>();
+    return [...mine.docs, ...shared.docs].flatMap((d) => {
+      const w = d.get("waitingQuota") as WaitingQuota | undefined;
+      if (seen.has(d.id) || !w?.until || !this.executes(d.data() as Feature)) return [];
+      seen.add(d.id);
+      return [{ id: d.id, until: w.until.toMillis(), tries: w.tries ?? 0 }];
+    });
+  }
+
+  /**
+   * Ha vuelto la cuota: waiting (en espera del límite) -> execute, sin la marca. Solo si sigue en espera del límite (si
+   * la cancelaron o la retomaron a mano, no se toca). Devuelve si la ha devuelto a la cola.
+   */
+  async resumeFromQuota(id: string): Promise<boolean> {
+    const ref = this.feature(id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      if (!d.exists() || d.get("status") !== "waiting" || d.get("waitingQuota") == null) return false;
+      tx.update(ref, { status: "execute", waitingQuota: deleteField() });
+      return true;
+    });
+  }
+
+  /** La cuota aún no ha vuelto a la hora prevista: nueva hora de represa (la app la enseña). */
+  async postponeQuota(id: string, until: number, tries: number): Promise<boolean> {
+    const ref = this.feature(id);
+    return runTransaction(this.db, async (tx) => {
+      const d = await tx.get(ref);
+      const w = d.get("waitingQuota") as WaitingQuota | undefined;
+      if (!d.exists() || d.get("status") !== "waiting" || !w) return false;
+      tx.update(ref, { waitingQuota: { until: Timestamp.fromMillis(until), reason: w.reason, tries: Math.min(50, tries) } });
+      return true;
+    });
   }
 }

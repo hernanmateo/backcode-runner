@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildReport, classify, fingerprint, looksSecret, report, sanitize, summarize, type DiagnosticPayload } from "../src/diagnostics.js";
+import { existsSync, readFileSync } from "node:fs";
+import { buildReport, classify, fingerprint, looksSecret, notOurs, report, sanitize, summarize, type DiagnosticPayload } from "../src/diagnostics.js";
 
 const ctx = { repoPath: "/Users/ana/Projects/pokescan", worktreesDir: "/Users/ana/.backcode/worktrees/P1", remoteUrl: "git@github.com:ana/pokescan.git", home: "/Users/ana" };
 const POKESCAN = `wrangler deploy terminó con código 1:
@@ -23,6 +24,49 @@ test("clasifica: excepciones del runner, despliegues elegidos por Backcode y nad
   for (const e of [remote500, "wrangler deploy terminó con código 1:\n✘ [ERROR] 503 Service Unavailable", "firebase deploy terminó con código 1:\nHTTP Error: 502, Bad Gateway","wrangler deploy terminó con código 1:\nYou are not logged in", "Error: getaddrinfo ENOTFOUND api.github.com", "usage limit reached", "npm test terminó con código 1:\n3 failing", "permission denied (publickey)", "firebase deploy terminó con código 1:\nHTTP Error: 403"]) {
     assert.equal(classify(e, { thrown: true, source: "detected" }), null, e);
   }
+});
+
+test("no son de Backcode: límite del plan, presupuesto, lockfile congelado, 422 de GitHub (con su categoría)", () => {
+  const cases: [string, ReturnType<typeof notOurs>, { thrown: boolean; source?: "detected" }][] = [
+    ["Error: Claude Code returned an error result: You've hit your 5-hour limit · resets 2:20pm (Europe/Madrid)", "plan", { thrown: true }],
+    ["Error: Claude Code returned an error result: Reached maximum budget ($5)", "budget", { thrown: true }],
+    ["bun install --frozen-lockfile terminó con código 1:\nerror: lockfile had changes, but lockfile is frozen", "project", { thrown: false, source: "detected" }],
+    ["HTTP 422: Validation Failed (https://api.github.com/repos/<remote>/pulls)", "repo", { thrown: true }],
+    ["Error: Claude AI usage limit reached|1730000000", "plan", { thrown: true }],
+    ["Error: Claude Code returned an error result: error_max_turns", "budget", { thrown: true }],
+    ["pnpm install terminó con código 1:\nERR_PNPM_OUTDATED_LOCKFILE Cannot install with \"frozen-lockfile\"", "project", { thrown: false, source: "detected" }],
+    ["yarn install terminó con código 1:\nYour lockfile needs to be updated, but yarn was run with `--frozen-lockfile`.", "project", { thrown: false, source: "detected" }],
+    ["Error: A pull request already exists for <remote>:backcode/x.", "repo", { thrown: true }],
+    ["Error: No commits between main and backcode/x", "repo", { thrown: true }],
+    ["remote: error: GH006: Protected branch update failed for refs/heads/main.", "repo", { thrown: true }],
+    ["HttpError: Resource not accessible by integration", "repo", { thrown: true }],
+    ["Error: This repository was archived so it is read-only.", "repo", { thrown: true }],
+    ["Error: Claude Code returned an error result: the task could not be completed", "claude", { thrown: true }],
+  ];
+  for (const [e, category, ctx] of cases) {
+    assert.equal(notOurs(e), category, e);
+    assert.equal(classify(e, ctx), null, e);
+    assert.equal(buildReport({ action: "feature", error: e, ...ctx }, {}), null, e);
+  }
+});
+
+test("los fallos internos del runner siguen llegando", () => {
+  for (const e of [
+    "TypeError: Cannot read properties of undefined (reading 'id')",
+    "FirebaseError: Missing or insufficient data",
+    "RangeError: Maximum call stack size exceeded",
+    "Error: Claude Code returned an error result: TypeError: x is not a function",
+    "Error: algo inesperado del runner",
+  ]) {
+    assert.equal(notOurs(e), null, e);
+    assert.equal(classify(e, { thrown: true }), "backcode", e);
+  }
+});
+
+test("la copia de los patrones en functions es idéntica", () => {
+  const other = new URL("../../functions/src/not-ours.ts", import.meta.url);
+  if (!existsSync(other)) return; // el runner publicado sin el monorepo
+  assert.equal(readFileSync(other, "utf8").replace(/^(\/\/.*\n)+/, ""), readFileSync(new URL("../src/not-ours.ts", import.meta.url), "utf8").replace(/^(\/\/.*\n)+/, ""));
 });
 
 test("limpia rutas personales, worktrees, repo, remoto, correos y sha", () => {

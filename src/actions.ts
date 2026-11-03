@@ -19,7 +19,7 @@ import { otaScriptArgs, promoteCheck } from "./ota.js";
 import { appScheme, nativeFiles, prChannel, prNumberOf, prOtaArgs, prOtaLink } from "./pr-ota.js";
 import { channelOfTarget, type DeployedTask, includedTasks, MAX_DEPLOYED_TASKS, markBuiltTasks, markDeployedTasks } from "./deploy-tasks.js";
 import type { Store } from "./store.js";
-import { type CurrentStep, type DeployLock, DeployProgress, isTransientDeployError, retryTransient, withDeployLock } from "./deploy-progress.js";
+import { clampDeployRetries, classifyDeployError, type CurrentStep, DEFAULT_DEPLOY_RETRIES, type DeployLock, DeployProgress, isTransientDeployError, retryDelays, retryTransient, transientReason, withDeployLock } from "./deploy-progress.js";
 import { scopeOf } from "./pending.js";
 import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from "./versions.js";
 
@@ -83,8 +83,21 @@ export interface StepResult {
   /** Cuándo empezó de verdad (ya con el candado de despliegue; ms del reloj del runner) y cuánto duró. */
   startedAt?: number;
   durationMs?: number;
+  autoRetry?: AutoRetry;
+}
+/**
+ * Reintentos automáticos de un despliegue, OTA o build tras errores transitorios: cuántos se hicieron (`retries`), el
+ * máximo del proyecto (`max`), el motivo de cada intento fallido (`reasons`) y si el último error parecía transitorio
+ * (`transient`: la app lo explica junto a «Reintentar»). Sin reintentos ni fallo, ausente.
+ */
+export interface AutoRetry {
+  retries: number;
+  max: number;
+  reasons: string[];
+  transient?: boolean;
 }
 export interface ActionResult {
+  autoRetry?: AutoRetry;
   /** «Desplegarlo todo»: cómo fue cada paso (los que no llegaron a ejecutarse no aparecen). */
   steps?: StepResult[];
   /** «Desplegarlo todo»: los pasos en el orden en que el runner los ejecuta. */
@@ -140,6 +153,13 @@ export function setRequireChecks(on: boolean): void {
   requireChecks = on;
 }
 
+// «Reintentar automáticamente los despliegues fallidos por errores temporales» del proyecto (activado por defecto; 2
+// reintentos y como mucho 3). Lo cambian los admins en la app y lo sigue index.ts.
+let deployRetry = { on: true, retries: DEFAULT_DEPLOY_RETRIES };
+export function setDeployRetry(settings: { on?: boolean; retries?: number }): void {
+  deployRetry = { on: settings.on !== false, retries: clampDeployRetries(settings.retries) };
+}
+
 /** Solo se continúa con todo en verde (o sin checks configurados, si el proyecto no los exige). */
 export function requireGreen(checks: Checks, what: string, strict = requireChecks): ActionResult | null {
   if (checks.state === "green" || (checks.state === "none" && !strict)) return null;
@@ -191,7 +211,8 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
     return done;
   }
   if (action.type === "build") {
-    const done = await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", await publishBuild(cfg, host, action)));
+    const built = await withAutoRetry("Build", "eas", () => publishBuild(cfg, host, action), singleRetryProgress(store, action.id, "build"));
+    const done = await withBuiltTasks(cfg, store, action, await withTasks(cfg, store, "build", built));
     await syncLocal(cfg);
     return done;
   }
@@ -200,10 +221,13 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
   const id = action.id ?? "";
   const since = Date.now();
   const progress = (waitingFor?: string) => (id ? store.actionProgress(id, { current: { id: step, index: 0, startedAt: since, ...(waitingFor ? { waitingFor } : {}) } }).catch(() => undefined) : Promise.resolve());
+  const onRetry = singleRetryProgress(store, id, step);
+  // «Commit y publicar» escribe en la rama base: no se reintenta solo (se pide a mano otra vez si hace falta).
+  const commitDirty = action.commitDirty === true && !action.commit;
   const done = await withDeployLock(deployLock(store), id || step, stepLabel(step), async () =>
     action.type === "deploy"
-      ? withTasks(cfg, store, step, await deployWithRetry(cfg, store, host, action.target ?? ""))
-      : publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, action.commitDirty === true && !action.commit, action.skipSmoke === true, action.promote === true),
+      ? withTasks(cfg, store, step, await deployWithRetry(cfg, store, host, action.target ?? "", onRetry))
+      : withAutoRetry(stepLabel(step), "eas", () => publishOta(cfg, store, host, action.channel ?? "preview", action.message ?? "OTA", action.commit, commitDirty, action.skipSmoke === true, action.promote === true), onRetry, { noRetry: commitDirty }),
   {
     onWait: async (busy) => {
       console.log(`[action] ${t("deploy.waitLock", { step: busy })}`);
@@ -227,30 +251,65 @@ const deployLock = (store: Store): DeployLock => ({
   release: (action) => store.releaseDeployLock(action),
 });
 
+/** Aviso de reintento de un despliegue, OTA o build suelto: lo deja en `result.current` de la acción (la app lo enseña). */
+type RetryNotice = (attempt: number, max: number, reason: string) => Promise<void>;
+function singleRetryProgress(store: Store, actionId: string | undefined, step: string): RetryNotice {
+  const since = Date.now();
+  return (attempt, max, reason) =>
+    actionId ? store.actionProgress(actionId, { current: { id: step, index: 0, startedAt: since, attempt, maxRetries: max, reason: reason.slice(0, 300) } }).catch(() => undefined) : Promise.resolve();
+}
+
+/** Despliegue de un destino con los reintentos automáticos de los errores transitorios de su proveedor (withAutoRetry). */
+async function deployWithRetry(cfg: RunnerConfig, store: Store, host: PrHost | undefined, targetId: string, onRetry?: RetryNotice) {
+  const provider = store.capabilities.deploys.find((d) => d.id === targetId)?.provider;
+  return withAutoRetry(stepLabel(`deploy:${targetId}`), provider, () => runDeploy(cfg, host, targetId), onRetry);
+}
+
 /**
- * Despliegue de un destino reintentando (como mucho 2 veces, tras 20 s y 60 s) los errores transitorios de Firebase
- * («Failed to list functions», 429/503, cuota…), que suelen salir cuando otro despliegue del mismo proyecto de Firebase
- * coincide o la API falla un momento. Un error de compilación o del código no se reintenta. Queda en el log.
+ * Ejecuta un despliegue, OTA o build (solo comandos de despliegue: nunca un paso que use Claude) y, si falla por un error
+ * transitorio (red, 429/5xx, API del proveedor, otro despliegue en curso: ver classifyDeployError), lo reintenta solo,
+ * con espera creciente, hasta el máximo del proyecto (2 por defecto, nunca más de 3). Al llegar al límit queda fallido y
+ * no se reintenta más. Los errores de código, compilación, tests, credenciales o configuración no se reintentan.
+ * `noRetry` (o un resultado con `noRetry`, p. ej. una build que ya envió una plataforma): sin reintentos.
+ * El motivo de cada intento queda en el log y en `result.autoRetry` (la app lo enseña).
  */
-async function deployWithRetry(cfg: RunnerConfig, store: Store, host: PrHost | undefined, targetId: string, onRetry?: (attempt: number) => Promise<void>) {
-  const firebase = store.capabilities.deploys.find((d) => d.id === targetId)?.provider === "firebase";
-  const label = stepLabel(`deploy:${targetId}`);
+export async function withAutoRetry(
+  label: string,
+  provider: string | undefined,
+  run: () => Promise<{ ok: boolean; result: ActionResult; noRetry?: boolean }>,
+  onRetry?: RetryNotice,
+  opts: { noRetry?: boolean; settings?: { on: boolean; retries: number }; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<{ ok: boolean; result: ActionResult }> {
+  const settings = opts.settings ?? deployRetry;
+  const delays = settings.on && !opts.noRetry ? retryDelays(settings.retries) : [];
+  const max = delays.length;
   const notes: string[] = [];
-  const done = await retryTransient(() => runDeploy(cfg, host, targetId), {
-    transient: (error) => (firebase || /Failed to list functions/i.test(error)) && isTransientDeployError(error),
+  const done = await retryTransient(run, {
+    delays,
+    ...(opts.sleep ? { sleep: opts.sleep } : {}),
+    transient: (error, d) => !d.noRetry && isTransientDeployError(error, provider),
     onRetry: async (attempt, waitMs, error) => {
-      const line = t("deploy.retrying", { step: label, n: attempt + 1, s: Math.round(waitMs / 1000), error: error.split("\n").find((l) => isTransientDeployError(l))?.trim().slice(0, 300) ?? "" });
+      const reason = transientReason(error, provider);
+      const line = t("deploy.retrying", { step: label, n: attempt, max, s: Math.round(waitMs / 1000), error: reason });
       console.log(`[action] ${line}`);
       notes.push(line);
-      await onRetry?.(attempt);
+      await onRetry?.(attempt, max, reason);
     },
   });
-  const { attempts, ...rest } = done;
-  if (attempts > 1 && rest.ok) notes.push(t("deploy.retried", { step: label, n: attempts }));
-  if (!notes.length) return rest;
-  const result: ActionResult = { ...rest.result, log: `${notes.join("\n")}\n${rest.result.log ?? ""}`.slice(-2000) };
-  if (!rest.ok && result.error) result.error = `${notes.join("\n")}\n${result.error}`.slice(-3000);
-  return { ok: rest.ok, result };
+  const { attempts, reasons, ok } = done;
+  const retries = attempts - 1;
+  if (retries > 0) notes.push(t(ok ? "deploy.retried" : "deploy.gaveUp", { step: label, n: retries }));
+  const result: ActionResult = { ...done.result };
+  if (!ok) {
+    const kind = classifyDeployError(String(result.error ?? ""), provider);
+    result.autoRetry = { retries, max, reasons: reasons.map((r) => transientReason(r, provider)), transient: kind === "transient" || kind === "lock" };
+  } else if (retries > 0) {
+    result.autoRetry = { retries, max, reasons: reasons.map((r) => transientReason(r, provider)) };
+  }
+  if (!notes.length) return { ok, result };
+  result.log = `${notes.join("\n")}\n${result.log ?? ""}`.slice(-2000);
+  if (!ok && result.error) result.error = `${notes.join("\n")}\n${result.error}`.slice(-3000);
+  return { ok, result };
 }
 
 /**
@@ -684,7 +743,7 @@ export function buildNumberHint(platform: "ios" | "android", output: string, app
  * La versión y la runtimeVersion llegan como APP_VERSION y RUNTIME_VERSION: la configuración de la app (app.config.js)
  * tiene que leerlas. Antes de compilar se comprueba con `expo config` que de verdad se aplican.
  */
-async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action: Action) {
+async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult; noRetry?: boolean }> {
   const platforms = (["ios", "android"] as const).filter((p) => action.platforms?.includes(p));
   const version = action.version ?? "";
   const runtimeVersion = action.runtimeVersion ?? "";
@@ -744,7 +803,8 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
         const message = String((err as Error).message);
         // El aviso va delante: el error se recorta por el final y no debe perderse.
         const hint = buildNumberHint(platform, message, app.appDir);
-        return { ok: false, result: { url, sha: commit, error: `${hint}${before}${platform}: ${message}`.slice(0, hint.length + before.length + 3000) } };
+        // Si ya se envió alguna plataforma, no se reintenta sola: se volvería a compilar y enviar la que salió bien.
+        return { ok: false, noRetry: done.length > 0 || !!hint, result: { url, sha: commit, error: `${hint}${before}${platform}: ${message}`.slice(0, hint.length + before.length + 3000) } };
       }
     }
     const buildNumber = buildNumberFrom(log);
@@ -776,12 +836,18 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
   const features: DeployedTask[] = [];
   // Progreso en vivo en el documento de la acción (paso actual y pasos hechos): la app lo ve avanzar.
   const progress = new DeployProgress<StepResult>(steps, (r) => (actionId ? store.actionProgress(actionId, r as unknown as Record<string, unknown>) : Promise.resolve()));
-  const runStep =
-    run.step ??
-    ((id: string, onRetry: (attempt: number) => Promise<void>) =>
-      id.startsWith("ota:")
+  // Cada paso con sus reintentos automáticos (withAutoRetry); `run.step` (tests) sustituye solo el comando del paso.
+  const providerOf = (id: string) => (id.startsWith("ota:") ? "eas" : store.capabilities?.deploys.find((d) => `deploy:${d.id}` === id)?.provider);
+  const command = (id: string) =>
+    run.step
+      ? run.step(id)
+      : id.startsWith("ota:")
         ? publishOta(cfg, store, host, id.slice(4) as "production" | "preview", message || "Backcode", undefined, false, skipSmoke)
-        : deployWithRetry(cfg, store, host, id.slice("deploy:".length), onRetry).then((done) => withTasks(cfg, store, id, done)));
+        : runDeploy(cfg, host, id.slice("deploy:".length));
+  const runStep = (id: string, onRetry: RetryNotice) =>
+    withAutoRetry(stepLabel(id), providerOf(id), () => command(id), onRetry, { ...(run.retry ? { settings: run.retry } : {}), ...(run.sleep ? { sleep: run.sleep } : {}) }).then((done) =>
+      !run.step && id.startsWith("deploy:") ? withTasks(cfg, store, id, done) : done,
+    );
   const lock = run.lock ?? deployLock(store);
   const finalResult = async (r: { ok: boolean; result: ActionResult }) => {
     await progress.settled();
@@ -799,7 +865,7 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
       stepLabel(id),
       async () => {
         const began = Date.now();
-        const out = await runStep(id, (attempt) => progress.retrying(id, attempt));
+        const out = await runStep(id, (attempt, max, reason) => progress.retrying(id, attempt, max, reason));
         return { ...out, began };
       },
       {
@@ -813,11 +879,11 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
     );
     const { ok, result, began } = await done.catch((err: Error) => ({ ok: false, result: { error: err.message } as ActionResult, began: startedAt }));
     for (const f of result.features ?? []) if (features.length < MAX_DEPLOYED_TASKS && !features.some((g) => g.id === f.id)) features.push(f);
-    await progress.finish({ id, ok, startedAt: began, durationMs: Date.now() - began, ...(result.sha ? { sha: result.sha } : {}), ...(result.version ? { version: result.version } : {}), ...(result.updateId ? { updateId: result.updateId } : {}), ...(result.url ? { url: result.url } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
+    await progress.finish({ id, ok, startedAt: began, durationMs: Date.now() - began, ...(result.sha ? { sha: result.sha } : {}), ...(result.version ? { version: result.version } : {}), ...(result.updateId ? { updateId: result.updateId } : {}), ...(result.url ? { url: result.url } : {}), ...(result.autoRetry ? { autoRetry: result.autoRetry } : {}), ...(ok ? {} : { error: String(result.error ?? "").slice(-1500) }) });
     log.push(`${ok ? "✓" : "✗"} ${label}${result.url ? ` · ${result.url}` : ""}`);
     if (!ok) {
       const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${stepLabel(s)}`);
-      return finalResult({ ok: false, result: { order: steps, steps: progress.steps, ...(features.length ? { features } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } });
+      return finalResult({ ok: false, result: { order: steps, steps: progress.steps, ...(features.length ? { features } : {}), ...(result.autoRetry ? { autoRetry: result.autoRetry } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } });
     }
   }
   return finalResult({ ok: true, result: { order: steps, steps: progress.steps, sha: progress.steps.at(-1)?.sha, features, log: log.join("\n") } });
@@ -825,7 +891,10 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
 
 /** Para los tests: cómo se hace cada paso, el candado y las esperas (por defecto, los de verdad). */
 export interface DeployAllRunner {
-  step?: (id: string, onRetry: (attempt: number) => Promise<void>) => Promise<{ ok: boolean; result: ActionResult }>;
+  /** El comando de un paso (sin reintentos: los pone deployAll). */
+  step?: (id: string) => Promise<{ ok: boolean; result: ActionResult; noRetry?: boolean }>;
+  /** Reintentos automáticos (por defecto, los del proyecto). */
+  retry?: { on: boolean; retries: number };
   lock?: DeployLock;
   sleep?: (ms: number) => Promise<void>;
 }
