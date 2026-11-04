@@ -302,6 +302,11 @@ For the work itself, **`/backcode:feature`**, or by hand:
   the task's conversation in the app and your runner resumes that same session in the worktree (it copies the session from the
   repo's folder to the worktree's; the original isn't touched) and updates the PR. Without a session (run by hand, or older
   tasks) the runner doesn't continue it: keep working in the worktree and `backcode task pr` updates the same PR.
+- `backcode task follow-up <project> <task> <n> [--desktop]` (from any folder): a next task Claude proposed when opening
+  the PR of `<task>` (`result.followUps[n]`) that needs something the runner never has (a key, an interactive login…).
+  Like `task start` (worktree, branch and task In progress), links it in the original task's “Next tasks” and opens your
+  Claude Code there (terminal, or the desktop app with `--desktop`) with the task, the origin and the rule to never paste
+  secret values into the chat. The app shows the exact command. Finish with `backcode task pr`.
 - `backcode task import <PR url> [--deployed production]` (admins): history, an already merged GitHub PR as a Merged (and
   Deployed) task, once per PR.
 

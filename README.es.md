@@ -102,6 +102,12 @@ Para el trabajo en sí, **`/backcode:feature`**, o a mano:
   **Mergeada** al mergear el PR y **Desplegada** cuando un OTA la incluye, también si se publica desde la terminal (el runner
   mira el commit que deja el script en `<app>/.expo/eoas-last-publish-<rama>`), con avisos push a todo el proyecto (también a
   ti: son cambios que pasan solos).
+- `backcode task follow-up <proyecto> <tarea> <n> [--desktop]` (desde cualquier carpeta): una siguiente tarea que propuso
+  Claude al abrir el PR de `<tarea>` (`result.followUps[n]`) y que necesita algo que el runner nunca tiene (una key, un
+  login interactivo…). Como `task start` (worktree, rama y tarea «En curso»), la enlaza en «Siguientes tareas» de la
+  tarea de origen y abre tu Claude Code ahí (terminal, o la app de escritorio con `--desktop`) con el encargo, de dónde
+  sale y la norma de no pegar nunca el valor de un secreto en el chat. La app enseña el comando exacto. Se acaba con
+  `backcode task pr`.
 - `backcode task import <url del PR> [--deployed production]` (admins): historial, un PR de GitHub ya mergeado como tarea ya
   Mergeada (y Desplegada en esos canales), una sola vez por PR. Desde ahí se mergea, se marca y se despliega como cualquier otra. Sin sesión de Claude Code (a mano o
   tareas anteriores) el runner no la continúa: los cambios se siguen haciendo en el worktree y `backcode task pr` actualiza el mismo PR.
