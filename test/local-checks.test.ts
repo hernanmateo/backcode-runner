@@ -223,6 +223,30 @@ test("runLocalChecks: un check que falla no entra en la caché", async () => {
   assert.equal(cache.keys.has("k-fail"), false);
 });
 
+test("runLocalChecks: con publishSha comprueba un commit y publica en otro, sin fiarse de los estados que ya tenía", async () => {
+  // La cabeza del PR ya tenía «tests» en verde (de la rama sola): con el PR mezclado con la base no cuenta.
+  const { host, published } = fakeHost([{ name: "Backcode · tests", state: "ok" }]);
+  const ran: string[] = [];
+  const keys: string[] = [];
+  const res = await runLocalChecks({
+    repoPath: "/repo-publish",
+    worktreesDir: "/wts",
+    host,
+    sha: "merged123",
+    publishSha: "head456",
+    checks: [check("tests")],
+    worktree: async (sha) => (ran.push(`wt:${sha}`), tmpdir()),
+    cleanup: async () => undefined,
+    cache: memCache(),
+    key: async (c) => (keys.push(c.name), `k-${c.name}-merged`),
+    run: async (cmd) => (ran.push(cmd[0]), { ok: true, out: "" }),
+  });
+  assert.equal(res.checks.state, "green");
+  assert.deepEqual(ran, ["wt:merged123", "true"]);
+  assert.ok(published.length > 0);
+  assert.ok(published.every((p) => p.sha === "head456"));
+});
+
 test("oneAtATime: el mismo check no corre dos veces a la vez; otro distinto sí; un fallo no bloquea la cola", async () => {
   let live = 0;
   let max = 0;

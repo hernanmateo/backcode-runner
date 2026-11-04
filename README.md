@@ -576,6 +576,15 @@ Each task still gets its own worktree and branch, but a project can now run seve
 
 Older runners ignore all of this and keep running one task at a time. See `src/scheduler.ts`, `src/slots.ts` and `src/monitor.ts`.
 
+## Merge queue ("Merge all", runner ≥ 1.5.14)
+
+"Merge all" creates one `merge` action per PR. The runner waits 3 s for all of them to arrive and, each time it merges,
+picks the waiting PR that clashes least (`src/merge-queue.ts`): the one that shares files with the fewest other queued
+PRs, then the one that changes fewer files, then the one requested first. It recomputes after every merge. Each waiting
+PR gets its position (`result.queue` of `result.queueOf`), which the app shows live on its card and task page. A failed
+merge (checks, conflicts) is marked as usual and the queue moves on. Manual merges take the project's merge turn (the same
+one auto mode uses), so they never overlap an automatic merge.
+
 ## Development
 
 ```bash

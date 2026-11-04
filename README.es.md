@@ -445,6 +445,20 @@ Antes de cada reintento comprueba si la operación sí se hizo: el PR ya existe 
 falla, el error lo dice y, si GitHub tiene una incidencia abierta (githubstatus.com), la nombra, para no buscar el fallo
 en tu código (`src/remote-retry.ts`).
 
+## Cola de merges («Mergear todo»)
+
+«Mergear todo» crea una acción `merge` por PR. El runner, que ya ejecuta sus acciones de una en una, espera 3 s a que
+lleguen todas y, cada vez que va a mergear, elige de las que esperan la que menos choca (`src/merge-queue.ts`):
+
+1. la que comparte ficheros (diff desde el merge-base con la rama principal) con menos PR de la cola;
+2. a igualdad, la que cambia menos ficheros;
+3. a igualdad, la que se pidió antes.
+
+Se recalcula tras cada merge con las que quedan. A cada una que espera le apunta su posición (`result.queue` de
+`result.queueOf`), y la app la enseña en vivo en la tarjeta y la ficha. Si un merge falla (checks, conflictos) queda
+marcado como siempre y la cola sigue. Los merges a mano toman el turno de merge del proyecto (`locks/autoMerge`, el del
+modo auto), y en un mismo runner un merge manual y uno automático nunca van a la vez.
+
 ## PRs mergeados fuera de la app
 Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket (o con `gh pr merge`), tu runner lo detecta en
 **un minuto como mucho** y la marca como **Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**. Cada
@@ -791,6 +805,15 @@ description = "App · tipos y lint"          # opcional
   coincide espera a que acabe uno, para que el Mac saturado no los haga ir lentos a todos.
 - **La salida de lo que falla queda guardada:** la de cada check que falla, entera, en
   `~/.backcode/logs/checks/<fecha>-<commit>-<nombre>.log` (las 30 últimas), para ver qué pasó aunque el runner se reinicie.
+- **El PR tal como quedaría mergeado:** si la rama principal ha avanzado desde que se creó el PR (p. ej. con «Mergear
+  todo» ya se mergeó otro antes), los checks no se pasan sobre la rama sola sino sobre un commit local que la mezcla con lo
+  último de la principal (`git merge-tree`, sin subir nada ni crear ramas). Así no se mergea algo en verde por separado y
+  en rojo junto a lo demás. Los estados «Backcode · …» se siguen publicando en el último commit del PR; los que ya tuviera
+  no cuentan (eran de la rama sola), pero la caché por contenido sí. Si la rama ya contiene la principal, es lo de siempre.
+- **Con la CI del host, el PR se pone al día:** con **Exigir checks** o en **modo auto**, si el PR va por detrás de la rama
+  principal, antes de esperar a los checks el runner mezcla la principal en la rama (en una copia aparte), la sube sin
+  forzar y espera a que la CI corra sobre ese commit nuevo. Si choca, es el caso de conflictos de siempre («Arreglar con
+  Claude»). Sin ninguno de los dos, un merge a mano no toca la rama (no gasta otra vuelta de CI).
 - **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
   sobre su último commit en segundo plano (como mucho 30 min; no frena la cola) y guarda el resultado en la tarea
   (subdocumento `checks/verify`: commit del PR, commit de la rama principal, fecha, checks y un resumen si fallan). También lo publica en

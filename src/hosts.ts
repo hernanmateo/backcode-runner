@@ -57,6 +57,8 @@ export interface PrHost {
   merge(prUrl: string, opts?: MergeOptions): Promise<{ sha?: string }>;
   /** Estado del PR (p. ej. para enterarse de un merge hecho a mano en GitHub/Bitbucket) y su commit de merge. */
   prState(prUrl: string): Promise<{ state: "open" | "merged" | "closed"; sha?: string }>;
+  /** El último commit de la rama del PR según el host (para saber que ya vio un push); ausente si no lo da. */
+  prHeadSha?(prUrl: string): Promise<string>;
   /** PR abiertos del repo (también los creados fuera de Backcode), los más recientes primero. */
   listOpen(): Promise<OpenPr[]>;
   /** Los últimos PR mergeados del repo (los más recientes primero) en una sola consulta: ver merged-watch.ts. */
@@ -226,6 +228,9 @@ export function githubHost(repoPath: string): PrHost {
       const sha = await gh(["pr", "view", prUrl, "--json", "mergeCommit", "-q", ".mergeCommit.oid"]).catch(() => "");
       return { sha: sha || undefined };
     },
+    async prHeadSha(prUrl) {
+      return (await gh(["pr", "view", prUrl, "--json", "headRefOid", "-q", ".headRefOid"])).trim();
+    },
     async prState(prUrl) {
       const pr = JSON.parse(await gh(["pr", "view", prUrl, "--json", "state,mergeCommit"])) as { state: string; mergeCommit?: { oid?: string } | null };
       return { state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open", sha: pr.mergeCommit?.oid || undefined };
@@ -316,6 +321,10 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
       await api(`/pullrequests/${id}`, { method: "PUT", body: { draft: false } }).catch(() => undefined);
       const pr = await api<Pr>(`/pullrequests/${id}/merge`, { method: "POST", body: bitbucketMergeBody(opts) });
       return { sha: pr.merge_commit?.hash };
+    },
+    async prHeadSha(prUrl) {
+      const pr = await api<Pr & { source?: { commit?: { hash?: string } } }>(`/pullrequests/${await prId(prUrl)}`);
+      return pr.source?.commit?.hash ?? "";
     },
     async prState(prUrl) {
       const pr = await api<Pr & { state: string }>(`/pullrequests/${await prId(prUrl)}`);

@@ -7,11 +7,13 @@ import { failingLog } from "./check-logs.js";
 import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, holdWorktree, isAncestor, releaseWorktree, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, holdWorktree, isAncestor, mergedCommit, releaseWorktree, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
 import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
 import { remoteTexts, t } from "./i18n.js";
 import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-checks.js";
+import { updateBehindPr, waitHostHead } from "./pr-update.js";
+import { followLocalWorktree } from "./conflicts.js";
 import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -195,10 +197,34 @@ async function useLocal(cfg: RunnerConfig, configRef: string): Promise<boolean> 
   return (await localChecksAt(cfg.repoPath, configRef)).length > 0;
 }
 
-/** Checks locales de `sha`, leyendo qué comprobar de `configRef` (la rama base: un PR no puede rebajarlos). */
+/**
+ * Checks locales de `sha`, leyendo qué comprobar de `configRef` (la rama base: un PR no puede rebajarlos). Se pasan sobre
+ * `sha` mezclado con lo último de la base (withBase): un PR se comprueba tal como quedaría mergeado. Los estados se
+ * publican en `sha`.
+ */
 async function localChecks(cfg: RunnerConfig, host: PrHost | undefined, sha: string, configRef: string): Promise<LocalRun> {
   const checks = await localChecksAt(cfg.repoPath, configRef);
-  return runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha, checks });
+  const combined = await withBase(cfg, sha, configRef);
+  return runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: combined, publishSha: sha, checks });
+}
+
+/**
+ * El commit que se comprueba para `headSha`: él mismo si ya contiene `baseRef` (lo de siempre, p. ej. un despliegue de
+ * la base) o, si no, su mezcla local con la base (mergedCommit). Si chocan o no se puede calcular, `headSha` (el merge
+ * ya mira los conflictos aparte). Trae antes la base.
+ */
+async function withBase(cfg: RunnerConfig, headSha: string, baseRef: string, baseSha?: string): Promise<string> {
+  const prefix = `${cfg.remote}/`;
+  if (!baseSha && baseRef.startsWith(prefix)) {
+    const base = baseRef.slice(prefix.length);
+    await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, `${base}:refs/remotes/${baseRef}`]).catch(() => undefined);
+  }
+  const at = baseSha || (await gitIn(cfg.repoPath, ["rev-parse", baseRef]).catch(() => ""));
+  if (!at) return headSha;
+  const combined = await mergedCommit(cfg.repoPath, headSha, at).catch(() => null);
+  if (!combined) return headSha;
+  if (combined !== headSha) console.log(`[checks] ${t("lc.withBase", { sha: headSha.slice(0, 7), base: baseRef, at: at.slice(0, 7) })}`);
+  return combined;
 }
 
 /** Estado resumen que se publica en el último commit del PR tras verificar los checks al terminar la tarea. */
@@ -227,7 +253,10 @@ export async function verifyTaskChecks(cfg: RunnerConfig, store: Store, host: Pr
     const abort = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<null>((r) => (timer = setTimeout(() => (abort.abort(), r(null)), VERIFY_TIMEOUT_MS)));
-    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks, signal: abort.signal }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
+    // Sobre el PR mezclado con esta base (lo que se guarda, headSha + baseSha, es justo eso): el merge solo lo reutiliza si
+    // ni el PR ni la base han cambiado.
+    const combined = await withBase(cfg, headSha, baseRef, baseSha);
+    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: combined, publishSha: headSha, checks, signal: abort.signal }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
     const passed = run?.checks.state === "green";
     const failing = run ? run.checks.pending.filter((p) => p.endsWith(": fail")).map((p) => p.slice(0, -": fail".length).replace(LOCAL_CHECK_PREFIX, "")) : [];
     const summary = passed ? "" : run ? t("lc.verifyFail", { checks: failing.join(", ") || run.checks.state }) : t("lc.verifyTimeout");
@@ -657,6 +686,22 @@ async function conflictFiles(cfg: RunnerConfig, branch: string | undefined): Pro
     .catch(() => [] as string[]);
 }
 
+/**
+ * Pone al día con la base un PR que va por detrás (updateBehindPr) y espera a que el host vea el commit nuevo, para que
+ * los checks que se lean luego sean los suyos. Devuelve los ficheros en conflicto si choca (no sube nada); si no, [].
+ */
+async function updateBehind(cfg: RunnerConfig, store: Store, host: PrHost, featureId: string, prUrl: string, branch: string): Promise<string[]> {
+  const base = taskBase(cfg.baseBranch);
+  const res = await updateBehindPr({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, base, branch, name: featureId });
+  if (res.status === "conflicts") return res.files.length ? res.files : await conflictFiles(cfg, branch);
+  if (res.status !== "merged" || !res.sha) return [];
+  console.log(`[action] ${t("act.updatedWithBase", { base: `${cfg.remote}/${base}`, sha: res.sha.slice(0, 7) })}`);
+  await store.event(featureId, "merge", t("act.updatedWithBase", { base: `${cfg.remote}/${base}`, sha: res.sha.slice(0, 7) })).catch(() => undefined);
+  await followLocalWorktree(cfg, featureId, branch).catch(() => undefined);
+  await waitHostHead(host.prHeadSha ? () => host.prHeadSha!(prUrl) : undefined, res.sha);
+  return [];
+}
+
 /** El PR choca con la base. Se marcan ya los ficheros en conflicto (sin esperar a la comprobación periódica) para que la app ofrezca «Arreglar con Claude». */
 async function conflictsBlock(cfg: RunnerConfig, store: Store, featureId: string, prUrl: string, files: string[]): Promise<{ ok: false; result: ActionResult; blocked: MergeBlock }> {
   if (files.length) await store.setConflicts(featureId, files).catch(() => undefined);
@@ -733,6 +778,12 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       store.capabilities.ci === true ||
       (await ciConfigAt(cfg.repoPath, baseRef)) ||
       (!!branch && (await ciConfigAt(cfg.repoPath, `${cfg.remote}/${branch}`)));
+    // Con «Exigir checks» o en modo auto, un PR que va por detrás de la base se pone al día antes (y la CI vuelve a correr
+    // sobre el commit nuevo): sus checks en verde eran contra una base vieja, sin lo que se mergeó después.
+    if (strict && branch) {
+      const updated = await updateBehind(cfg, store, host, featureId, prUrl, branch);
+      if (updated.length) return conflictsBlock(cfg, store, featureId, prUrl, updated);
+    }
     const gate = await gatePrChecks({
       read: () => host.prChecks(prUrl),
       conflicts: () => conflictFiles(cfg, branch),
