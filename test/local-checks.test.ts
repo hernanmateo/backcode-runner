@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { CheckItem, CommitStatus, PrHost } from "../src/hosts.js";
-import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, onlyNotStartedIn, readCheckConfig, runLocalChecks } from "../src/local-checks.js";
+import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, onlyNotStartedIn, oneAtATime, readCheckConfig, runCommand, runLocalChecks, saveFailedLog } from "../src/local-checks.js";
 
 test("backcode.toml: [check.<nombre>] con run, dir, install, timeout y description", () => {
   const { checks, errors } = readCheckConfig(`
@@ -220,4 +221,138 @@ test("runLocalChecks: un check que falla no entra en la caché", async () => {
     run: async () => ({ ok: false, out: "boom" }),
   });
   assert.equal(cache.keys.has("k-fail"), false);
+});
+
+test("oneAtATime: el mismo check no corre dos veces a la vez; otro distinto sí; un fallo no bloquea la cola", async () => {
+  let live = 0;
+  let max = 0;
+  const waited: string[] = [];
+  const job = (ms: number, fail = false) => async () => {
+    max = Math.max(max, ++live);
+    await new Promise((r) => setTimeout(r, ms));
+    live--;
+    if (fail) throw new Error("x");
+    return "ok";
+  };
+  const a = oneAtATime("/r#tests", job(40, true), () => waited.push("a"));
+  const b = oneAtATime("/r#tests", job(10), () => waited.push("b"));
+  const c = oneAtATime("/r#tests", job(10), () => waited.push("c"));
+  await assert.rejects(a);
+  assert.deepEqual(await Promise.all([b, c]), ["ok", "ok"]);
+  assert.equal(max, 1);
+  assert.deepEqual(waited, ["b", "c"]);
+  max = 0;
+  await Promise.all([oneAtATime("/r#app", job(20)), oneAtATime("/r#runner", job(20))]);
+  assert.equal(max, 2);
+});
+
+test("runLocalChecks: dos commits con el mismo check lo ejecutan por turnos", async () => {
+  let live = 0;
+  let max = 0;
+  const deps = (sha: string) => ({
+    repoPath: "/repo-turns",
+    worktreesDir: "/wts",
+    host: undefined,
+    sha,
+    checks: [check("tests")],
+    worktree: async () => tmpdir(),
+    cleanup: async () => undefined,
+    cache: memCache(),
+    key: async () => null,
+    run: async () => {
+      max = Math.max(max, ++live);
+      await new Promise((r) => setTimeout(r, 30));
+      live--;
+      return { ok: true, out: "" };
+    },
+  });
+  const [x, y] = await Promise.all([runLocalChecks(deps("aaa")), runLocalChecks(deps("bbb"))]);
+  assert.equal(x.checks.state, "green");
+  assert.equal(y.checks.state, "green");
+  assert.equal(max, 1);
+});
+
+test("runLocalChecks: con signal abortado, el check en marcha se cancela; quien comparte la ejecución sin signal la mantiene", async () => {
+  const seen: (AbortSignal | undefined)[] = [];
+  const base = {
+    repoPath: "/repo-abort",
+    worktreesDir: "/wts",
+    host: undefined,
+    checks: [check("tests")],
+    worktree: async () => tmpdir(),
+    cleanup: async () => undefined,
+    cache: memCache(),
+    key: async () => null,
+    run: (_cmd: string[], _cwd: string, _env: Record<string, string>, _ms: number, abort?: AbortSignal) =>
+      new Promise<{ ok: boolean; out: string }>((resolve) => {
+        seen.push(abort);
+        const t = setTimeout(() => resolve({ ok: true, out: "" }), 60);
+        abort?.addEventListener("abort", () => (clearTimeout(t), resolve({ ok: false, out: "cancelado" })));
+      }),
+  };
+  const solo = new AbortController();
+  const p = runLocalChecks({ ...base, sha: "s1", signal: solo.signal });
+  setTimeout(() => solo.abort(), 10);
+  assert.equal((await p).checks.state, "failing");
+
+  const shared = new AbortController();
+  const q1 = runLocalChecks({ ...base, sha: "s2", signal: shared.signal });
+  const q2 = runLocalChecks({ ...base, sha: "s2" });
+  setTimeout(() => shared.abort(), 10);
+  const [r1, r2] = await Promise.all([q1, q2]);
+  assert.equal(r1.checks.state, "green");
+  assert.equal(r2.checks.state, "green");
+});
+
+// killTree lee los descendientes con `ps`: en un sandbox que lo bloquea (p. ej. el de Claude Code) no se puede probar.
+const psWorks = (() => {
+  try {
+    execFileSync("ps", ["-A", "-o", "pid="], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test("runCommand: al cortar por tiempo mata también los procesos que el check sacó a otro grupo (p. ej. emuladores)", { skip: process.platform === "win32" || !psWorks }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lc-kill-"));
+  const pidFile = join(dir, "pid");
+  // Un hijo `detached` (su propio grupo, como los emuladores de Firebase) que ignora SIGTERM: solo cae con SIGKILL.
+  const script = `const { spawn } = require("node:child_process"); const fs = require("node:fs");
+const c = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); setInterval(() => {}, 1000);`;
+  const started = Date.now();
+  const res = await runCommand([process.execPath, "-e", script], dir, { ...process.env } as Record<string, string>, 1500, undefined, 500);
+  assert.equal(res.ok, false);
+  assert.match(res.out, /min/);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  assert.ok(pid > 0);
+  const alive = (() => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  assert.equal(alive, false, "el proceso detached sigue vivo");
+  assert.ok(Date.now() - started < 10_000);
+});
+
+test("runCommand: con signal abortado mata el comando y avisa", { skip: process.platform === "win32" }, async () => {
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 200);
+  const res = await runCommand(["sleep", "30"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, ctrl.signal, 500);
+  assert.equal(res.ok, false);
+  assert.ok(res.out.length > 0);
+  assert.equal((await runCommand(["true"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, ctrl.signal)).ok, false);
+});
+
+test("saveFailedLog: guarda la salida limpia y deja solo las últimas", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lc-logs-"));
+  const file = saveFailedLog("tests", "abcdef123456", "\x1b[31mboom\x1b[0m\n\nAssertionError", dir);
+  assert.ok(file.startsWith(dir) && file.endsWith("-abcdef1-tests.log"));
+  assert.equal(readFileSync(file, "utf8"), "boom\nAssertionError\n");
+  for (let i = 0; i < 35; i++) saveFailedLog(`c${i}`, "abcdef123456", "x", dir);
+  assert.equal(readdirSync(dir).length, 30);
 });

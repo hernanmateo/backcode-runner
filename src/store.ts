@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import type { LiveUsageSnapshot } from "./live-usage.js";
+import type { FollowUp } from "./follow-ups.js";
 import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
@@ -253,6 +254,9 @@ export interface FeatureResult {
   /** Pasos a mano tras mergear (desplegar reglas, migraciones…): la app los muestra con botón de copiar y, si el repo
    * declara un destino backcode:deploy:<deployTarget>, con botón para ejecutarlo con el runner de un admin. */
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];
+  /** Siguientes tareas que propuso Claude al abrir el PR (follow-ups.ts): la app ofrece crearlas en el backlog o, si
+   * están bloqueadas por un permiso, una key o algo externo, seguir en el Claude Code de la persona. */
+  followUps?: FollowUp[];
   /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
   planReady?: boolean;
   /** Tarea de CI: ficheros que cambia su PR respecto a la base (la app los enseña al confirmar el merge). */
@@ -876,6 +880,18 @@ export class Store {
 
   async prUrlOf(featureId: string): Promise<string | undefined> {
     return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
+  }
+
+  /**
+   * Lo que necesita la limpieza de copias de trabajo (worktree-cleanup.ts) de una tarea: si existe, su estado, si está
+   * mergeada y su PR. Un error (red, permisos) se propaga: quien llama lo trata como «no se sabe» y la conserva.
+   */
+  async worktreeFeature(featureId: string): Promise<{ exists: boolean; status?: string; merged?: boolean; prUrl?: string }> {
+    const d = await getDoc(this.feature(featureId));
+    // Sin conexión, getDoc puede responder de la caché local: no basta para decidir borrar nada.
+    if (d.metadata.fromCache) throw new Error("offline");
+    if (!d.exists()) return { exists: false };
+    return { exists: true, status: d.get("status") as string | undefined, merged: !!d.get("merged"), prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl };
   }
 
   /** PR y rama de una tarea (para «Arreglar con Claude» los conflictos, aunque no sea mía). */

@@ -7,7 +7,7 @@ import { failingLog } from "./check-logs.js";
 import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, holdWorktree, isAncestor, releaseWorktree, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
 import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
 import { remoteTexts, t } from "./i18n.js";
@@ -140,6 +140,8 @@ export interface ActionResult {
    * app o sus tests (la app ofrece entonces una tarea normal para arreglarlo; `log` lleva su explicación).
    */
   blocked?: "ciAppCode" | "ciNotStarted";
+  /** Merge bloqueado por checks: dónde se pasaron (local: con el runner, «Backcode · …»; host: GitHub/Bitbucket). */
+  checksWhere?: "local" | "host";
   /** OTA: archivos sin commitear que impidieron publicar (la app ofrece «Commit y publicar»). */
   dirty?: string[];
   /** OTA de un PR (prOta): su canal de EAS Update y los enlaces que abren la app en él o la devuelven a su canal. */
@@ -221,9 +223,11 @@ export async function verifyTaskChecks(cfg: RunnerConfig, store: Store, host: Pr
     const names = checks.map((c) => c.name);
     console.log(`[checks] ${t("lc.verifyStart", { sha: headSha.slice(0, 7) })}`);
     await store.setChecksVerify(featureId, { state: "verifying", headSha, baseSha, checks: names });
+    // Si se cansa de esperar, aborta: los checks que deja no siguen vivos (ni sus emuladores ocupando puertos).
+    const abort = new AbortController();
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<null>((r) => (timer = setTimeout(() => r(null), VERIFY_TIMEOUT_MS)));
-    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
+    const timeout = new Promise<null>((r) => (timer = setTimeout(() => (abort.abort(), r(null)), VERIFY_TIMEOUT_MS)));
+    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks, signal: abort.signal }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
     const passed = run?.checks.state === "green";
     const failing = run ? run.checks.pending.filter((p) => p.endsWith(": fail")).map((p) => p.slice(0, -": fail".length).replace(LOCAL_CHECK_PREFIX, "")) : [];
     const summary = passed ? "" : run ? t("lc.verifyFail", { checks: failing.join(", ") || run.checks.state }) : t("lc.verifyTimeout");
@@ -719,7 +723,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const run = await runLocal();
       if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "noChecks" };
       const blocked = requireLocalGreen(run, "PR");
-      if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+      if (blocked) return { ok: false, result: { ...blocked, url: prUrl, checksWhere: "local" }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
     }
     greenWhere = "local";
   } else {
@@ -751,16 +755,16 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const run = await runLocal();
       if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "checks" };
       const blocked = requireLocalGreen(run, "PR");
-      if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+      if (blocked) return { ok: false, result: { ...blocked, url: prUrl, checksWhere: "local" }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
       await store.event(featureId, "merge", t(notStarted ? "act.localReplacedNotStarted" : "act.localReplacedFailing", { checks: checks.pending.join(", ") }));
       greenWhere = "local";
     } else {
       if (gate.ciNoChecks && strict) return { ok: false, result: { error: t("act.ciNoChecks", { what: "PR" }), url: prUrl }, blocked: "ciNoChecks" };
       const blocked = requireGreen(checks, "PR", strict);
-      if (notStarted && blocked) return { ok: false, result: { error: t("act.ciNotStarted"), url: prUrl, checks: checks.pending, blocked: "ciNotStarted" }, blocked: "ciNotStarted" };
+      if (notStarted && blocked) return { ok: false, result: { error: t("act.ciNotStarted"), url: prUrl, checks: checks.pending, blocked: "ciNotStarted", checksWhere: "host" }, blocked: "ciNotStarted" };
       const why: MergeBlock = checks.state === "failing" ? "checks" : checks.state === "pending" ? "pending" : "noChecks";
       // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
-      if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked, blocked: why };
+      if (blocked) return { ok: false, result: { ...blocked, checksWhere: "host", ...(checks.state === "failing" ? await failingLog(host, prUrl).then((log) => (log ? { log } : {})) : {}) }, blocked: why };
       if (checks.state === "green") greenWhere = "host";
     }
   }
@@ -1284,6 +1288,9 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
     return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev, device.id)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    // Se conserva para la próxima instalación, pero ya no está en uso (la limpieza periódica la borra tras días sin usar).
+    releaseWorktree(wt);
   }
 }
 
@@ -1291,12 +1298,14 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
 async function installWorktree(cfg: RunnerConfig, commit: string): Promise<string> {
   const path = join(cfg.worktreesDir, "_install");
   if (!existsSync(join(path, ".git"))) return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  holdWorktree(path);
   try {
     await gitIn(path, ["checkout", "--detach", "--force", "--quiet", commit]);
     // Fuera lo que no es del repo, salvo lo que se quiere conservar (las carpetas ignoradas, como node_modules, ya se quedan).
     await gitIn(path, ["clean", "-fdq", "-e", "ios", "-e", "android", "-e", ".expo"]);
     return path;
   } catch {
+    releaseWorktree(path);
     return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
   }
 }

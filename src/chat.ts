@@ -5,7 +5,7 @@ import { z } from "zod";
 import { materializeAttachments, type LocalAttachment } from "./attachments.js";
 import type { RunnerConfig } from "./config.js";
 import { hasMarkers } from "./conflicts.js";
-import { createDetachedWorktree, git, gitPush, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { createDetachedWorktree, git, gitPush, holdWorktree, mergeBaseIntoBranch, releaseWorktree, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
@@ -261,7 +261,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
     if (branch) await git(cfg.repoPath, ["fetch", "--quiet", remote, `+${branch}:refs/remotes/${remote}/${branch}`]).catch(() => (branch = undefined));
     else await git(cfg.repoPath, ["fetch", "--quiet", remote, baseBranch]).catch(() => undefined);
     await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, name, `${remote}/${branch ?? baseBranch}`);
-  }
+  } else holdWorktree(path); // en uso mientras dura la vuelta (la limpieza periódica no la toca)
 
   // Permisos: se recalculan en cada vuelta (lo concedido en la tarjeta entra en la siguiente).
   const applies = chatAppliesTo(chat, store.uid);
@@ -523,6 +523,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
     signal.removeEventListener("abort", onAbort);
     // Sin cambios sin subir, la copia sobra (se rehace en la misma ruta y rama la próxima vez).
     if (!(await git(path, ["status", "--porcelain"]).catch(() => ""))) await removeWorktree(cfg.repoPath, path);
+    else releaseWorktree(path);
   }
   await store.updateChat(id, { status: error ? "failed" : "idle", activity: "", ...(sessionId ? { sessionId } : {}), ...(branch ? { branch } : {}), costUsd, ...(error ? { error } : {}) }).catch((err: Error) => console.warn(`[chat] ${err.message}`));
   // Lo que escribió mientras terminaba: se vuelve a encolar.

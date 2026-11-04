@@ -16,8 +16,8 @@
 // Los comandos se leen del backcode.toml de la rama base (no del PR): un PR no puede rebajar lo que se comprueba.
 // Se usan en dos casos: el proyecto tiene «Checks en local» (checksMode = "local") o, con la CI del host, alguien pide
 // «Pasar los checks en local» porque los checks de GitHub no llegaron a ejecutarse (Actions sin minutos o pago fallido).
-import { spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./diagnostics.js";
 import { parseToml } from "./deploy-config.js";
@@ -25,6 +25,7 @@ import { checkKey, type ChecksCache, fileChecksCache } from "./checks-cache.js";
 import { createDetachedWorktree, git, removeWorktree } from "./git.js";
 import { type Checks, type CheckItem, type PrHost, summarize } from "./hosts.js";
 import { t } from "./i18n.js";
+import { LOGS_DIR } from "./paths.js";
 
 /** Prefijo de los estados que publica el runner: así se distinguen de los de la CI del host. */
 export const LOCAL_CHECK_PREFIX = "Backcode · ";
@@ -149,32 +150,146 @@ export function checkEnv(wt: string, cwd: string, base: NodeJS.ProcessEnv = proc
   return env;
 }
 
-/** Ejecuta un comando y devuelve si salió bien y su salida (las últimas 200 000 letras). Nunca lanza. */
-function runCommand([cmd, ...args]: string[], cwd: string, env: Record<string, string>, timeoutMs: number): Promise<{ ok: boolean; out: string }> {
+/** Lo que se espera tras SIGTERM a que el árbol de procesos de un check termine antes de mandarle SIGKILL. */
+const KILL_GRACE_MS = 10_000;
+
+/** Los descendientes de `root` (hijos, nietos…), aunque estén en otro grupo de procesos. Vacío si no se puede leer. */
+function descendants(root: number): Promise<number[]> {
+  return new Promise((resolve) => {
+    // Sin poder lanzar `ps` (EPERM en un sandbox…), solo se para el grupo del check: mejor eso que lanzar.
+    try {
+      execFile("ps", ["-A", "-o", "pid=,ppid="], { timeout: 5000 }, (err, out) => {
+      if (err) return resolve([]);
+      const kids = new Map<number, number[]>();
+      for (const line of String(out).split("\n")) {
+        const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+        if (pid && ppid) kids.set(ppid, [...(kids.get(ppid) ?? []), pid]);
+      }
+      const found: number[] = [];
+      const stack = [...(kids.get(root) ?? [])];
+      while (stack.length) {
+        const pid = stack.pop()!;
+        found.push(pid);
+        stack.push(...(kids.get(pid) ?? []));
+      }
+      resolve(found);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const signal = (pid: number, sig: NodeJS.Signals) => {
+  try {
+    process.kill(pid, sig);
+  } catch {
+    /* ya no existe */
+  }
+};
+
+/**
+ * Para un check y todo lo que lanzó: su grupo de procesos y además cada descendiente, porque algunas herramientas sacan
+ * procesos a un grupo propio (los emuladores de Firebase se lanzan con `detached`) y sobrevivirían ocupando sus puertos.
+ * SIGTERM primero (para que cierren limpio) y, si a los `graceMs` sigue alguno, SIGKILL. Vuelve cuando no queda ninguno.
+ */
+export async function killTree(pid: number, graceMs = KILL_GRACE_MS): Promise<void> {
+  const pids = [pid, ...(await descendants(pid))];
+  signal(-pid, "SIGTERM");
+  for (const p of pids) signal(p, "SIGTERM");
+  const until = Date.now() + graceMs;
+  while (pids.some(alive) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+  // Lo que lanzaron mientras tanto también cuenta (otra pasada de descendientes de los que siguen vivos).
+  for (const p of pids.filter(alive)) pids.push(...(await descendants(p)));
+  signal(-pid, "SIGKILL");
+  for (const p of pids) if (alive(p)) signal(p, "SIGKILL");
+  // SIGKILL no se puede ignorar, pero el sistema tarda un instante en retirarlos: se espera un poco (puertos libres).
+  const reaped = Date.now() + 2000;
+  while (pids.some(alive) && Date.now() < reaped) await new Promise((r) => setTimeout(r, 50));
+}
+
+/**
+ * Ejecuta un comando y devuelve si salió bien y su salida (las últimas 200 000 letras). Si tarda más de `timeoutMs` o se
+ * aborta `abort`, mata su árbol de procesos entero (killTree) antes de volver. Nunca lanza.
+ */
+export function runCommand([cmd, ...args]: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal, graceMs?: number): Promise<{ ok: boolean; out: string }> {
+  if (abort?.aborted) return Promise.resolve({ ok: false, out: t("lc.aborted") });
   return new Promise((resolve) => {
     let out = "";
     let done = false;
+    let stopping = false;
     const child = spawn(cmd, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     const finish = (ok: boolean, extra = "") => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      abort?.removeEventListener("abort", onAbort);
       resolve({ ok, out: out + extra });
     };
+    const stop = (why: string) => {
+      if (stopping || done) return;
+      stopping = true;
+      void (child.pid ? killTree(child.pid, graceMs) : Promise.resolve(child.kill("SIGTERM"))).catch(() => undefined).finally(() => finish(false, `\n${why}`));
+    };
+    const onAbort = () => stop(t("lc.aborted"));
     const add = (d: Buffer) => (out = (out + d.toString()).slice(-200_000));
     child.stdout?.on("data", add);
     child.stderr?.on("data", add);
-    const timer = setTimeout(() => {
-      try {
-        if (child.pid) process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-      finish(false, `\n${t("lc.timeout", { min: Math.round(timeoutMs / 60_000) })}`);
-    }, timeoutMs);
+    const timer = setTimeout(() => stop(t("lc.timeout", { min: Math.round(timeoutMs / 60_000) })), timeoutMs);
+    abort?.addEventListener("abort", onAbort);
     child.on("error", (e) => finish(false, `\n${e.message}`));
-    child.on("close", (code) => finish(code === 0));
+    // Si se está parando, se espera a que killTree acabe (que los puertos queden libres para el siguiente).
+    child.on("close", (code) => !stopping && finish(code === 0));
   });
+}
+
+/** Dónde quedan las salidas completas de los checks que fallaron (las últimas FAILED_LOGS_KEEP). */
+export const FAILED_LOGS_DIR = join(LOGS_DIR, "checks");
+const FAILED_LOGS_KEEP = 30;
+
+/**
+ * Guarda la salida entera (sin colores ni líneas que parezcan secretos) de un check que falló, para poder ver después qué
+ * pasó aunque el runner se reinicie: ~/.backcode/logs/checks/<fecha>-<sha>-<nombre>.log. Devuelve la ruta o "" si no pudo.
+ */
+export function saveFailedLog(name: string, sha: string, out: string, dir = FAILED_LOGS_DIR): string {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${sha.slice(0, 7)}-${name}.log`);
+    writeFileSync(file, cleanOutput(out, 200_000) + "\n");
+    const old = readdirSync(dir)
+      .filter((f) => f.endsWith(".log"))
+      .map((f) => ({ f, at: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+      .slice(FAILED_LOGS_KEEP);
+    for (const o of old) rmSync(join(dir, o.f), { force: true });
+    return file;
+  } catch {
+    return "";
+  }
+}
+
+// El mismo check de un repo no se ejecuta dos veces a la vez en este ordenador (dos PR, un merge y una verificación…):
+// suelen usar recursos fijos, como los puertos de los emuladores de Firebase, y se pisarían. El siguiente espera su turno.
+const checkQueues = new Map<string, Promise<unknown>>();
+
+/** Ejecuta `fn` cuando no haya en marcha otro `key`; `onWait` avisa si le toca esperar. */
+export function oneAtATime<T>(key: string, fn: () => Promise<T>, onWait?: () => void): Promise<T> {
+  const prev = checkQueues.get(key);
+  if (prev) onWait?.();
+  const p = (prev ?? Promise.resolve()).catch(() => undefined).then(fn);
+  const tail = p.catch(() => undefined);
+  checkQueues.set(key, tail);
+  void tail.then(() => checkQueues.get(key) === tail && checkQueues.delete(key));
+  return p;
 }
 
 // eslint-disable-next-line no-control-regex
@@ -208,17 +323,23 @@ export interface LocalRunDeps {
   /** Los checks a ejecutar (leídos de la rama base: localChecksAt). */
   checks: LocalCheck[];
   /** Inyectable para los tests. */
-  run?: (cmd: string[], cwd: string, env: Record<string, string>, timeoutMs: number) => Promise<{ ok: boolean; out: string }>;
+  run?: (cmd: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal) => Promise<{ ok: boolean; out: string }>;
   worktree?: (sha: string) => Promise<string>;
   cleanup?: (wt: string) => Promise<void>;
   /** Lo ya comprobado en este ordenador (por defecto, ~/.backcode/checks-cache.json). */
   cache?: ChecksCache;
   /** Clave de contenido de un check en `sha` (por defecto, checkKey con git). */
   key?: (check: LocalCheck) => Promise<string | null>;
+  /**
+   * Para dejarlo a medias (la verificación al acabar una tarea que se cansa de esperar): los checks en marcha se matan y
+   * los que esperaban turno no arrancan. Si otra acción comparte la misma ejecución sin poder abortarla, sigue.
+   */
+  signal?: AbortSignal;
 }
 
 // Dos acciones a la vez sobre el mismo commit (un merge y un despliegue, dos merges seguidos) comparten la ejecución.
-const running = new Map<string, Promise<LocalRun>>();
+// Solo se aborta cuando todas las que la comparten lo han pedido (una sin `signal` no lo pide nunca).
+const running = new Map<string, { p: Promise<LocalRun>; ctrl: AbortController; live: number }>();
 // El log de lo último que falló en local en cada PR: «Devolver a Claude Code» se lo pasa a Claude (check-logs.ts › failingLog).
 const prLogs = new Map<string, string>();
 
@@ -240,14 +361,25 @@ export function prLocalLog(prUrl: string): string {
 export function runLocalChecks(d: LocalRunDeps): Promise<LocalRun> {
   if (!d.checks.length) return Promise.resolve({ checks: { state: "none", pending: [] }, log: "" });
   const key = `${d.repoPath}@${d.sha}`;
-  const current = running.get(key);
-  if (current) return current;
-  const p = doRun(d).finally(() => running.delete(key));
-  running.set(key, p);
-  return p;
+  let entry = running.get(key);
+  if (!entry) {
+    const ctrl = new AbortController();
+    const fresh: { p: Promise<LocalRun>; ctrl: AbortController; live: number } = { p: Promise.resolve(null as unknown as LocalRun), ctrl, live: 0 };
+    fresh.p = doRun(d, ctrl.signal).finally(() => running.get(key) === fresh && running.delete(key));
+    running.set(key, fresh);
+    entry = fresh;
+  }
+  const joined = entry;
+  joined.live++;
+  if (d.signal) {
+    const leave = () => --joined.live === 0 && joined.ctrl.abort();
+    if (d.signal.aborted) leave();
+    else d.signal.addEventListener("abort", leave, { once: true });
+  }
+  return joined.p;
 }
 
-async function doRun(d: LocalRunDeps): Promise<LocalRun> {
+async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
   const publish = async (check: LocalCheck, state: CheckItem["state"], description: string) => {
     await d.host?.setStatus?.(d.sha, { name: statusName(check), state, description }).catch((e: Error) => console.warn(`\x1b[33m⚠ ${t("lc.publishFail", { name: check.name, error: e.message.split("\n")[0] })}\x1b[0m`));
   };
@@ -291,10 +423,12 @@ async function doRun(d: LocalRunDeps): Promise<LocalRun> {
           const inst = c.install ? installFor(wt, c.dir) : null;
           let installRes: { ok: boolean; out: string } = { ok: true, out: "" };
           if (inst) {
-            if (!installs.has(inst.dir)) installs.set(inst.dir, run(inst.cmd, join(wt, inst.dir), checkEnv(wt, join(wt, inst.dir)), c.timeoutMs));
+            if (!installs.has(inst.dir)) installs.set(inst.dir, run(inst.cmd, join(wt, inst.dir), checkEnv(wt, join(wt, inst.dir)), c.timeoutMs, abort));
             installRes = await installs.get(inst.dir)!;
           }
-          res = installRes.ok ? await run(c.cmd, cwd, checkEnv(wt, cwd), c.timeoutMs) : { ok: false, out: `${t("lc.installFail", { dir: inst?.dir || "." })}\n${installRes.out}` };
+          res = installRes.ok
+            ? await oneAtATime(`${d.repoPath}#${c.name}`, () => run(c.cmd, cwd, checkEnv(wt, cwd), c.timeoutMs, abort), () => console.log(`[checks] ${statusName(c)}: ${t("lc.waitTurn")}`))
+            : { ok: false, out: `${t("lc.installFail", { dir: inst?.dir || "." })}\n${installRes.out}` };
         }
         return { c, res, took: duration(Date.now() - started) };
       }),
@@ -308,6 +442,8 @@ async function doRun(d: LocalRunDeps): Promise<LocalRun> {
         await publish(c, "ok", t("lc.ok", { took }));
       } else {
         await publish(c, "fail", `${t("lc.fail", { took })} ${lastLine(res.out)}`.trim());
+        const saved = d.run ? "" : saveFailedLog(c.name, d.sha, res.out);
+        if (saved) console.log(`[checks] ${statusName(c)}: ${t("lc.savedLog", { file: saved })}`);
         logs.push(`## ${statusName(c)}\n${cleanOutput(res.out, LOG_MAX)}`);
       }
     }

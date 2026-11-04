@@ -1,11 +1,13 @@
 import { explainRemoteError } from "./remote-retry.js";
 import { remoteTexts } from "./i18n.js";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { collection, doc, getDoc } from "firebase/firestore";
+import { collection, doc, getDoc, serverTimestamp, setDoc, type Firestore } from "firebase/firestore";
+import type { Functions } from "firebase/functions";
 import { httpsCallable } from "firebase/functions";
 import { copyLocalFiles } from "./actions.js";
-import { loadConfig } from "./config.js";
+import { followUpPrompt, parseFollowUp } from "./follow-ups.js";
+import { loadConfig, type RunnerConfig } from "./config.js";
 import { checkRepo, commitsAhead, createWorktree, git, gitPush, SECRET_PATTERNS } from "./git.js";
 import { bitbucketHost, githubHost } from "./hosts.js";
 import { lang, t } from "./i18n.js";
@@ -20,6 +22,11 @@ import { guardFor } from "./workflow-guard.js";
 //                                                   desde ese worktree: comprueba que no hay cambios sin commit ni
 //                                                   secretos, sube la rama, abre (o actualiza) el PR y la registra en
 //                                                   Backcode como tarea en «PR listo», a tu nombre
+//   backcode task follow-up <proyecto> <tarea> <n> [--desktop] [--json]
+//                                                   una siguiente tarea que propuso Claude al abrir el PR de <tarea>
+//                                                   (result.followUps[n]) y que necesita algo que el runner no tiene
+//                                                   (una key, un login…): como start, y la abre en tu Claude Code
+//                                                   (terminal o app de escritorio) con su encargo. Desde cualquier carpeta
 //   backcode task import <url del PR> [--deployed production|preview]…
 //                                                   historial: un PR ya mergeado (GitHub), como tarea ya Mergeada (y
 //                                                   Desplegada en esos canales). Solo admins
@@ -49,11 +56,8 @@ function claudeSession(): { sessionId?: string } {
   return id && /^[A-Za-z0-9-]{1,100}$/.test(id) ? { sessionId: id } : {};
 }
 
-async function start(args: string[], json: boolean): Promise<void> {
-  const title = args.filter((a) => !a.startsWith("--")).join(" ").trim();
-  if (!title) fail(t("task.noStartTitle"));
-  const { cfg } = configFor(process.cwd());
-  const { db, uid, fns } = await connect(cfg);
+/** Worktree y rama de una tarea nueva y, ya «En curso» en el tablero, la tarea (hecha en Claude Code). */
+async function begin(cfg: RunnerConfig, db: Firestore, uid: string, fns: Functions, title: string) {
   const profile = await getDoc(doc(db, "users", uid));
   const handle = ((profile.get("handle") as string | undefined) ?? uid.slice(0, 8).toLowerCase()).replaceAll(/[^a-z0-9-]/g, "-");
   // Un id como los de Firestore: el de la tarea que se registrará al abrir el PR.
@@ -63,9 +67,64 @@ async function start(args: string[], json: boolean): Promise<void> {
   // Los .env locales (no van en git): que el worktree arranque igual que el repo.
   await copyLocalFiles(cfg.repoPath, wt.path, [".env", ".env.local"]).catch(() => undefined);
   // Ya en el tablero, «En curso»: así se ve desde que empieza (y avisa). Con un servidor antiguo, se registra al abrir el PR.
-  await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, branch, stage: "start", ...claudeSession(), lang: lang() }).catch((err: Error) => console.warn(`  · ${t("task.notRegistered", { error: err.message })}`));
-  if (json) console.log(JSON.stringify({ featureId, branch, path: wt.path, base: `${cfg.remote}/${cfg.baseBranch}`, title }));
-  else console.log(t("task.started", { path: wt.path, branch, base: `${cfg.remote}/${cfg.baseBranch}` }));
+  const registered = await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, branch, stage: "start", ...claudeSession(), lang: lang() })
+    .then(() => true)
+    .catch((err: Error) => {
+      console.warn(`  · ${t("task.notRegistered", { error: err.message })}`);
+      return false;
+    });
+  return { featureId, branch, path: wt.path, base: `${cfg.remote}/${cfg.baseBranch}`, registered };
+}
+
+async function start(args: string[], json: boolean): Promise<void> {
+  const title = args.filter((a) => !a.startsWith("--")).join(" ").trim();
+  if (!title) fail(t("task.noStartTitle"));
+  const { cfg } = configFor(process.cwd());
+  const { db, uid, fns } = await connect(cfg);
+  const { featureId, branch, path, base } = await begin(cfg, db, uid, fns, title);
+  if (json) console.log(JSON.stringify({ featureId, branch, path, base, title }));
+  else console.log(t("task.started", { path, branch, base }));
+}
+
+const ID_RE = /^[A-Za-z0-9]{1,64}$/;
+
+/**
+ * Una siguiente tarea bloqueada (le falta una key, un login o algo externo), en el Claude Code de la persona: tarea y
+ * worktree como `start`, la siguiente tarea marcada como creada (features/{fid}/followUps/{n}) y Claude Code abierto en
+ * el worktree con el encargo. La key la pone la persona en su ordenador: no pasa por la app ni por Firestore.
+ */
+async function followUp(args: string[], json: boolean): Promise<void> {
+  const [pid, fid, n] = args.filter((a) => !a.startsWith("--"));
+  const index = Number(n);
+  if (!pid || !fid || !ID_RE.test(pid) || !ID_RE.test(fid) || !/^[0-4]$/.test(n ?? "")) fail(t("task.followUpUsage"));
+  process.argv.push("--project", pid);
+  const cfg = loadConfig();
+  const { db, uid, fns } = await connect(cfg);
+  const parent = await getDoc(doc(db, "projects", pid, "features", fid));
+  const proposed = parseFollowUp((parent.get("result") as { followUps?: unknown[] } | undefined)?.followUps?.[index]);
+  if (!proposed) fail(t("task.noFollowUp", { n: String(index) }));
+  const state = doc(db, "projects", pid, "features", fid, "followUps", String(index));
+  const taken = await getDoc(state).catch(() => null);
+  if (taken?.get("state") === "created") fail(t("task.followUpTaken", { id: String(taken.get("taskId")) }));
+
+  const task = await begin(cfg, db, uid, fns, proposed.title);
+  // Que la tarjeta de la tarea de origen la enlace (y no la ofrezca otra vez). Sin la tarea en el tablero, no se puede.
+  if (task.registered) {
+    await setDoc(state, { state: "created", taskId: task.featureId, by: uid, at: serverTimestamp() }).catch((err: Error) => console.warn(`  · ${t("task.followUpNotLinked", { error: err.message })}`));
+  }
+  const prompt = followUpPrompt(proposed, { title: String(parent.get("title") ?? ""), prUrl: (parent.get("result") as { prUrl?: string } | undefined)?.prUrl, branch: task.branch, base: task.base });
+  if (json) {
+    console.log(JSON.stringify({ featureId: task.featureId, branch: task.branch, path: task.path, base: task.base, title: proposed.title, prompt }));
+    return;
+  }
+  console.log(t("task.followUpStarted", { path: task.path, branch: task.branch }));
+  const desktop = args.includes("--desktop");
+  const code = await new Promise<number>((resolve) => {
+    const child = spawn("claude", [...(desktop ? ["--desktop"] : []), prompt], { cwd: task.path, stdio: "inherit" });
+    child.on("error", () => resolve(127));
+    child.on("exit", (c) => resolve(c ?? 0));
+  });
+  if (code === 127) fail(t("task.noClaude", { path: task.path }));
 }
 
 /** Secretos en lo que añade la rama respecto a la base (lo mismo que mira el runner antes de subir una tarea). */
@@ -130,7 +189,7 @@ async function importPr(args: string[], json: boolean): Promise<void> {
   else console.log(t("task.imported", { url, title: pr.title }));
 }
 
-/** `backcode task <start|pr|import> …` */
+/** `backcode task <start|pr|follow-up|import> …` */
 export async function taskMain(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const json = rest.includes("--json");
@@ -138,6 +197,7 @@ export async function taskMain(args: string[]): Promise<void> {
     if (sub === "start") await start(rest, json);
     else if (sub === "pr") await pr(rest, json);
     else if (sub === "import") await importPr(rest, json);
+    else if (sub === "follow-up") await followUp(rest, json);
     else fail(t("task.usage"));
   } catch (err) {
     fail((err as Error).message.split("\n").slice(0, 6).join("\n"));
