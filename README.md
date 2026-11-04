@@ -402,7 +402,7 @@ Task briefs are written by other members of your group, so the runner treats the
 | **Publishing** | The runner, not Claude, pushes (without git hooks) and the PR is always a **draft**. Merges and OTAs only happen when an admin asks and checks are green (or, for merges only, when an admin turned on the project's **Auto mode**: the runner then merges each finished task's PR on its own once CI is green, has Claude fix failing checks or conflicts and retries up to the configured limit, never merges without CI, takes one project-wide merge turn at a time and never deploys or publishes); if they're still running, the runner checks again every 15 s for up to 15 minutes before giving up. In a repo with CI, a PR (or a fresh push to the base branch) with no checks yet isn't taken as "no CI": the runner first checks whether the PR conflicts with the base (GitHub doesn't start `pull_request` workflows then) and treats it as conflicts, and otherwise waits up to 4 minutes (90 s on the base branch) for checks to show up; if none do, Auto mode stops with a specific reason ("CI hasn't started any check on this PR"). If the repo has no CI (no CI file and no checks on the base branch), there are no checks: the runner reports it and the app warns that it merges and deploys without checking anything. With **Require checks** (Edit project, Team plan), no checks (or no GitHub/Bitbucket to read them from) means the runner won't merge or deploy. |
 | **Automatic code review** | Optional per project (Edit project, admins; off by default, level low/medium/high = `/code-review low\|medium\|high`). When a task opens or updates its PR, before it moves to «To review», the runner reviews the branch's diff against the base in a **new** Claude Code session (without the task's context, read-only). Major findings go back to the task's session to be fixed; the runner commits and pushes the fix (same protected-path and secret checks) and reviews once more: at most one pass plus one retry. What's left is shown on the task and left as a PR comment (GitHub); with major findings remaining the task is marked as not approved, so auto-merge skips it. Its cost is added to the task's. |
 | **Remote Control** | Only when you ask for it from the app: the runner pauses its turn and opens the same session with `claude --resume <session> --remote-control` in the worktree. That session runs with **your normal Claude Code permissions, outside the sandbox**. When you hand it back, the runner resumes the session in the sandbox and the usual checks (protected paths, secrets) apply before anything is published. While it's open there, the task says **In the Claude app**; if you finish it there and move it to “PR ready” by hand, the runner lets it go (your Claude session stays open) and links the open PR of its branch. |
-| **Deleted sessions** | Claude Code keeps sessions on this computer for `cleanupPeriodDays` days (30 by default, in `~/.claude/settings.json`) and then deletes them. The runner checks whether each task's session is still there (on start, every 6 h, after each task and before resuming it or opening it in the Claude app) and tells the app, which then explains it and how to keep sessions longer instead of offering to open or resume it. The runner only reads that setting and never changes it. Worktrees removed after 14 days unused don't matter: they're recreated at the same path when resuming. |
+| **Deleted sessions** | Claude Code keeps sessions on this computer for `cleanupPeriodDays` days (30 by default, in `~/.claude/settings.json`) and then deletes them. The runner checks whether each task's session is still there (on start, every 6 h, after each task and before resuming it or opening it in the Claude app) and tells the app, which then explains it and how to keep sessions longer instead of offering to open or resume it. The runner only reads that setting and never changes it. Worktrees removed by the automatic cleanup don't matter: they're recreated at the same path when resuming. |
 | **Panel** | Listens on `127.0.0.1` only, requires a per-user token and rejects foreign `Host`/`Origin` headers, so other users and websites can't use it. It never returns keys or tokens. |
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.
@@ -422,12 +422,29 @@ Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md
 |---|---|
 | `~/.backcode/config/<project>.env` | Each project's configuration, including your runner key. |
 | `~/.backcode/config/credentials` | Account credentials shared by all projects (your Bitbucket API token), editable in the panel's **Accounts** section. A project's own `.env` value wins. |
-| `~/.backcode/worktrees/<project>/<task>` | Working copies for each task (cleaned up after 14 days unused). |
+| `~/.backcode/worktrees/<project>/<task>` | Working copies for each task (removed automatically once the task is finished; see below). |
 | `~/.backcode/bin/backcode` | The executable installed by `install.sh`, updated in place from GitHub Releases. |
 | `~/.backcode/app` | With npm: the runner's own install, used by the service and updated without admin rights. |
 | `~/.backcode/logs/service.log` | Service output. |
 
 Set `BACKCODE_HOME` to use another root and `BACKCODE_PANEL_PORT` to use another port.
+
+### Automatic worktree cleanup
+
+Each runner cleans up its own working copies when it starts and then every 6 hours, without restarting and no matter who
+merged the PR (another member, the app or GitHub directly), including teammates' tasks it ran as a shared runner:
+
+- **Task worktrees** (`<project>/<task>`) are removed when the PR was **merged or closed**, or the task was **discarded** or
+  **deleted**. They are kept while the task is running, queued or waiting, while its PR is open, and whenever the state
+  can't be determined (no network, API error). A task without a PR (push-only, or failed before opening one) is only
+  removed after 14 days unused **and** with no uncommitted changes or unpushed commits; work kept for that reason is logged.
+- **Temporary copies** (`_chat-*`, `_checks-*`, `_fix-*`, `_revert-*`, `_install`, `_dev`…) are never removed while in use
+  (an active chat, a running check, Metro serving one). Otherwise they go after real inactivity (last change to the
+  worktree's git `HEAD`/index, not just the folder): 14 days for chat, `_install` and `_dev`, 1 day for the rest (leftovers
+  from an interrupted run).
+- **Removal**: `git worktree remove --force` (forced twice for locked worktrees); if the folder is still there, it's deleted
+  only after checking that its real path is directly inside `~/.backcode/worktrees/<project>/` (no symlinks, never the repo),
+  then `git worktree prune`. What was removed, the space freed and any failure are logged.
 
 ## Troubleshooting: the Mac app keeps loading
 

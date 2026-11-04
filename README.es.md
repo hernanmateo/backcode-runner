@@ -414,7 +414,8 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
 - Si Claude necesita una aclaración, la tarea pasa a **Necesita respuesta** y la pregunta aparece en el hilo de la app.
 - Quien la aceptó responde (o pide más cambios cuando ya hay PR) desde la app: el runner **retoma la misma sesión** en la misma
   rama, y los commits nuevos actualizan el mismo PR.
-- Los worktrees se conservan para poder continuar y se borran tras 14 días sin uso.
+- Los worktrees se conservan para poder continuar y se borran solos cuando la tarea termina de verdad (ver
+  «Limpieza automática de worktrees»).
 - **En directo:** en la app, la pantalla «En directo» de la tarea muestra lo que hace Claude y deja escribirle mientras
   trabaja. El mensaje le llega en su siguiente paso, sin pararlo, y se marca como **leído** cuando lo incorpora. Si llega
   justo cuando termina, la tarea vuelve a la cola y la siguiente vuelta empieza por él. **Parar** termina el paso en curso y
@@ -429,7 +430,7 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   `~/.claude/settings.json`) y luego las borra. El runner comprueba si la sesión de cada tarea sigue ahí (al arrancar,
   cada 6 h, al terminar una tarea y antes de retomarla o abrirla en la app de Claude) y lo publica para la app, que en ese
   caso avisa y explica cómo guardarlas más días en vez de ofrecer abrirla o retomarla. El runner solo lee ese ajuste,
-  nunca lo cambia. El borrado de worktrees tras 14 días sin uso no afecta: se recrean en la misma ruta al retomar.
+  nunca lo cambia. El borrado automático de worktrees no afecta: se recrean en la misma ruta al retomar.
   Mientras está abierta allí, la tarjeta del tablero y la ficha dicen **En la app de Claude** (no avanza sola). Si la
   terminas allí, muévela a mano (p. ej. a «PR listo»): en unos minutos el runner la suelta (sin cerrar tu sesión de Claude) y
   enlaza el PR abierto de su rama.
@@ -649,7 +650,21 @@ de probar en tu móvil un binario real, sin TestFlight ni tiendas, y solo llega 
 - **Más rápida a partir de la segunda vez**: la instalación usa una sola copia por proyecto que se conserva
   (`~/.backcode/worktrees/<proyecto>/_install`, con sus dependencias, `ios/`/`android/`, Pods y la caché de Xcode): solo se mueve
   al commit nuevo y se compila lo que ha cambiado. No se acumulan copias: hay una por proyecto (y otra, `_dev`, para el servidor
-  de desarrollo), y el runner borra las que lleven 14 días sin usarse.
+  de desarrollo), y el runner borra las que lleven 14 días sin usarse (nunca mientras se usan).
+
+### Limpieza automática de worktrees
+Cada runner limpia sus propias copias de trabajo al arrancar y después cada 6 h, sin reiniciarse y sea quien sea quien
+mergeó el PR (otro miembro, la app o GitHub directamente), también las de tareas de compañeros que ejecutó como runner compartido:
+- **De tareas** (`<proyecto>/<tarea>`): se borran si el PR se **mergeó o cerró**, o la tarea se **descartó** o se **borró**.
+  Se conservan mientras la tarea se ejecuta, está en cola o esperando, con el PR abierto, y siempre que no se pueda saber el
+  estado (sin red, error de la API). Una tarea sin PR (solo subir la rama, o fallida sin PR) solo se borra tras 14 días sin
+  uso **y** sin cambios sin commit ni commits sin subir; lo que se conserva por eso queda en el log.
+- **Temporales** (`_chat-*`, `_checks-*`, `_fix-*`, `_revert-*`, `_install`, `_dev`…): nunca mientras están en uso (un chat
+  activo, unos checks en marcha, Metro sirviéndola). Si no, por inactividad real (último cambio del `HEAD`/index de git de la
+  copia, no solo de la carpeta): 14 días las del chat, `_install` y `_dev`; 1 día el resto (restos de un corte).
+- **Borrado**: `git worktree remove --force` (y doble `--force` si está bloqueada); si la carpeta sigue ahí, se borra solo
+  tras comprobar que su ruta real está directamente dentro de `~/.backcode/worktrees/<proyecto>/` (sin enlaces, nunca el
+  repo) y después `git worktree prune`. Se registra qué se borró, el espacio liberado y cualquier fallo.
 
 ### Builds para testers (TestFlight / Internal Testing)
 En la misma pantalla de publicar, pestaña **Build** (solo admins y owner; se ofrece si el `eas.json` tiene el perfil

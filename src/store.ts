@@ -882,6 +882,18 @@ export class Store {
     return ((await getDoc(this.feature(featureId))).get("result") as FeatureResult | undefined)?.prUrl;
   }
 
+  /**
+   * Lo que necesita la limpieza de copias de trabajo (worktree-cleanup.ts) de una tarea: si existe, su estado, si está
+   * mergeada y su PR. Un error (red, permisos) se propaga: quien llama lo trata como «no se sabe» y la conserva.
+   */
+  async worktreeFeature(featureId: string): Promise<{ exists: boolean; status?: string; merged?: boolean; prUrl?: string }> {
+    const d = await getDoc(this.feature(featureId));
+    // Sin conexión, getDoc puede responder de la caché local: no basta para decidir borrar nada.
+    if (d.metadata.fromCache) throw new Error("offline");
+    if (!d.exists()) return { exists: false };
+    return { exists: true, status: d.get("status") as string | undefined, merged: !!d.get("merged"), prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl };
+  }
+
   /** PR y rama de una tarea (para «Arreglar con Claude» los conflictos, aunque no sea mía). */
   async prOf(featureId: string): Promise<{ prUrl?: string; branch?: string; kind?: string }> {
     const d = await getDoc(this.feature(featureId));

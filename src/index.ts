@@ -22,7 +22,8 @@ import { previewBranch, setPreviewBranch, taskBase, validPreviewBranch } from ".
 import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
-import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, pruneOldWorktrees, scanStagedForSecrets, stageAll } from "./git.js";
+import { startWorktreeCleanup } from "./worktree-cleanup.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
@@ -1417,7 +1418,9 @@ async function main(): Promise<void> {
   await store.recoverOrphans();
   await store.recoverActions().catch(() => undefined);
   await store.recoverChats().catch(() => undefined);
-  await pruneOldWorktrees(cfg.repoPath, cfg.worktreesDir, 14).catch(() => undefined);
+  // Copias de trabajo que ya no sirven (PR mergeado o cerrado, tarea descartada o borrada; temporales sin usar): al
+  // arrancar y cada 6 h, aunque el merge lo hiciera otro miembro o GitHub (worktree-cleanup.ts).
+  const stopCleanup = startWorktreeCleanup({ cfg, store, prHost: () => prHost, isRunning: (id) => running.has(id), withRepoLock });
   // Al arrancar, tu copia local de la rama base se pone al día si es seguro (p. ej. tras merges hechos por otros).
   const local = await syncLocalBase(cfg.repoPath, cfg.remote, cfg.baseBranch).catch((e: Error) => ({ status: "skipped" as const, reason: e.message, changed: [] as string[] }));
   logLocalSync(cfg, local);
@@ -1979,6 +1982,7 @@ async function main(): Promise<void> {
     clearInterval(conflictsTimer);
     clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
+    stopCleanup();
     stopQuotaRequests();
     knowledgeAbort.abort();
     for (const abort of aborts.values()) abort.abort();
@@ -2039,6 +2043,7 @@ async function main(): Promise<void> {
     clearInterval(conflictsTimer);
     clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
+    stopCleanup();
     clearInterval(updateTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();

@@ -6,7 +6,7 @@ import { copyLocalFiles, installFrozen, profileEnv, type ActionResult } from "./
 import type { RunnerConfig } from "./config.js";
 import { HOME_DIR } from "./paths.js";
 import { adbPath, listDevices } from "./devices.js";
-import { findExpoApp, git, remoteHead } from "./git.js";
+import { findExpoApp, git, holdWorktree, releaseWorktree, remoteHead } from "./git.js";
 import { t } from "./i18n.js";
 import type { Store } from "./store.js";
 
@@ -37,6 +37,12 @@ export interface DevState {
 let metro: ChildProcess | undefined;
 let stopTimer: NodeJS.Timeout | undefined;
 let followTimer: NodeJS.Timeout | undefined;
+/** Copia de trabajo que sirve Metro: en uso mientras corre (la limpieza periódica no la borra). */
+let servedRoot: string | undefined;
+function releaseServed(): void {
+  if (servedRoot) releaseWorktree(servedRoot);
+  servedRoot = undefined;
+}
 /** Cada cuánto mira si la rama que sirve Metro (principal o de la tarea) tiene commits nuevos. */
 const FOLLOW_MS = 60_000;
 
@@ -111,6 +117,7 @@ export function stopDevServer(): void {
     }
   }
   metro = undefined;
+  releaseServed();
 }
 
 /** Para Metro y lo apunta (para la app). */
@@ -180,6 +187,8 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
     delete (env as Record<string, string | undefined>).CI;
     const child = spawn("npx", ["expo", "start", "--port", String(port), "--host", "lan"], { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     metro = child;
+    holdWorktree(root);
+    servedRoot = root;
     let out = "";
     const add = (d: Buffer) => {
       out = (out + d.toString()).slice(-20_000);
@@ -189,6 +198,7 @@ export async function devServe(cfg: RunnerConfig, store: Store, featureId?: stri
     child.on("exit", (code) => {
       if (metro !== child) return;
       metro = undefined;
+      releaseServed();
       void save({ state: code === 0 || code === null ? "stopped" : "error", ...(code ? { error: out.replace(/\x1b\[[0-9;]*m/g, "").slice(-1500) } : {}) });
     });
 

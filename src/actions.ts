@@ -7,7 +7,7 @@ import { failingLog } from "./check-logs.js";
 import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
 import { smokeCliPath } from "./paths.js";
-import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
+import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, holdWorktree, isAncestor, releaseWorktree, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
 import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
 import { remoteTexts, t } from "./i18n.js";
@@ -1284,6 +1284,9 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
     return { ok: true, result: { sha: commit, log: `${await afterDevInstall(cfg, store, dev, device.id)}${t("install.done", { device: label })}\n${log.slice(-1200)}` } };
   } catch (err) {
     return { ok: false, result: { error: String((err as Error).message).slice(-3000), sha: commit } };
+  } finally {
+    // Se conserva para la próxima instalación, pero ya no está en uso (la limpieza periódica la borra tras días sin usar).
+    releaseWorktree(wt);
   }
 }
 
@@ -1291,12 +1294,14 @@ async function installOnDevice(cfg: RunnerConfig, store: Store, action: Action):
 async function installWorktree(cfg: RunnerConfig, commit: string): Promise<string> {
   const path = join(cfg.worktreesDir, "_install");
   if (!existsSync(join(path, ".git"))) return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
+  holdWorktree(path);
   try {
     await gitIn(path, ["checkout", "--detach", "--force", "--quiet", commit]);
     // Fuera lo que no es del repo, salvo lo que se quiere conservar (las carpetas ignoradas, como node_modules, ya se quedan).
     await gitIn(path, ["clean", "-fdq", "-e", "ios", "-e", "android", "-e", ".expo"]);
     return path;
   } catch {
+    releaseWorktree(path);
     return createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_install", commit);
   }
 }

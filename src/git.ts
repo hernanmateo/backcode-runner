@@ -10,8 +10,9 @@ const warnOnce = (msg: string) => {
   console.warn(`[deploy] ${msg}`);
 };
 import { detectDeploys, providerOfCommand, type DeployProvider } from "./deploy-detect.js";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, normalize } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { basename, dirname, join, normalize, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type DeployEnvContext, type FirebaseDeployEnv, firebaseDeployEnv } from "./firebase-env.js";
 import type { PrHost } from "./hosts.js";
@@ -69,7 +70,11 @@ export async function findConflicts(repoPath: string, worktreesDir: string, remo
   const path = join(worktreesDir, "_conflicts");
   mkdirSync(worktreesDir, { recursive: true });
   await removeWorktree(repoPath, path);
-  await git(repoPath, ["worktree", "add", "--detach", path, `${remote}/${branch}`]);
+  holdWorktree(path);
+  await git(repoPath, ["worktree", "add", "--detach", path, `${remote}/${branch}`]).catch((err) => {
+    releaseWorktree(path);
+    throw err;
+  });
   try {
     const clean = await git(path, ["merge", "--no-commit", "--no-ff", "--no-verify", `${remote}/${baseBranch}`]).then(() => true, () => false);
     if (clean) return [];
@@ -388,17 +393,6 @@ export async function excludeFromGit(worktree: string, pattern: string): Promise
   if (!current.split("\n").includes(pattern)) appendFileSync(file, `${current.endsWith("\n") || !current ? "" : "\n"}${pattern}\n`);
 }
 
-/** Los worktrees se conservan para poder continuar la conversación; se borran tras `days` sin uso. */
-export async function pruneOldWorktrees(repoPath: string, worktreesDir: string, days: number): Promise<void> {
-  if (!existsSync(worktreesDir)) return;
-  const limit = Date.now() - days * 86_400_000;
-  for (const name of readdirSync(worktreesDir)) {
-    const path = join(worktreesDir, name);
-    if (statSync(path).mtimeMs < limit) await removeWorktree(repoPath, path);
-  }
-  await git(repoPath, ["worktree", "prune"]).catch(() => undefined);
-}
-
 /**
  * Ajusta la configuración al repo real antes de empezar: si la rama base no existe en el remoto se usa
  * la rama por defecto del repo (p. ej. master), y si el remoto no es GitHub no se intenta abrir PR con gh.
@@ -492,12 +486,84 @@ export async function createDetachedWorktree(repoPath: string, worktreesDir: str
   mkdirSync(worktreesDir, { recursive: true });
   if (existsSync(path)) await removeWorktree(repoPath, path);
   await git(repoPath, ["worktree", "prune"]);
-  await git(repoPath, ["worktree", "add", "--detach", path, commit]);
+  // En uso desde ya: la limpieza periódica (worktree-cleanup.ts) no la toca hasta que se borre o se suelte.
+  holdWorktree(path);
+  await git(repoPath, ["worktree", "add", "--detach", path, commit]).catch((err) => {
+    releaseWorktree(path);
+    throw err;
+  });
   return path;
 }
 
-export async function removeWorktree(repoPath: string, path: string): Promise<void> {
-  await git(repoPath, ["worktree", "remove", "--force", path]).catch(() => undefined);
+/** Copias de trabajo temporales en uso en este proceso (ruta → usos a la vez). */
+const inUse = new Map<string, number>();
+/** Marca una copia de trabajo como en uso: la limpieza periódica no la borra hasta releaseWorktree. */
+export function holdWorktree(path: string): void {
+  const key = resolve(path);
+  inUse.set(key, (inUse.get(key) ?? 0) + 1);
+}
+export function releaseWorktree(path: string): void {
+  const key = resolve(path);
+  const n = (inUse.get(key) ?? 0) - 1;
+  if (n > 0) inUse.set(key, n);
+  else inUse.delete(key);
+}
+export function worktreeInUse(path: string): boolean {
+  return inUse.has(resolve(path));
+}
+
+/**
+ * ¿Se puede borrar `path` con rm -rf? Solo si es un hijo directo de `worktreesDir` (rutas reales, sin enlaces que
+ * escapen), no es un enlace simbólico y no es (ni contiene) el repo.
+ */
+export function isSafeWorktreePath(worktreesDir: string, path: string, repoPath: string): boolean {
+  try {
+    if (lstatSync(path).isSymbolicLink()) return false;
+    const dir = realpathSync(worktreesDir);
+    const real = realpathSync(path);
+    const name = basename(real);
+    if (!name || name === "." || name === ".." || dirname(real) !== dir) return false;
+    let repo: string;
+    try {
+      repo = realpathSync(repoPath);
+    } catch {
+      repo = resolve(repoPath);
+    }
+    return real !== repo && !repo.startsWith(real + sep);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Borra una copia de trabajo: `git worktree remove --force` (y `--force --force` si está bloqueada); si la carpeta sigue
+ * ahí (git ya no la conoce), se borra a mano solo si está dentro de la carpeta de worktrees; después `git worktree prune`.
+ * No lanza: los fallos se escriben en el log y se devuelven.
+ */
+export async function removeWorktree(repoPath: string, path: string, worktreesDir: string = dirname(path)): Promise<{ removed: boolean; error?: string }> {
+  releaseWorktree(path);
+  if (!existsSync(path)) return { removed: true };
+  let error: string | undefined;
+  await git(repoPath, ["worktree", "remove", "--force", path]).catch(() =>
+    git(repoPath, ["worktree", "remove", "--force", "--force", path]).catch((e: Error) => (error = String(e.message).split("\n")[0])),
+  );
+  if (existsSync(path)) {
+    if (!isSafeWorktreePath(worktreesDir, path, repoPath)) {
+      console.warn(`\x1b[33m⚠ ${t("wt.unsafe", { path, dir: worktreesDir })}\x1b[0m`);
+      return { removed: false, error: error ?? "unsafe path" };
+    }
+    try {
+      await rm(path, { recursive: true, force: true, maxRetries: 2 });
+    } catch (e) {
+      error = String((e as Error).message);
+    }
+  }
+  await git(repoPath, ["worktree", "prune"]).catch(() => undefined);
+  if (existsSync(path)) {
+    console.warn(`\x1b[33m⚠ ${t("wt.removeFail", { path, error: error ?? "?" })}\x1b[0m`);
+    return { removed: false, error: error ?? "still exists" };
+  }
+  return { removed: true };
 }
 
 export async function stageAll(worktree: string): Promise<string[]> {
