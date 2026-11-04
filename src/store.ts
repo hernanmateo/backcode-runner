@@ -667,7 +667,8 @@ export class Store {
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || d.get("requestedBy") !== this.uid) return null;
-      tx.update(ref, { status: "running", updatedAt: serverTimestamp(), leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
+      // startedAt: desde cuándo corre (el cronómetro de la app en los despliegues, OTA y builds sueltos).
+      tx.update(ref, { status: "running", startedAt: serverTimestamp(), updatedAt: serverTimestamp(), leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
       return d.data();
     });
   }
