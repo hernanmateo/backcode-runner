@@ -98,7 +98,11 @@ Para el trabajo en sí, **`/backcode:feature`**, o a mano:
   runner retoma esa misma sesión en el worktree (copia la sesión de la carpeta del repo a la del worktree; la original no se
   toca) y actualiza el PR.
 - `backcode task pr --title "…" --body-file pr.md` (desde ese worktree): comprueba que no hay cambios sin commit ni secretos en
-  la rama, la sube, abre (o actualiza) el PR y pasa la tarea a «PR listo» (function `registerLocalWork`). Luego se mueve sola:
+  la rama, la sube, abre (o actualiza) el PR y pasa la tarea a «PR listo» (function `registerLocalWork`). Con el **modo auto**
+  del proyecto, la deja además «esperando» y **tu runner de ese proyecto la mergea solo** como las que ejecuta él (turno del
+  proyecto, espera a la CI, Claude arregla conflictos o checks y reintenta; nunca sin CI). Al arrancar recoge también las que
+  ya estaban en «PR listo», y un `task pr` nuevo sobre una que quedó para revisar la vuelve a poner en marcha (runner 1.5.24+).
+  Luego se mueve sola:
   **Mergeada** al mergear el PR y **Desplegada** cuando un OTA la incluye, también si se publica desde la terminal (el runner
   mira el commit que deja el script en `<app>/.expo/eoas-last-publish-<rama>`), con avisos push a todo el proyecto (también a
   ti: son cambios que pasan solos).

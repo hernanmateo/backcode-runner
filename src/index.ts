@@ -31,7 +31,7 @@ import { localChecksAt } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
 import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
 import { isStoppedError, type StopScope, withStopScope } from "./stop.js";
-import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
+import { autoMerge, clampRetries, localAutoMergeCandidate, TURN_LEASE_MS } from "./auto-merge.js";
 import { mergeOrder, prFiles, setAutoHoldsTurn, withMergeLock, withMergeTurn } from "./merge-queue.js";
 
 /** Espera desde que llega el primer merge antes de ordenar la cola (para que lleguen todos los de «Mergear todo»). */
@@ -150,8 +150,10 @@ const autoMergeSettings = { on: false, retries: clampRetries(undefined) };
 const autoMergeAbort = new AbortController();
 const autoMergeQueue: string[] = [];
 let autoMergeBusy = false;
+/** La que se está mergeando ahora (para no volver a encolarla mientras tanto). */
+let autoMergeCurrent: string | undefined;
 function queueAutoMerge(featureId: string): void {
-  if (!autoMergeSettings.on || !prHost || autoMergeQueue.includes(featureId)) return;
+  if (!autoMergeSettings.on || !prHost || autoMergeQueue.includes(featureId) || autoMergeCurrent === featureId) return;
   autoMergeQueue.push(featureId);
   void drainAutoMerge();
 }
@@ -162,6 +164,7 @@ async function drainAutoMerge(): Promise<void> {
     while (!stopping && !restarting && autoMergeQueue.length) {
       const featureId = autoMergeQueue.shift()!;
       if (!autoMergeSettings.on) continue;
+      autoMergeCurrent = featureId;
       const release = awake.hold();
       const signal = autoMergeAbort.signal;
       const final = await autoMerge({
@@ -194,7 +197,10 @@ async function drainAutoMerge(): Promise<void> {
         shouldStop: () => stopping || restarting || signal.aborted,
       })
         .catch((err: Error) => ({ state: "error", reason: err.message }))
-        .finally(release);
+        .finally(() => {
+          autoMergeCurrent = undefined;
+          release();
+        });
       console.log(`[auto] ${featureId} ${final.state}${final.reason ? `: ${final.reason}` : ""}`);
     }
   } finally {
@@ -1475,9 +1481,27 @@ async function main(): Promise<void> {
       },
     );
   });
+  // Las tareas hechas en Claude Code desde el terminal (`backcode task pr`) con PR listo también entran en el modo auto:
+  // las de este usuario, al registrarse el PR (o al arrancar, las que ya estaban) y cuando un `task pr` nuevo las vuelve a
+  // dejar «waiting» (localAutoMergeCandidate). Lo demás (turno del proyecto, CI, arreglos y reintentos) es lo de siempre.
+  let localPrDocs: QueryDocumentSnapshot[] = [];
+  const queueLocalPrs = () => {
+    if (!autoMergeSettings.on) return;
+    for (const d of localPrDocs) if (localAutoMergeCandidate(d.data(), store.uid)) queueAutoMerge(d.id);
+  };
+  const stopLocalPrs = onSnapshot(
+    store.myLocalPrReady(),
+    (snap) => {
+      localPrDocs = snap.docs;
+      queueLocalPrs();
+    },
+    (err) => console.warn("[snapshot] local PRs:", err.message),
+  );
   const stopAutoMerge = store.watchAutoMerge(({ on, retries }) => {
+    const turnedOn = on && !autoMergeSettings.on;
     autoMergeSettings.on = on;
     autoMergeSettings.retries = clampRetries(retries);
+    if (turnedOn) queueLocalPrs();
   });
   const stopAutoRetry = store.watchAutoRetry(({ on, max, maxCostUsd }) => {
     autoRetrySettings.on = on;
@@ -2046,6 +2070,7 @@ async function main(): Promise<void> {
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
+    stopLocalPrs();
     stopAutoRetry();
     autoMergeAbort.abort();
     clearInterval(machineTimer);
@@ -2109,6 +2134,7 @@ async function main(): Promise<void> {
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
+    stopLocalPrs();
     stopAutoRetry();
     autoMergeAbort.abort();
     clearInterval(machineTimer);

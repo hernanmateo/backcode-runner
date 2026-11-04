@@ -295,7 +295,10 @@ For the work itself, **`/backcode:feature`**, or by hand:
   under your name and marked “Made in Claude Code”. It stays there until `backcode task pr`: the runner leaves it alone, also
   when it restarts (it isn't one of its own tasks left running).
 - `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
-  branch, opens (or updates) the PR and moves the task to “PR ready”. Then it moves by itself: **Merged** when the PR is merged,
+  branch, opens (or updates) the PR and moves the task to “PR ready”. With the project's **auto mode**, it also leaves it
+  “waiting” and **your runner for that project merges it on its own**, like the tasks it runs (project turn, waits for CI,
+  Claude fixes conflicts or checks and retries; never without CI). On start it also picks up the ones already in “PR ready”,
+  and a new `task pr` on one left for review sets it going again (runner 1.5.24+). Then it moves by itself: **Merged** when the PR is merged,
   **Deployed** when an OTA includes it (from the app, or from the terminal: the runner watches the commit the script leaves in
   `<app>/.expo/eoas-last-publish-<branch>`), with push notifications to the whole project. When Claude Code runs `task start`
   or `task pr`, the task keeps that session (`CLAUDE_CODE_SESSION_ID`): once it's in “PR ready”, you can write to Claude from

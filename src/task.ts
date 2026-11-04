@@ -2,7 +2,7 @@ import { explainRemoteError } from "./remote-retry.js";
 import { remoteTexts } from "./i18n.js";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { collection, doc, getDoc, serverTimestamp, setDoc, type Firestore } from "firebase/firestore";
+import { collection, doc, getDoc, serverTimestamp, setDoc, updateDoc, type Firestore } from "firebase/firestore";
 import type { Functions } from "firebase/functions";
 import { httpsCallable } from "firebase/functions";
 import { copyLocalFiles } from "./actions.js";
@@ -167,10 +167,27 @@ async function pr(args: string[], json: boolean): Promise<void> {
     return host.openOrUpdatePr({ cwd: dir, branch, base: repo.baseBranch, title, body: body + footer });
   })().catch(async (e: Error) => fail(await explainRemoteError(String(e.message ?? e), remoteTexts())));
 
-  const { fns } = await connect(cfg);
+  const { db, fns } = await connect(cfg);
   await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, summary: body.slice(0, 4000), prUrl: url, branch, ...claudeSession(), lang: lang() });
-  if (json) console.log(JSON.stringify({ featureId, branch, prUrl: url }));
-  else console.log(t("task.registered", { url }));
+  const auto = await queueForAutoMerge(db, cfg.projectId, featureId);
+  if (json) console.log(JSON.stringify({ featureId, branch, prUrl: url, ...(auto ? { autoMerge: true } : {}) }));
+  else console.log(t("task.registered", { url }) + (auto ? `\n  ${t("task.autoMerge")}` : ""));
+}
+
+/**
+ * Con el modo auto del proyecto, deja la tarea «waiting» (intentos a 0): el runner de este usuario la encola y la mergea
+ * cuando la CI esté en verde (index.ts › myLocalPrReady). Un `task pr` nuevo sobre una que quedó para revisar la vuelve a
+ * poner en marcha. Devuelve si el proyecto tiene el modo auto. Nunca falla el comando.
+ */
+async function queueForAutoMerge(db: Firestore, projectId: string, featureId: string): Promise<boolean> {
+  try {
+    const project = await getDoc(doc(db, "projects", projectId));
+    if (project.get("autoMerge") !== true) return false;
+    await updateDoc(doc(db, "projects", projectId, "features", featureId), { autoMerge: { state: "waiting", attempts: 0, reason: t("auto.waiting"), at: serverTimestamp() } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Historial: un PR de GitHub ya mergeado, como tarea ya Mergeada (y Desplegada en los canales que se digan). */

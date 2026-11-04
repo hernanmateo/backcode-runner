@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoMerge, clampRetries, type AutoMergeDeps, type AutoMergeState } from "../src/auto-merge.ts";
+import { autoMerge, clampRetries, localAutoMergeCandidate, type AutoMergeDeps, type AutoMergeState } from "../src/auto-merge.ts";
 import type { MergeBlock } from "../src/actions.ts";
 
 type MergeOutcome = { ok: boolean; result: { error?: string; checks?: string[] }; blocked?: MergeBlock };
@@ -110,4 +110,20 @@ test("reintentos del proyecto entre 1 y 10 (3 por defecto)", () => {
   assert.equal(clampRetries(0), 1);
   assert.equal(clampRetries(50), 10);
   assert.equal(clampRetries(5), 5);
+});
+
+test("localAutoMergeCandidate: las tareas del terminal de este usuario con PR listo entran; el resto no", () => {
+  const base = { origin: "local", createdBy: "u1", status: "done", result: { prUrl: "https://github.com/o/r/pull/1" } };
+  assert.equal(localAutoMergeCandidate(base, "u1"), true);
+  assert.equal(localAutoMergeCandidate({ ...base, autoMerge: { state: "waiting" } }, "u1"), true);
+  assert.equal(localAutoMergeCandidate({ ...base, autoMerge: { state: "fixing" } }, "u1"), true);
+  // Ya terminado por el modo auto (hasta que un `task pr` nuevo la deje «waiting»).
+  for (const state of ["merged", "gaveUp", "stopped"]) assert.equal(localAutoMergeCandidate({ ...base, autoMerge: { state } }, "u1"), false);
+  // De otro usuario, no del terminal, sin PR, aún en curso, mergeada o de CI.
+  assert.equal(localAutoMergeCandidate(base, "u2"), false);
+  assert.equal(localAutoMergeCandidate({ ...base, origin: undefined }, "u1"), false);
+  assert.equal(localAutoMergeCandidate({ ...base, result: {} }, "u1"), false);
+  assert.equal(localAutoMergeCandidate({ ...base, status: "running" }, "u1"), false);
+  assert.equal(localAutoMergeCandidate({ ...base, merged: { sha: "x" } }, "u1"), false);
+  assert.equal(localAutoMergeCandidate({ ...base, kind: "ci" }, "u1"), false);
 });
