@@ -21,6 +21,7 @@ run = ["npm", "test"]
 dir = "backcode-runner"
 install = false
 timeout = 90
+paths = ["backcode-runner", "./functions/src/not-ours.ts", "../fuera"]
 
 [check.Mal]
 run = "x"
@@ -40,6 +41,8 @@ dir = "../otro"
     ],
   );
   assert.equal(errors.length, 3);
+  assert.deepEqual(checks[1].paths, ["backcode-runner", "functions/src/not-ours.ts"]);
+  assert.deepEqual(checks[0].paths, []);
 });
 
 test("installFor: la carpeta con lockfile más cercana y su comando congelado; sin lockfile, npm install", () => {
@@ -71,7 +74,12 @@ test("cleanOutput: sin colores ni líneas vacías, solo el final", () => {
   assert.equal(cleanOutput("hola mundo ".repeat(5).trim(), 10), "…\nla mundo");
 });
 
-const check = (name: string, over: Partial<LocalCheck> = {}): LocalCheck => ({ name, dir: "", cmd: ["true"], install: false, timeoutMs: 1000, ...over });
+const check = (name: string, over: Partial<LocalCheck> = {}): LocalCheck => ({ name, dir: "", cmd: ["true"], install: false, timeoutMs: 1000, paths: [], ...over });
+/** Caché en memoria para los tests (sin tocar ~/.backcode). */
+const memCache = () => {
+  const keys = new Set<string>();
+  return { has: (k: string) => keys.has(k), remember: (k: string) => void keys.add(k), keys };
+};
 
 function fakeHost(items: CheckItem[] = []) {
   const published: (CommitStatus & { sha: string })[] = [];
@@ -94,6 +102,8 @@ test("runLocalChecks: ejecuta cada check, publica pendiente y resultado, y devue
     checks: [check("app"), check("tests", { cmd: ["fail"] })],
     worktree: async () => tmpdir(),
     cleanup: async () => void (cleaned = true),
+    cache: memCache(),
+    key: async (c) => `k-${c.name}`,
     run: async (cmd) => {
       ran.push(cmd[0]);
       return cmd[0] === "fail" ? { ok: false, out: "boom\nAssertionError: 1 !== 2" } : { ok: true, out: "ok" };
@@ -119,6 +129,8 @@ test("runLocalChecks: los que ya pasaron en ese commit no se repiten; sin checks
     checks: [check("app"), check("tests")],
     worktree: async () => tmpdir(),
     cleanup: async () => undefined,
+    cache: memCache(),
+    key: async (c) => `k2-${c.name}`,
     run: async (cmd) => (ran.push(cmd[0]), { ok: true, out: "" }),
   });
   assert.equal(ran.length, 1);
@@ -138,6 +150,8 @@ test("runLocalChecks: si fallan las dependencias, falla el check sin ejecutarlo"
     checks: [check("a", { install: true }), check("b", { install: true })],
     worktree: async () => wt,
     cleanup: async () => undefined,
+    cache: memCache(),
+    key: async (c) => `k3-${c.name}`,
     run: async (cmd) => (ran.push(cmd.join(" ")), cmd[0] === "npm" ? { ok: false, out: "ERESOLVE" } : { ok: true, out: "" }),
   });
   assert.deepEqual(ran, ["npm ci --no-audit --no-fund"]);
@@ -159,4 +173,51 @@ test("onlyNotStartedIn: lo mismo en un commit (antes de un despliegue)", async (
   assert.equal(await onlyNotStartedIn(async () => [], { state: "failing", pending: ["Runner: fail"] }), false);
   assert.equal(await onlyNotStartedIn(undefined, { state: "failing", pending: ["Runner: fail"] }), false);
   assert.equal(await onlyNotStartedIn(async () => { throw new Error("x"); }, { state: "failing", pending: ["Runner: fail"] }), false);
+});
+
+test("runLocalChecks: lo ya comprobado con el mismo contenido no se repite (aunque el host no lo sepa) y lo nuevo va a la vez", async () => {
+  const cache = memCache();
+  cache.remember("same-app");
+  const { host, published } = fakeHost();
+  let running = 0;
+  let maxRunning = 0;
+  const res = await runLocalChecks({
+    repoPath: "/repo4",
+    worktreesDir: "/wts",
+    host,
+    sha: "bbb",
+    checks: [check("app"), check("tests"), check("runner")],
+    worktree: async () => tmpdir(),
+    cleanup: async () => undefined,
+    cache,
+    key: async (c) => (c.name === "app" ? "same-app" : `new-${c.name}`),
+    run: async () => {
+      running++;
+      maxRunning = Math.max(maxRunning, running);
+      await new Promise((r) => setTimeout(r, 20));
+      running--;
+      return { ok: true, out: "" };
+    },
+  });
+  assert.equal(res.checks.state, "green");
+  assert.equal(maxRunning, 2); // tests y runner a la vez; app no se ejecuta
+  assert.equal(published.find((p) => p.name === "Backcode · app")?.state, "ok");
+  assert.equal(cache.keys.has("new-tests") && cache.keys.has("new-runner"), true);
+});
+
+test("runLocalChecks: un check que falla no entra en la caché", async () => {
+  const cache = memCache();
+  await runLocalChecks({
+    repoPath: "/repo5",
+    worktreesDir: "/wts",
+    host: undefined,
+    sha: "ccc",
+    checks: [check("app")],
+    worktree: async () => tmpdir(),
+    cleanup: async () => undefined,
+    cache,
+    key: async () => "k-fail",
+    run: async () => ({ ok: false, out: "boom" }),
+  });
+  assert.equal(cache.keys.has("k-fail"), false);
 });

@@ -28,7 +28,7 @@ import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
 import { localChecksAt } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
-import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { clampRetryMax, decideRetry } from "./auto-retry.js";
 import { materializeAttachments } from "./attachments.js";
@@ -37,6 +37,7 @@ import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
 import { fixConflicts } from "./conflicts.js";
+import { revertCheck, revertPr } from "./revert.js";
 import { prepareTaskDependencies } from "./task-deps.js";
 import { appliesTo, checkPermissionRequest, isEmpty, loadPermissionContext, REQUEST_PERMISSION_INPUT, sessionPermissions, threadGrants } from "./permissions.js";
 import { fixChecks } from "./fix-checks.js";
@@ -1105,6 +1106,8 @@ async function runOne(id: string, feature: Feature): Promise<void> {
       await store.event(id, status, result.prUrl ?? result.error ?? "");
       // Un PR de CI nunca entra en el modo auto: se revisa y se mergea a mano.
       if (status === "done" && result.prUrl?.startsWith("https://") && !isCiTask(feature)) queueAutoMerge(id);
+      // Con checks en local, se verifican ya sobre el último commit del PR (en segundo plano: no frena la cola).
+      if (status === "done" && result.prUrl?.startsWith("https://") && result.branch) void verifyTaskChecks(cfg, store, prHost, id, result.branch);
       if (status === "failed") await afterFailure(id, feature, result, !!cancelled).catch((err) => console.warn(`[retry] ${id} ${(err as Error).message}`));
     }
     console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
@@ -1254,6 +1257,8 @@ async function main(): Promise<void> {
     handoff: true,
     fixConflicts: true,
     fixChecks: true,
+    // «Reverteix» el PR d'una tasca mergeada (revert.ts): la app només ensenya el botó si el runner ho sap fer.
+    revert: !!prHost,
     // Checks en local (local-checks.ts): los que declara el backcode.toml de la rama base. La app ofrece «Pasar los checks en
     // local» y el ajuste «Checks en local» solo a runners que lo saben hacer ([] = lo sabe, pero el repo no declara ninguno).
     localChecks: (await localChecksAt(cfg.repoPath, `${cfg.remote}/${cfg.baseBranch}`).catch(() => [])).map((c) => c.name),
@@ -1510,6 +1515,19 @@ async function main(): Promise<void> {
         if (files.length) console.warn(`\x1b[33m⚠ ${t("main.clash", { id: f.id, base: taskBase(cfg.baseBranch), files: files.join(", ") })}\x1b[0m`);
       }
     }
+    // «Reverteix»: PRs de revert que abrió este runner. Fusionado, la tarea pasa a «Revertida»; cerrado sin fusionar, el
+    // revert queda fallido (y se puede volver a pedir).
+    if (prHost) {
+      for (const r of await store.myOpenReverts().catch(() => [])) {
+        const pr = await prHost.prState(r.prUrl).catch(() => null);
+        if (pr?.state === "merged") {
+          await store.setRevert(r.id, { state: "merged", ...(pr.sha && /^[0-9a-f]{7,40}$/.test(pr.sha) ? { sha: pr.sha } : {}) }).catch((err) => console.warn(`[revert] ${(err as Error).message}`));
+          console.log(`[backcode] ${t("revert.merged", { id: r.id })}`);
+        } else if (pr?.state === "closed") {
+          await store.setRevert(r.id, { state: "failed", error: t("revert.closed") }).catch(() => undefined);
+        }
+      }
+    }
   };
   void checkConflicts();
   const conflictsTimer = setInterval(() => void checkConflicts(), 5 * 60_000);
@@ -1639,7 +1657,11 @@ async function main(): Promise<void> {
               ? fixConflicts(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""))
               : action.type === "fixChecks"
                 ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, knowledgeAbort.signal, String(action.featureId ?? ""))
-                : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
+                : action.type === "revert"
+                  ? revertPr(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""), id)
+                  : action.type === "revertCheck"
+                    ? revertCheck(cfg, store, prHost, String(action.featureId ?? ""))
+                    : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
         let thrown: Error | undefined;
         const { ok, result } = await work
           .catch(async (err): Promise<{ ok: boolean; result: ActionResult }> => {

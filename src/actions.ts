@@ -15,7 +15,8 @@ import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-check
 import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type ChecksMode, type LocalRun, localChecksAt, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
+import { shouldVerifyAfterTask, verifiedChecksPlan, VERIFY_SUMMARY_MAX, VERIFY_TIMEOUT_MS } from "./checks-verify.js";
+import { type ChecksMode, LOCAL_CHECK_PREFIX, type LocalRun, isBranchProtectionError, localChecksAt, mergeChecksPlan, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
@@ -35,7 +36,7 @@ import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from 
 export interface Action {
   /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
   id?: string;
-  type: "merge" | "rerunChecks" | "actionsPause" | "actionsResume" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview" | "prOta";
+  type: "merge" | "rerunChecks" | "actionsPause" | "actionsResume" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview" | "prOta" | "revert" | "revertCheck";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
   /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */
@@ -82,6 +83,8 @@ export interface Action {
    * ejecutarse, se pasan en local y, en verde, se publica (ver requireGreenBase).
    */
   localChecks?: boolean;
+  /** Merge «Merge sense CI» (solo admins): sin esperar ni pasar checks, solo ese merge. */
+  skipChecks?: boolean;
   /** «Pausar GitHub Actions»: reactivarlos solo al renovarse los minutos (el día 1 del mes siguiente). */
   autoResume?: boolean;
 }
@@ -145,6 +148,8 @@ export interface ActionResult {
   backLink?: string;
   /** OTA de un PR: ficheros nativos que impiden publicarlo por OTA. */
   native?: string[];
+  /** revertCheck: PRs mergeados después que tocan los mismos ficheros que el que se quiere revertir. */
+  later?: { sha: string; title: string; number?: number }[];
   /** OTA, build y despliegue hechos bien: tareas que entraron en él (su detalle en la app). */
   features?: DeployedTask[];
 }
@@ -194,6 +199,68 @@ async function localChecks(cfg: RunnerConfig, host: PrHost | undefined, sha: str
   return runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha, checks });
 }
 
+/** Estado resumen que se publica en el último commit del PR tras verificar los checks al terminar la tarea. */
+export const VERIFY_STATUS = "backcode/local-checks";
+
+/**
+ * Al terminar una tarea con PR: con checks en local (y alguno declarado), los pasa sobre el último commit del PR y guarda
+ * el resultado en la tarea atado a ese commit y a la base (checks-verify.ts). No bloquea nada: si falla, solo se marca
+ * (el merge los volverá a pasar). Nunca lanza.
+ */
+export async function verifyTaskChecks(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, branch: string): Promise<void> {
+  try {
+    const base = taskBase(cfg.baseBranch);
+    const baseRef = `${cfg.remote}/${base}`;
+    // «Sin CI»: nada que verificar. Con la CI del host, solo si Actions está pausado y se pasan en local (useLocal).
+    if (checksMode === "none" || !(await useLocal(cfg, baseRef))) return;
+    const checks = await localChecksAt(cfg.repoPath, baseRef);
+    if (!shouldVerifyAfterTask("local", checks.length)) return;
+    await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, `${base}:refs/remotes/${cfg.remote}/${base}`]).catch(() => undefined);
+    const [headSha, baseSha] = [await prHeadSha(cfg, branch), await remoteSha(cfg.repoPath, cfg.remote, base)];
+    if (!headSha || !baseSha) return;
+    const names = checks.map((c) => c.name);
+    console.log(`[checks] ${t("lc.verifyStart", { sha: headSha.slice(0, 7) })}`);
+    await store.setChecksVerify(featureId, { state: "verifying", headSha, baseSha, checks: names });
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<null>((r) => (timer = setTimeout(() => r(null), VERIFY_TIMEOUT_MS)));
+    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
+    const passed = run?.checks.state === "green";
+    const failing = run ? run.checks.pending.filter((p) => p.endsWith(": fail")).map((p) => p.slice(0, -": fail".length).replace(LOCAL_CHECK_PREFIX, "")) : [];
+    const summary = passed ? "" : run ? t("lc.verifyFail", { checks: failing.join(", ") || run.checks.state }) : t("lc.verifyTimeout");
+    await store.setChecksVerify(featureId, { state: passed ? "passed" : "failed", headSha, baseSha, checks: names, ...(summary ? { summary: summary.slice(0, VERIFY_SUMMARY_MAX) } : {}) });
+    const prUrl = run?.log ? await store.prUrlOf(featureId).catch(() => undefined) : undefined;
+    if (prUrl && run) rememberPrLog(prUrl, run.log);
+    await host?.setStatus?.(headSha, { name: VERIFY_STATUS, state: passed ? "ok" : "fail", description: passed ? t("lc.verifyOk") : summary.slice(0, 140) }).catch(() => undefined);
+  } catch (e) {
+    console.warn(`\x1b[33m⚠ [checks] ${(e as Error).message.split("\n")[0]}\x1b[0m`);
+  }
+}
+
+/**
+ * El commit del PR si sus checks en local ya se verificaron en verde al terminar la tarea y ni el PR ni la base han
+ * cambiado desde entonces (verifiedChecksPlan = "reuse"); si no, "" (y se pasan como siempre).
+ */
+async function alreadyVerified(cfg: RunnerConfig, store: Store, featureId: string, branch: string | undefined, baseRef: string): Promise<string> {
+  if (!branch) return "";
+  const verification = await store.checksVerifyOf(featureId).catch(() => null);
+  if (verification?.state !== "passed") return "";
+  const base = taskBase(cfg.baseBranch);
+  await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, `${base}:refs/remotes/${baseRef}`]).catch(() => undefined);
+  const headSha = await prHeadSha(cfg, branch);
+  const baseSha = await remoteSha(cfg.repoPath, cfg.remote, base);
+  if (!headSha || !baseSha) return "";
+  const plan = verifiedChecksPlan({
+    mode: "local",
+    verification,
+    headSha,
+    baseSha,
+    baseContained: await isAncestor(cfg.repoPath, baseSha, headSha),
+    checks: (await localChecksAt(cfg.repoPath, baseRef)).map((c) => c.name),
+    now: Date.now(),
+  });
+  return plan === "reuse" ? headSha : "";
+}
+
 /** Sha de la rama de un PR en el remoto (la trae antes). */
 async function prHeadSha(cfg: RunnerConfig, branch: string): Promise<string> {
   await gitIn(cfg.repoPath, ["fetch", "--quiet", cfg.remote, `${branch}:refs/remotes/${cfg.remote}/${branch}`]).catch(() => undefined);
@@ -235,6 +302,8 @@ const actionScope = new AsyncLocalStorage<{ localChecks: boolean }>();
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
 async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string, branch = cfg.baseBranch): Promise<ActionResult | null> {
   const what = `${branch} (${commit.slice(0, 7)})`;
+  // Proyecto «Sin CI»: se publica sin esperar checks (salvo con «Exigir checks», que sigue mandando).
+  if (checksMode === "none" && !requireChecks) return null;
   // Checks en local: los del backcode.toml de ese mismo commit (ya está en la rama base), una vez por commit.
   if (await useLocal(cfg, commit)) return requireLocalGreen(await localChecks(cfg, host, commit, commit), what);
   if (!host) return requireChecks ? { error: t("act.checksNoHost") } : null;
@@ -260,7 +329,7 @@ export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | 
 }
 
 async function runActionIn(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
-  if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "", { confirmCi: action.confirmCi === true, localChecks: action.localChecks === true });
+  if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "", { confirmCi: action.confirmCi === true, localChecks: action.localChecks === true, skipChecks: action.skipChecks === true });
   if (action.type === "rerunChecks") return rerunChecks(store, host, action.featureId ?? "");
   if (action.type === "actionsPause" || action.type === "actionsResume") return pauseActions(action.type === "actionsPause", action.autoResume !== false);
   if (action.type === "openPr") return openPr(cfg, store, host, action.featureId ?? "");
@@ -598,7 +667,7 @@ export type MergeBlock = "ciTask" | "noHost" | "noPr" | "closed" | "noChecks" | 
  * Mergea (squash) el PR de una tarea si sus checks están en verde. `auto`: lo hace el modo auto del proyecto, que nunca
  * mergea sin checks (aunque el proyecto no los exija) y deja la marca `merged.auto` para el aviso.
  */
-export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, opts: { auto?: boolean; confirmCi?: boolean; localChecks?: boolean } = {}): Promise<{ ok: boolean; result: ActionResult; blocked?: MergeBlock }> {
+export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | undefined, featureId: string, opts: { auto?: boolean; confirmCi?: boolean; localChecks?: boolean; skipChecks?: boolean } = {}): Promise<{ ok: boolean; result: ActionResult; blocked?: MergeBlock }> {
   if (!host) return { ok: false, result: { error: t("act.noHostMerge") }, blocked: "noHost" };
   const prUrl = await store.prUrlOf(featureId);
   if (!prUrl?.startsWith("https://")) return { ok: false, result: { error: t("act.noPr") }, blocked: "noPr" };
@@ -630,14 +699,28 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   };
   // Dónde pasaron los checks (para decirlo si luego el merge falla por una caída de GitHub/Bitbucket).
   let greenWhere: "local" | "host" | "none" = "none";
-  if (await useLocal(cfg, baseRef)) {
+  // «Sin CI» (proyecto) o «Merge sense CI» (solo ese merge): sin esperar ni pasar checks (ver mergeChecksPlan).
+  const plan = mergeChecksPlan({ mode: checksMode, skipChecks: opts.skipChecks === true, auto: opts.auto === true, requireChecks, local: checksMode !== "none" && (await useLocal(cfg, baseRef)) });
+  if (plan === "blocked") return { ok: false, result: { error: t("act.noneBlocked"), url: prUrl }, blocked: "noChecks" };
+  if (plan === "skip") {
+    // Sin checks, pero los conflictos se miran igual (el merge fallaría).
+    const files = await conflictFiles(cfg, branch);
+    if (files.length) return conflictsBlock(cfg, store, featureId, prUrl, files);
+  } else if (plan === "local") {
     // Checks en local: los de la CI del host no cuentan. Antes, los conflictos (el merge fallaría igualmente).
     const files = await conflictFiles(cfg, branch);
     if (files.length) return conflictsBlock(cfg, store, featureId, prUrl, files);
-    const run = await runLocal();
-    if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "noChecks" };
-    const blocked = requireLocalGreen(run, "PR");
-    if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+    // Ya verificados en verde al terminar la tarea sobre este mismo commit del PR y esta misma base: no se repiten.
+    const verified = await alreadyVerified(cfg, store, featureId, branch, baseRef);
+    if (verified) {
+      console.log(`[action] ${t("lc.verifySkip", { sha: verified.slice(0, 7) })}`);
+      await store.event(featureId, "merge", t("lc.verifySkip", { sha: verified.slice(0, 7) })).catch(() => undefined);
+    } else {
+      const run = await runLocal();
+      if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "noChecks" };
+      const blocked = requireLocalGreen(run, "PR");
+      if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+    }
     greenWhere = "local";
   } else {
     // Con CI en el repo, un PR sin checks no es «sin CI»: o GitHub aún no los ha registrado (se espera a que aparezcan) o
@@ -684,6 +767,8 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   // Con los checks ya en verde, un merge que falla por una caída de GitHub/Bitbucket (ya reintentado) lo dice: los checks
   // están bien, solo falta volver a mergear cuando el host responda.
   const merged = await mergeUnlessConflict(host, prUrl).catch(async (e: Error) => {
+    // Sin CI pero el host exige checks obligatorios (protección de rama): decirlo claro en vez del error crudo.
+    if (plan === "skip" && isBranchProtectionError(e)) throw new Error(t("act.branchProtection", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }));
     if (greenWhere === "none" || !isTransientRemoteError(e)) throw e;
     const why = await explainRemoteError(String(e.message ?? e), remoteTexts());
     throw new Error(`${t(greenWhere === "local" ? "act.greenLocalMergeFailed" : "act.greenHostMergeFailed")}\n\n${why}`);
@@ -691,6 +776,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   if (!merged) return conflictsBlock(cfg, store, featureId, prUrl, await conflictFiles(cfg, branch));
   const { sha } = merged;
   await store.markMerged(featureId, sha, opts.auto, ciTask);
+  if (plan === "skip") await store.event(featureId, "merge", t("act.skippedChecks"));
   // Quién confirmó el merge del PR de CI (el runner que ejecuta la acción es el de quien la pidió): queda en la tarea
   // (merged.by + merged.ciConfirmed) y en su log.
   if (ciTask) await store.event(featureId, "merge", t("ci.mergeConfirmed", { who: store.uid }));

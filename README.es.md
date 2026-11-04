@@ -743,6 +743,7 @@ run = "npm run typecheck && npm run lint"   # el comando (con sh -c) o una lista
 dir = "app"                                 # opcional: carpeta; por defecto la raíz
 install = true                              # opcional: instalar antes las dependencias (npm ci, pnpm/yarn/bun congelados)
 timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+paths = ["app"]                             # opcional: de qué depende; por defecto, todo el repo
 description = "App · tipos y lint"          # opcional
 ```
 
@@ -751,6 +752,19 @@ description = "App · tipos y lint"          # opcional
   resultado se publica en el commit como un estado **«Backcode · &lt;nombre&gt;»**: sale en el PR de GitHub/Bitbucket como un
   check más. Si un check ya consta en verde en ese commit, no se repite.
 - Son comandos de shell fijos, **sin Claude**: no gastan tokens.
+- **Rápidos:** se ejecutan **a la vez** (las dependencias de cada carpeta se instalan una sola vez). Con `paths = [...]`
+  cada check dice de qué carpetas o ficheros depende (sin `paths`, de todo el repo). Si ese contenido no cambió desde la
+  última vez que pasó en tu ordenador, **no se repite**: un PR que no toca `app/` no vuelve a pasar los checks de la app, y
+  el despliegue tras el squash no repite los checks del PR. Lo recuerda `~/.backcode/checks-cache.json`, que solo guarda
+  claves y fechas, caduca a los 7 días y guarda como mucho 300 entradas.
+- **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
+  sobre su último commit en segundo plano (como mucho 30 min; no frena la cola) y guarda el resultado en la tarea
+  (subdocumento `checks/verify`: commit del PR, commit de la rama principal, fecha, checks y un resumen si fallan). También lo publica en
+  el commit como el estado `backcode/local-checks`. La app lo enseña en la tarjeta del merge y en la lista de merges
+  («Checks OK» / «Checks fallidos» / «verificando…»). Al mergear, si pasaron, el PR sigue en ese commit y la rama
+  principal no se ha movido (o la rama ya la contiene) y los checks declarados son los mismos, **no se repiten**: «checks ya
+  verificados en &lt;sha&gt;, no se repiten». Si falta, falló, es de hace más de 7 días o algo cambió, se pasan como
+  siempre. Con la CI del host no se verifica nada al terminar: manda la CI del PR.
 
 Cuándo se usan:
 
@@ -770,6 +784,17 @@ Cuándo se usan:
    Actions**. Si los checks fallaron de verdad, esto no se ofrece.
 
 Si fallan, el final de la salida va al resultado del merge (la app lo enseña) y a **Devolver a Claude Code**.
+
+#### Sin CI y «Merge sin CI»
+
+- **Dónde se pasan los checks › Sin CI** (`checksMode: "none"`): el runner mergea y publica sin esperar ni pasar checks
+  (ni los del host ni los locales). Con **Exigir checks** activado no se mergea (`act.noneBlocked`) y el **modo auto**
+  nunca mergea sin checks.
+- **Merge sin CI** (acción `merge` con `skipChecks: true`, solo admins; lo exigen las reglas de Firestore): solo ese
+  merge, sin esperar ni pasar checks, sea cual sea el modo. Los conflictos se siguen mirando antes.
+- Si la rama principal tiene **protección con checks (o revisiones) obligatorios**, el host rechaza el merge y el runner
+  devuelve un error claro (`act.branchProtection`) en lugar del error crudo. La decisión está en
+  `mergeChecksPlan` (`src/local-checks.ts`).
 
 ### GitHub Actions: minutos, pausa y reactivación
 En repos de GitHub, el runner mira cada 30 minutos el estado de GitHub Actions y lo publica para la app
