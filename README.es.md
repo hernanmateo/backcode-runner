@@ -592,7 +592,9 @@ una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los 
 - **Lo desplegado fuera de la app también cuenta** (registro `projects/{pid}/deployLog`: paso, commit, cuándo, quién y vía):
   - lo que despliega **Claude Code** con el plugin (ver «Despliegues que hace Claude Code» arriba);
   - **a mano**: `backcode deployed <nombre>` desde el repo, o **Ya lo desplegué** en el paso (admins, con confirmación), que lo
-    da por desplegado con la punta de la rama principal. No despliega nada;
+    da por desplegado con la punta de la rama principal. No despliega nada. También en las filas **Build iOS/Android** (y en
+    la pestaña Build) para una build hecha y enviada fuera de Backcode: se apunta como `build:ios` / `build:android` y deja de
+    faltar build de esa plataforma; no compila nada;
   - **reglas de Firebase comprobadas**: para un paso de reglas que no está al día, el runner pregunta a Firebase Rules qué reglas
     de Firestore y Storage están publicadas y, si son las de la rama principal, lo da por desplegado (como mucho cada 30 min por
     paso y commit). Usa `gcloud auth print-access-token` (solo en memoria, nunca se escribe) con el propio proyecto como proyecto
