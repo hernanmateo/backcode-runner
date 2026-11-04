@@ -766,6 +766,7 @@ run = "npm run typecheck && npm run lint"   # el comando (con sh -c) o una lista
 dir = "app"                                 # opcional: carpeta; por defecto la raíz
 install = true                              # opcional: instalar antes las dependencias (npm ci, pnpm/yarn/bun congelados)
 timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+idle = 5                                    # opcional: minutos sin escribir nada antes de darlo por colgado (por defecto 5)
 paths = ["app"]                             # opcional: de qué depende; por defecto, todo el repo
 description = "App · tipos y lint"          # opcional
 ```
@@ -784,6 +785,10 @@ description = "App · tipos y lint"          # opcional
   (dos PR, un merge y una verificación…): el segundo espera su turno, porque suelen usar recursos fijos como los puertos de
   los emuladores de Firebase. Si un check se corta por `timeout` (o se abandona su verificación), el runner para todo lo
   que lanzó, también los procesos que salen de su grupo como los emuladores: primero SIGTERM y, a los 10 s, SIGKILL.
+- **Colgados, cortados pronto:** un check que lleva `idle` minutos sin escribir nada (por defecto 5) se da por colgado
+  y se corta, aunque no haya llegado a su `timeout`. Y en un mismo ordenador corren como mucho **2 lotes** de checks a
+  la vez (sumando proyectos y runners, en `~/.backcode/check-slots`): un merge solo no espera nunca; el tercero que
+  coincide espera a que acabe uno, para que el Mac saturado no los haga ir lentos a todos.
 - **La salida de lo que falla queda guardada:** la de cada check que falla, entera, en
   `~/.backcode/logs/checks/<fecha>-<commit>-<nombre>.log` (las 30 últimas), para ver qué pasó aunque el runner se reinicie.
 - **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
