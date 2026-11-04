@@ -47,6 +47,8 @@ jobs:
           node-version: 22
           cache: npm
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: npm ci
       - run: npm run build:bin -- ${{ matrix.target }}
       - name: Starts and serves the panel

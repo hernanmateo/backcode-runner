@@ -45,6 +45,11 @@ switch (command) {
     // Prueba de arranque de un OTA (la llama el script ota:publish del repo).
     await import("./smoke-cli.js");
     break;
+  case "selftest":
+    // Prueba de humo del propio ejecutable antes de publicarlo (scripts/build-binaries.mjs, release-runner.sh): red y
+    // Firestore sin credenciales, sin quemar CPU. Sin ayuda en --help: es para la publicación.
+    await import("./selftest.js");
+    break;
   case "app-url": {
     // Para la app de Mac: prepara la instalación y el servicio, y devuelve la dirección del panel (la última línea).
     const { prepareApp } = await import("./app-launch.js");

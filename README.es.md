@@ -1001,7 +1001,22 @@ npm test
 ```
 La app de Mac: `npm run build:mac` (en un Mac) compila los dos ejecutables de macOS, los une en uno universal dentro de
 `Backcode Runner.app` y crea `Backcode-Runner.dmg`; los firma y notariza si están `MAC_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID` y
-`APPLE_APP_PASSWORD` (en CI, de los secretos del repo; ver `release.yml`). Sin firma sirve para probarla en tu Mac.
+`APPLE_APP_PASSWORD` (en CI, de los secretos del repo; ver `release.yml`) o, en tu Mac, si está `NOTARY_PROFILE` (un perfil de
+`notarytool` en el llavero, que se guarda una vez con `xcrun notarytool store-credentials backcode --apple-id <tu Apple ID>
+--team-id HVL8K9EG66`). Sin firma sirve para probarla en tu Mac.
+
+**Versión de Bun fijada.** Los ejecutables se compilan siempre con la versión exacta de `.bun-version` (la usan `release.yml`,
+`ci.yml` y `npm run build:bin`): con otra, el ejecutable puede salir roto aunque compile (el 4-11-2026, uno hecho con Bun 1.3.2
+se quedaba al 100 % de CPU al conectarse). Si tu `bun` es otra versión, `build:bin` no compila y te dice cómo bajarte la buena
+aparte (o `BUN=/ruta/a/bun`). Después, el ejecutable de tu plataforma pasa una **prueba de humo** (`--version` y
+`backcode selftest`: red y Firestore sin credenciales, sin colgarse ni quemar CPU); si no la pasa, no se da por bueno.
+
+**Plan B si GitHub no da máquina de macOS.** El despliegue `runner` (`scripts/release-runner.sh`, que espera con
+`scripts/release-wait.sh`) espera a la Release de GitHub Actions; si en 10 min (`PLAN_B_AFTER`) su job `macos` ni ha
+arrancado y estás en un Mac, la hace él: Bun de `.bun-version`, firma con tu «Developer ID Application» del llavero, notariza
+con el perfil `backcode` (`NOTARY_PROFILE`), ejecutables de Linux de esa misma ejecución (o compilados aquí), prueba de humo,
+`SHA256SUMS`, Release y cancela la ejecución atascada. Sin perfil de notarización publica igual y avisa de que la app sale sin
+notarizar. `PLAN_B_DRY_RUN=1` lo hace todo menos publicar.
 
 Publicar (claves, pruebas y pasos en el monorepo: `docs/RUNNER-PUBLICAR.md`): `npm version minor && git push --follow-tags`. La etiqueta `vX.Y.Z` lanza el workflow `release.yml`: compila y pasa los
 tests, compila los ejecutables (`npm run build:bin`, con [Bun](https://bun.sh)) para macOS y Linux (Intel y ARM), los publica en

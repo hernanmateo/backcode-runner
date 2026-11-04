@@ -46,6 +46,8 @@ jobs:
           node-version: 22
           cache: npm
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: npm ci
       - run: npm run build:bin -- linux-x64 linux-arm64
       - uses: actions/upload-artifact@v4
@@ -68,6 +70,8 @@ jobs:
           node-version: 22
           cache: npm
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: npm ci
       - name: Signing certificate
         if: ${{ env.MAC_SIGN_IDENTITY != '' }}
