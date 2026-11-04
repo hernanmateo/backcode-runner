@@ -777,6 +777,17 @@ Cuándo se usan:
 
 Si fallan, el final de la salida va al resultado del merge (la app lo enseña) y a **Devolver a Claude Code**.
 
+#### Sin CI y «Merge sin CI»
+
+- **Dónde se pasan los checks › Sin CI** (`checksMode: "none"`): el runner mergea y publica sin esperar ni pasar checks
+  (ni los del host ni los locales). Con **Exigir checks** activado no se mergea (`act.noneBlocked`) y el **modo auto**
+  nunca mergea sin checks.
+- **Merge sin CI** (acción `merge` con `skipChecks: true`, solo admins; lo exigen las reglas de Firestore): solo ese
+  merge, sin esperar ni pasar checks, sea cual sea el modo. Los conflictos se siguen mirando antes.
+- Si la rama principal tiene **protección con checks (o revisiones) obligatorios**, el host rechaza el merge y el runner
+  devuelve un error claro (`act.branchProtection`) en lugar del error crudo. La decisión está en
+  `mergeChecksPlan` (`src/local-checks.ts`).
+
 ### GitHub Actions: minutos, pausa y reactivación
 En repos de GitHub, el runner mira cada 30 minutos el estado de GitHub Actions y lo publica para la app
 (`runners/{uid}.githubActions`): workflows activos, **minutos gastados del mes frente a los incluidos** y cuándo se renuevan

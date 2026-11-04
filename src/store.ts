@@ -46,6 +46,7 @@ import type { AutoRetryState } from "./auto-retry.js";
 /** PR externo para el tablero: el del host más sus checks y si choca con la rama base. */
 export type ExternalPr = OpenPr & { checks?: "green" | "pending" | "failing" | "none" };
 import type { Device } from "./devices.js";
+import { type ChecksMode, parseChecksMode } from "./local-checks.js";
 import { setLang, t } from "./i18n.js";
 import type { NotOursCategory } from "./not-ours.js";
 import type { Quota } from "./quota.js";
@@ -1070,9 +1071,9 @@ export class Store {
     return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
   }
 
-  /** «Dónde se pasan los checks» del proyecto: "local" (el runner, local-checks.ts) o, sin campo, la CI del host. */
-  watchChecksMode(onChange: (mode: "host" | "local") => void): () => void {
-    return onSnapshot(this.project(), (d) => onChange(d.get("checksMode") === "local" ? "local" : "host"), () => undefined);
+  /** «Dónde se pasan los checks» del proyecto: "local" (el runner, local-checks.ts), "none" (sin CI) o, sin campo, la CI del host. */
+  watchChecksMode(onChange: (mode: ChecksMode) => void): () => void {
+    return onSnapshot(this.project(), (d) => onChange(parseChecksMode(d.get("checksMode"))), () => undefined);
   }
 
   /** «Rama de preview» del proyecto (opcional; la cambian los admins en la app). Sin ella, undefined. */

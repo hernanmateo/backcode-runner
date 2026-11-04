@@ -28,8 +28,32 @@ import { t } from "./i18n.js";
 
 /** Prefijo de los estados que publica el runner: así se distinguen de los de la CI del host. */
 export const LOCAL_CHECK_PREFIX = "Backcode · ";
-/** Dónde se pasan los checks del proyecto: la CI del host (por defecto) o el runner. */
-export type ChecksMode = "host" | "local";
+/** Dónde se pasan los checks del proyecto: la CI del host (por defecto), el runner o ninguno (sin CI). */
+export type ChecksMode = "host" | "local" | "none";
+
+/** El modo del documento del proyecto: sin campo o con un valor desconocido, la CI del host. */
+export function parseChecksMode(v: unknown): ChecksMode {
+  return v === "local" || v === "none" ? v : "host";
+}
+
+/**
+ * Cómo se comprueba un PR antes de mergearlo: "skip" (sin esperar ni pasar checks), "local" (el runner), "host" (su CI)
+ * o "blocked" (sin CI pero no se puede mergear sin checks: el modo auto nunca lo hace y «Exigir checks» lo prohíbe).
+ * `skipChecks`: «Merge sense CI» de un admin, solo ese merge. `local`: con modo host, si Actions está pausado por
+ * Backcode y el repo declara checks locales.
+ */
+export function mergeChecksPlan(o: { mode: ChecksMode; skipChecks: boolean; auto: boolean; requireChecks: boolean; local: boolean }): "skip" | "local" | "host" | "blocked" {
+  if (o.auto) return o.mode === "none" ? "blocked" : o.mode === "local" || o.local ? "local" : "host";
+  if (o.skipChecks) return "skip";
+  if (o.mode === "none") return o.requireChecks ? "blocked" : "skip";
+  return o.mode === "local" || o.local ? "local" : "host";
+}
+
+/** El host rechazó el merge por la protección de la rama (checks o revisiones obligatorias), no por un fallo temporal. */
+export function isBranchProtectionError(e: unknown): boolean {
+  const msg = String((e as Error)?.message ?? e);
+  return /required status check|base branch policy|protected branch|branch protection|approving review|merge checks? (failed|not satisfied)|unresolved (merge )?checks/i.test(msg);
+}
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const DEFAULT_TIMEOUT_MIN = 20;
