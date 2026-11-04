@@ -407,12 +407,23 @@ export class Store {
 
   /** Estado de GitHub Actions del repo (github-actions.ts): se guarda solo si cambia. */
   private githubActionsKey = "";
+  /** Lo último guardado: la renovación del lock reescribe el documento entero, así que lo lleva dentro. */
+  githubActions: Record<string, unknown> | null = null;
+  /** Por qué esperan en cola mis tareas (setQueue); también va en cada renovación del lock. */
+  queue: { reason: string; featureIds: string[]; at: Timestamp } | null = null;
   async saveGithubActions(status: unknown): Promise<void> {
     const { checkedAt: _checkedAt, ...rest } = (status ?? {}) as Record<string, unknown>;
     const key = JSON.stringify(rest);
     if (key === this.githubActionsKey) return;
+    const clean = JSON.parse(JSON.stringify(status)) as Record<string, unknown>;
+    // La clave y el estado guardado solo se actualizan si la escritura fue bien: si falla, la próxima vez se reintenta.
+    try {
+      await updateDoc(doc(this.project(), "runners", this.uid), { githubActions: clean });
+    } catch {
+      return;
+    }
     this.githubActionsKey = key;
-    await updateDoc(doc(this.project(), "runners", this.uid), { githubActions: JSON.parse(JSON.stringify(status)) }).catch(() => undefined);
+    this.githubActions = clean;
   }
 
   /** Si la rama base tiene CI (ver ci.ts): se guarda solo si cambia (también va en cada renovación del lock). */
@@ -429,6 +440,20 @@ export class Store {
     await updateDoc(doc(this.project(), "runners", this.uid), { plan: this.plan }).catch(() => undefined);
   }
 
+  /** Lo que escribe cada renovación del lock (sin merge): debe incluir todo campo que otros métodos guardan con updateDoc en el mismo documento. */
+  lockPayload(): Record<string, unknown> {
+    return {
+      holder: this.cfg.runnerId,
+      leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS),
+      warnings: this.warnings,
+      capabilities: this.capabilities,
+      ...(this.plan ? { plan: this.plan } : {}),
+      ...(this.prs ? { prs: this.prs } : {}),
+      ...(this.githubActions ? { githubActions: this.githubActions } : {}),
+      ...(this.queue ? { queue: this.queue } : {}),
+    };
+  }
+
   /** Garantiza un único runner por usuario y proyecto. Devuelve una función para liberar el lock. */
   async acquireLock(): Promise<() => Promise<void>> {
     const ref = doc(this.project(), "runners", this.uid);
@@ -440,7 +465,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(t("store.lockHeld", { holder }));
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities, ...(this.plan ? { plan: this.plan } : {}), ...(this.prs ? { prs: this.prs } : {}) });
+        tx.set(ref, this.lockPayload());
       });
     await take();
     const timer = setInterval(() => {
@@ -1174,7 +1199,9 @@ export class Store {
 
   /** Por qué esperan en cola mis tareas de este proyecto (scheduler.ts): lo enseña la app en su tarjeta. */
   async setQueue(queue: { reason: string; featureIds: string[] } | null): Promise<void> {
-    await updateDoc(doc(this.project(), "runners", this.uid), { queue: queue ? { ...queue, at: serverTimestamp() } : null });
+    const next = queue ? { ...queue, at: Timestamp.now() } : null;
+    await updateDoc(doc(this.project(), "runners", this.uid), { queue: next });
+    this.queue = next;
   }
 
   /** «Conectar en <host>» / «Clonar en <host>» pedidos desde la app a este ordenador. */
