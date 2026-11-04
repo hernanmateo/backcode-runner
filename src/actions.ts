@@ -35,7 +35,7 @@ import { buildNumberFrom, otaInfoFrom, readFrom, readVersion, versionDir } from 
 export interface Action {
   /** Id del documento de la acción (lo pone el runner al reclamarla): una build lo apunta en sus tareas. */
   id?: string;
-  type: "merge" | "rerunChecks" | "actionsPause" | "actionsResume" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview" | "prOta";
+  type: "merge" | "rerunChecks" | "actionsPause" | "actionsResume" | "ota" | "openPr" | "build" | "deploy" | "install" | "devServe" | "devStop" | "deployAll" | "closePr" | "mergePr" | "knowledge" | "fixConflicts" | "promote" | "syncPreview" | "prOta" | "revert" | "revertCheck";
   /** PR externo (creado fuera de Backcode) que mergear o cerrar: tiene que estar entre los abiertos del repo. */
   prUrl?: string;
   /** Al cerrar un PR externo, borrar también su rama (la de una tarea se borra siempre). */
@@ -145,6 +145,8 @@ export interface ActionResult {
   backLink?: string;
   /** OTA de un PR: ficheros nativos que impiden publicarlo por OTA. */
   native?: string[];
+  /** revertCheck: PRs mergeados después que tocan los mismos ficheros que el que se quiere revertir. */
+  later?: { sha: string; title: string; number?: number }[];
   /** OTA, build y despliegue hechos bien: tareas que entraron en él (su detalle en la app). */
   features?: DeployedTask[];
 }

@@ -214,6 +214,27 @@ export interface RunnerChat {
 /** Vueltas máximas de conversación sobre una misma tarea (evita bucles). */
 const MAX_CONVERSATION_RUNS = 30;
 
+/** Revert del PR de una tarea mergeada («Reverteix»): lo escribe solo el runner de quien lo pidió (reglas: validRevert). */
+export interface RevertState {
+  state: "running" | "open" | "merged" | "failed";
+  by: string;
+  actionId?: string;
+  prUrl?: string;
+  branch?: string;
+  sha?: string;
+  error?: string;
+}
+
+export interface RevertInfo {
+  title: string;
+  status?: string;
+  sha?: string;
+  merged: boolean;
+  deployed: boolean;
+  prUrl?: string;
+  revert?: RevertState;
+}
+
 export interface FeatureResult {
   summary?: string;
   prUrl?: string;
@@ -306,7 +327,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; revert?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -918,6 +939,52 @@ export class Store {
     // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.
     for (const d of log ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
     return best;
+  }
+
+  /** «Reverteix»: estado del revert de una tarea (reverts/{id}; la Function mirrorRevert lo copia a la tarea). */
+  private revertDoc(featureId: string) {
+    return doc(this.project(), "reverts", featureId);
+  }
+
+  /** «Reverteix»: lo que hace falta de una tarea mergeada para revertir su PR (ver revert.ts). */
+  async revertInfo(featureId: string): Promise<RevertInfo> {
+    const d = await getDoc(this.feature(featureId));
+    return {
+      title: String(d.get("title") ?? ""),
+      status: d.get("status") as string | undefined,
+      sha: (d.get("merged.sha") as string | undefined) || undefined,
+      merged: !!d.get("merged"),
+      deployed: !!(d.get("deployed.production") || d.get("deployed.preview")),
+      prUrl: (d.get("result") as FeatureResult | undefined)?.prUrl,
+      revert: (await getDoc(this.revertDoc(featureId))).data() as RevertState | undefined,
+    };
+  }
+
+  /**
+   * Empieza un revert (state running) solo si no hay otro en curso ni fusionado: en una transacción, así dos peticiones
+   * a la vez no abren dos PRs. Devuelve false si ya había uno.
+   */
+  async startRevert(featureId: string, actionId: string): Promise<boolean> {
+    const ref = this.revertDoc(featureId);
+    return runTransaction(this.db, async (tx) => {
+      const prev = (await tx.get(ref)).data() as RevertState | undefined;
+      if (prev && prev.state !== "failed") return false;
+      tx.set(ref, { state: "running", by: this.uid, at: serverTimestamp(), actionId });
+      return true;
+    });
+  }
+
+  /** Avanza el revert que empezó este runner (open, merged o failed), conservando lo que ya tenía (PR, rama…). */
+  async setRevert(featureId: string, next: Omit<RevertState, "by">): Promise<void> {
+    const prev = ((await getDoc(this.revertDoc(featureId))).data() as RevertState | undefined) ?? {};
+    const merged = Object.fromEntries(Object.entries({ ...prev, ...next, by: this.uid }).filter(([k, v]) => v !== undefined && k !== "at"));
+    await setDoc(this.revertDoc(featureId), { ...merged, at: serverTimestamp() });
+  }
+
+  /** Mis reverts con el PR abierto, para ver cada pocos minutos si ya se fusionó (tarea «Revertida») o se cerró. */
+  async myOpenReverts(): Promise<{ id: string; prUrl: string }[]> {
+    const snap = await getDocs(query(collection(this.project(), "reverts"), where("by", "==", this.uid), where("state", "==", "open")));
+    return snap.docs.filter((d) => String(d.get("prUrl") ?? "").startsWith("https://")).map((d) => ({ id: d.id, prUrl: String(d.get("prUrl")) }));
   }
 
   /** Tareas mergeadas (con el commit del merge, su título y las plataformas de las builds en las que ya entró). */
