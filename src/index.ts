@@ -1,3 +1,4 @@
+import { findMergedOutside, MERGED_POLL_MS } from "./merged-watch.js";
 import { homedir } from "node:os";
 import { lastCliPublish, markCliPublished } from "./ota-watch.js";
 import { spawn } from "node:child_process";
@@ -1433,6 +1434,17 @@ async function main(): Promise<void> {
   // PR abiertos, cada 5 min: si ya se mergearon fuera de la app se marcan como mergeados; si no, se mira si chocan con
   // la rama base (solo cuando cambia alguna de las dos) y se marca en la tarea, para verlo antes de mergear.
   const checked = new Map<string, string>();
+  // Tareas ya marcadas como mergeadas por este runner (las dos comprobaciones no la marcan dos veces).
+  const mergedOutside = new Set<string>();
+  const markMergedOutside = async (id: string, sha: string | undefined) => {
+    if (mergedOutside.has(id)) return;
+    mergedOutside.add(id);
+    await store.markMerged(id, sha).catch((err) => console.warn(`[merge] ${(err as Error).message}`));
+    await store.setConflicts(id, []).catch(() => undefined);
+    console.log(`[backcode] ${t("main.mergedOutside", { id })}`);
+    // Lo pendiente de desplegar cambia con el merge: se recalcula ya, sin esperar a su ciclo de 3 minutos.
+    void refreshPlan();
+  };
   const checkConflicts = async () => {
     for (const f of await store.myOpenPrs().catch(() => [])) {
       if (running.has(f.id)) continue; // se está ejecutando
@@ -1440,9 +1452,7 @@ async function main(): Promise<void> {
       if (prHost && f.prUrl?.startsWith("https://")) {
         const pr = await prHost.prState(f.prUrl).catch(() => null);
         if (pr?.state === "merged") {
-          await store.markMerged(f.id, pr.sha).catch((err) => console.warn(`[merge] ${(err as Error).message}`));
-          await store.setConflicts(f.id, []).catch(() => undefined);
-          console.log(`[backcode] ${t("main.mergedOutside", { id: f.id })}`);
+          await markMergedOutside(f.id, pr.sha);
           continue;
         }
         if (pr?.state === "closed") continue; // cerrado sin mergear: nada que vigilar
@@ -1461,6 +1471,20 @@ async function main(): Promise<void> {
   };
   void checkConflicts();
   const conflictsTimer = setInterval(() => void checkConflicts(), 5 * 60_000);
+  // PR mergeados fuera de la app, cada minuto y con una sola consulta al host (merged-watch.ts); solo si tengo PR abiertos.
+  let mergedBusy = false;
+  const watchMerged = async () => {
+    if (!prHost?.recentlyMerged || mergedBusy) return;
+    mergedBusy = true;
+    try {
+      const open = (await store.myOpenPrs().catch(() => [])).filter((f) => f.prUrl?.startsWith("https://") && !running.has(f.id) && !mergedOutside.has(f.id));
+      if (!open.length) return;
+      for (const f of findMergedOutside(open, await prHost.recentlyMerged().catch(() => []))) await markMergedOutside(f.id, f.sha);
+    } finally {
+      mergedBusy = false;
+    }
+  };
+  const mergedTimer = setInterval(() => void watchMerged(), MERGED_POLL_MS);
 
   // Sesiones de Claude Code de mis tareas paradas, al arrancar y cada 6 h: si Claude Code ya las borró (pasados
   // cleanupPeriodDays días), la app lo avisa en vez de ofrecer abrirlas en la app de Claude o retomarlas.
@@ -1881,6 +1905,7 @@ async function main(): Promise<void> {
     clearInterval(quotaWaitTimer);
     stopQuotaWaits();
     clearInterval(conflictsTimer);
+    clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();
@@ -1940,6 +1965,7 @@ async function main(): Promise<void> {
     clearInterval(quotaWaitTimer);
     stopQuotaWaits();
     clearInterval(conflictsTimer);
+    clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
     clearInterval(updateTimer);
     stopQuotaRequests();

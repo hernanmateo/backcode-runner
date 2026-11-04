@@ -431,8 +431,10 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
   trabajas con tus permisos normales, fuera del sandbox del runner.
 
 ## PRs mergeados fuera de la app
-Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket, tu runner lo detecta (cada 5 minutos) y la marca como
-**Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**.
+Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket (o con `gh pr merge`), tu runner lo detecta en
+**un minuto como mucho** y la marca como **Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**. Cada
+minuto hace una sola consulta (los últimos PR mergeados del repo), y solo si alguna de tus tareas tiene un PR abierto; al
+detectarlo recalcula ya «Pendiente de desplegar». La comprobación PR por PR de cada 5 minutos sigue como respaldo.
 
 ## Conflictos con la rama principal
 Si otro PR se mergea antes y toca lo mismo que tu tarea, tu runner lo detecta (cada 5 minutos, solo cuando cambia alguna de las dos

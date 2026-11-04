@@ -56,6 +56,8 @@ export interface PrHost {
   prState(prUrl: string): Promise<{ state: "open" | "merged" | "closed"; sha?: string }>;
   /** PR abiertos del repo (también los creados fuera de Backcode), los más recientes primero. */
   listOpen(): Promise<OpenPr[]>;
+  /** Los últimos PR mergeados del repo (los más recientes primero) en una sola consulta: ver merged-watch.ts. */
+  recentlyMerged?(): Promise<{ url: string; sha?: string }[]>;
   /** Cierra el PR sin mergear; con `deleteBranch`, borra también su rama del remoto. */
   close(prUrl: string, deleteBranch: boolean): Promise<void>;
   /** Deja un comentario en el PR (p. ej. el resultado del code review automático); ausente si el host no lo admite. */
@@ -210,6 +212,10 @@ export function githubHost(repoPath: string): PrHost {
       }[];
       return rows.map((r) => ({ url: r.url, number: r.number, title: r.title, author: r.author?.login ?? "", branch: r.headRefName, base: r.baseRefName, draft: r.isDraft, updatedAt: r.updatedAt }));
     },
+    async recentlyMerged() {
+      const rows = JSON.parse(await gh(["pr", "list", "--state", "merged", "--limit", "30", "--json", "url,mergeCommit"])) as { url: string; mergeCommit?: { oid?: string } | null }[];
+      return rows.map((r) => ({ url: r.url, sha: r.mergeCommit?.oid || undefined }));
+    },
     async close(prUrl, deleteBranch) {
       await gh(["pr", "close", prUrl, ...(deleteBranch ? ["--delete-branch"] : [])]).catch(async (e) => {
         // --delete-branch puede fallar con la rama local en un worktree tras cerrar bien.
@@ -295,6 +301,10 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
       type Row = Pr & { title: string; author?: { display_name?: string }; source: { branch: { name: string } }; destination: { branch: { name: string } }; draft?: boolean; updated_on: string };
       const rows = (await api<{ values: Row[] }>(`/pullrequests?state=OPEN&pagelen=50`)).values;
       return rows.map((r) => ({ url: r.links.html.href, number: r.id, title: r.title, author: r.author?.display_name ?? "", branch: r.source.branch.name, base: r.destination.branch.name, draft: !!r.draft, updatedAt: r.updated_on }));
+    },
+    async recentlyMerged() {
+      const rows = (await api<{ values: Pr[] }>(`/pullrequests?state=MERGED&pagelen=30&sort=-updated_on`)).values;
+      return rows.map((r) => ({ url: r.links.html.href, sha: r.merge_commit?.hash }));
     },
     async close(prUrl, deleteBranch) {
       const id = await prId(prUrl);
