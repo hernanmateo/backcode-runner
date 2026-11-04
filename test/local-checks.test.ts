@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { CheckItem, CommitStatus, PrHost } from "../src/hosts.js";
-import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, onlyNotStartedIn, oneAtATime, readCheckConfig, runCommand, runLocalChecks, saveFailedLog } from "../src/local-checks.js";
+import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, onlyNotStartedIn, oneAtATime, readCheckConfig, runCommand, runLocalChecks, saveFailedLog, takeCheckSlot } from "../src/local-checks.js";
 
 test("backcode.toml: [check.<nombre>] con run, dir, install, timeout y description", () => {
   const { checks, errors } = readCheckConfig(`
@@ -75,7 +75,7 @@ test("cleanOutput: sin colores ni líneas vacías, solo el final", () => {
   assert.equal(cleanOutput("hola mundo ".repeat(5).trim(), 10), "…\nla mundo");
 });
 
-const check = (name: string, over: Partial<LocalCheck> = {}): LocalCheck => ({ name, dir: "", cmd: ["true"], install: false, timeoutMs: 1000, paths: [], ...over });
+const check = (name: string, over: Partial<LocalCheck> = {}): LocalCheck => ({ name, dir: "", cmd: ["true"], install: false, timeoutMs: 1000, idleMs: 60_000, paths: [], ...over });
 /** Caché en memoria para los tests (sin tocar ~/.backcode). */
 const memCache = () => {
   const keys = new Set<string>();
@@ -322,7 +322,7 @@ test("runCommand: al cortar por tiempo mata también los procesos que el check s
 const c = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
 fs.writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); setInterval(() => {}, 1000);`;
   const started = Date.now();
-  const res = await runCommand([process.execPath, "-e", script], dir, { ...process.env } as Record<string, string>, 1500, undefined, 500);
+  const res = await runCommand([process.execPath, "-e", script], dir, { ...process.env } as Record<string, string>, 1500, undefined, { graceMs: 500 });
   assert.equal(res.ok, false);
   assert.match(res.out, /min/);
   const pid = Number(readFileSync(pidFile, "utf8"));
@@ -342,7 +342,7 @@ fs.writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); setInterval(() => {
 test("runCommand: con signal abortado mata el comando y avisa", { skip: process.platform === "win32" }, async () => {
   const ctrl = new AbortController();
   setTimeout(() => ctrl.abort(), 200);
-  const res = await runCommand(["sleep", "30"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, ctrl.signal, 500);
+  const res = await runCommand(["sleep", "30"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, ctrl.signal, { graceMs: 500 });
   assert.equal(res.ok, false);
   assert.ok(res.out.length > 0);
   assert.equal((await runCommand(["true"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, ctrl.signal)).ok, false);
@@ -355,4 +355,43 @@ test("saveFailedLog: guarda la salida limpia y deja solo las últimas", () => {
   assert.equal(readFileSync(file, "utf8"), "boom\nAssertionError\n");
   for (let i = 0; i < 35; i++) saveFailedLog(`c${i}`, "abcdef123456", "x", dir);
   assert.equal(readdirSync(dir).length, 30);
+});
+
+test("runCommand: un comando que deja de escribir se corta por silencio antes del tope total", { skip: process.platform === "win32" }, async () => {
+  const started = Date.now();
+  const res = await runCommand(["sh", "-c", "echo hola; sleep 30"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, undefined, { graceMs: 500, idleMs: 400 });
+  assert.equal(res.ok, false);
+  assert.match(res.out, /hola/);
+  assert.ok(Date.now() - started < 10_000);
+  // Uno que escribe a menudo no se corta aunque tarde más que idleMs.
+  const busy = await runCommand(["sh", "-c", "for i in 1 2 3 4 5 6; do echo $i; sleep 0.3; done"], tmpdir(), { ...process.env } as Record<string, string>, 60_000, undefined, { idleMs: 1500 });
+  assert.equal(busy.ok, true);
+});
+
+test("takeCheckSlot: como mucho `max` a la vez en el ordenador; el siguiente espera y entra al soltar uno", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lc-slots-"));
+  const a = await takeCheckSlot(dir, 2, undefined, undefined, 20);
+  const b = await takeCheckSlot(dir, 2, undefined, undefined, 20);
+  let waited = false;
+  let got = false;
+  const c = takeCheckSlot(dir, 2, undefined, () => (waited = true), 20).then((rel) => ((got = true), rel));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(waited, true);
+  assert.equal(got, false);
+  a();
+  (await c)();
+  assert.equal(got, true);
+  b();
+  // Abortado mientras espera: deja de esperar.
+  const x = await takeCheckSlot(dir, 1, undefined, undefined, 20);
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 60);
+  const rel = await takeCheckSlot(dir, 1, ctrl.signal, undefined, 20);
+  rel();
+  x();
+});
+
+test("readCheckConfig: idle en minutos (por defecto 5)", () => {
+  const { checks } = readCheckConfig('[check.a]\nrun = "true"\n\n[check.b]\nrun = "true"\nidle = 2\n');
+  assert.deepEqual(checks.map((c) => c.idleMs), [5 * 60_000, 2 * 60_000]);
 });

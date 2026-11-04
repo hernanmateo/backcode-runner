@@ -7,6 +7,7 @@
 //   dir = "app"                                 # opcional: carpeta, relativa a la raíz; por defecto la raíz
 //   install = true                              # opcional: instalar antes las dependencias de esa carpeta (por defecto sí)
 //   timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+//   idle = 5                                    # opcional: minutos sin escribir nada antes de darlo por colgado (1-60, por defecto 5)
 //   paths = ["app", "firestore.rules"]          # opcional: de qué depende (carpetas o ficheros); por defecto, todo el repo
 //   description = "Tipos y lint de la app"      # opcional
 //
@@ -25,7 +26,8 @@ import { checkKey, type ChecksCache, fileChecksCache } from "./checks-cache.js";
 import { createDetachedWorktree, git, removeWorktree } from "./git.js";
 import { type Checks, type CheckItem, type PrHost, summarize } from "./hosts.js";
 import { t } from "./i18n.js";
-import { LOGS_DIR } from "./paths.js";
+import { HOME_DIR, LOGS_DIR } from "./paths.js";
+import { takeSlot } from "./slots.js";
 
 /** Prefijo de los estados que publica el runner: así se distinguen de los de la CI del host. */
 export const LOCAL_CHECK_PREFIX = "Backcode · ";
@@ -58,6 +60,8 @@ export function isBranchProtectionError(e: unknown): boolean {
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const DEFAULT_TIMEOUT_MIN = 20;
+/** Minutos sin ninguna salida tras los que un check se da por colgado (un typecheck sano calla segundos, no minutos). */
+const DEFAULT_IDLE_MIN = 5;
 /** Lo que cabe del log en el resultado de la acción (como CHECK_LOG_MAX de check-logs.ts). */
 const LOG_MAX = 3000;
 
@@ -68,6 +72,8 @@ export interface LocalCheck {
   cmd: string[];
   install: boolean;
   timeoutMs: number;
+  /** Sin escribir nada durante esto, se da por colgado y se corta (aunque no haya llegado a `timeoutMs`). */
+  idleMs: number;
   /** De qué depende, relativo al repo (carpetas o ficheros). Vacío: de todo el repo. */
   paths: string[];
   description?: string;
@@ -102,9 +108,10 @@ export function readCheckConfig(text: string): { checks: LocalCheck[]; errors: s
       continue;
     }
     const minutes = typeof d.timeout === "number" && d.timeout >= 1 ? Math.min(60, d.timeout) : DEFAULT_TIMEOUT_MIN;
+    const idle = typeof d.idle === "number" && d.idle >= 1 ? Math.min(60, d.idle) : DEFAULT_IDLE_MIN;
     const description = typeof d.description === "string" ? d.description.replace(/\s+/g, " ").trim().slice(0, 80) : "";
     const paths = Array.isArray(d.paths) && d.paths.every((p) => typeof p === "string") ? (d.paths as string[]).map(norm).filter((p) => p && inside(p)) : [];
-    checks.push({ name, dir, cmd, install: d.install !== false, timeoutMs: minutes * 60_000, paths, ...(description ? { description } : {}) });
+    checks.push({ name, dir, cmd, install: d.install !== false, timeoutMs: minutes * 60_000, idleMs: idle * 60_000, paths, ...(description ? { description } : {}) });
   }
   return { checks, errors };
 }
@@ -221,7 +228,7 @@ export async function killTree(pid: number, graceMs = KILL_GRACE_MS): Promise<vo
  * Ejecuta un comando y devuelve si salió bien y su salida (las últimas 200 000 letras). Si tarda más de `timeoutMs` o se
  * aborta `abort`, mata su árbol de procesos entero (killTree) antes de volver. Nunca lanza.
  */
-export function runCommand([cmd, ...args]: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal, graceMs?: number): Promise<{ ok: boolean; out: string }> {
+export function runCommand([cmd, ...args]: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal, opts: { graceMs?: number; idleMs?: number } = {}): Promise<{ ok: boolean; out: string }> {
   if (abort?.aborted) return Promise.resolve({ ok: false, out: t("lc.aborted") });
   return new Promise((resolve) => {
     let out = "";
@@ -232,19 +239,29 @@ export function runCommand([cmd, ...args]: string[], cwd: string, env: Record<st
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearInterval(idleTimer);
       abort?.removeEventListener("abort", onAbort);
       resolve({ ok, out: out + extra });
     };
     const stop = (why: string) => {
       if (stopping || done) return;
       stopping = true;
-      void (child.pid ? killTree(child.pid, graceMs) : Promise.resolve(child.kill("SIGTERM"))).catch(() => undefined).finally(() => finish(false, `\n${why}`));
+      void (child.pid ? killTree(child.pid, opts.graceMs) : Promise.resolve(child.kill("SIGTERM"))).catch(() => undefined).finally(() => finish(false, `\n${why}`));
     };
     const onAbort = () => stop(t("lc.aborted"));
-    const add = (d: Buffer) => (out = (out + d.toString()).slice(-200_000));
+    let lastOutput = Date.now();
+    const add = (d: Buffer) => {
+      lastOutput = Date.now();
+      out = (out + d.toString()).slice(-200_000);
+    };
     child.stdout?.on("data", add);
     child.stderr?.on("data", add);
     const timer = setTimeout(() => stop(t("lc.timeout", { min: Math.round(timeoutMs / 60_000) })), timeoutMs);
+    // Colgado: lleva `idleMs` sin escribir nada (p. ej. un emulador que no arranca). Se mira cada pocos segundos.
+    const idleMs = opts.idleMs;
+    const idleTimer = setInterval(() => {
+      if (idleMs && Date.now() - lastOutput >= idleMs) stop(t("lc.idle", { min: Math.max(1, Math.round(idleMs / 60_000)) }));
+    }, idleMs ? Math.min(5000, Math.max(50, idleMs / 4)) : 60_000);
     abort?.addEventListener("abort", onAbort);
     child.on("error", (e) => finish(false, `\n${e.message}`));
     // Si se está parando, se espera a que killTree acabe (que los puertos queden libres para el siguiente).
@@ -274,6 +291,30 @@ export function saveFailedLog(name: string, sha: string, out: string, dir = FAIL
     return file;
   } catch {
     return "";
+  }
+}
+
+/** Huecos de lotes de checks en este ordenador, compartidos por todos los runners (como ~/.backcode/slots con las tareas). */
+export const CHECK_SLOTS_DIR = join(HOME_DIR, "check-slots");
+export const CHECK_RUNS_MAX = 2;
+const CHECK_SLOT_POLL_MS = 2000;
+
+/**
+ * Espera a que haya hueco (menos de `max` lotes en marcha en el ordenador) y lo coge; devuelve la función que lo suelta.
+ * Si se aborta mientras espera, deja de esperar sin hueco (lo que venga después no arranca: runCommand ve el abort).
+ */
+export async function takeCheckSlot(dir: string, max: number, abort?: AbortSignal, onWait?: () => void, pollMs = CHECK_SLOT_POLL_MS): Promise<() => void> {
+  const id = `${process.pid}x${Math.random().toString(36).slice(2, 10)}`;
+  let warned = false;
+  for (;;) {
+    const release = takeSlot(dir, "checks", id, max);
+    if (release) return release;
+    if (abort?.aborted) return () => undefined;
+    if (!warned) {
+      warned = true;
+      onWait?.();
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 
@@ -323,7 +364,9 @@ export interface LocalRunDeps {
   /** Los checks a ejecutar (leídos de la rama base: localChecksAt). */
   checks: LocalCheck[];
   /** Inyectable para los tests. */
-  run?: (cmd: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal) => Promise<{ ok: boolean; out: string }>;
+  run?: (cmd: string[], cwd: string, env: Record<string, string>, timeoutMs: number, abort?: AbortSignal, opts?: { idleMs?: number }) => Promise<{ ok: boolean; out: string }>;
+  /** Hueco de checks en este ordenador (por defecto, ~/.backcode/check-slots con CHECK_RUNS_MAX). Inyectable para tests. */
+  slot?: (abort: AbortSignal) => Promise<() => void>;
   worktree?: (sha: string) => Promise<string>;
   cleanup?: (wt: string) => Promise<void>;
   /** Lo ya comprobado en este ordenador (por defecto, ~/.backcode/checks-cache.json). */
@@ -408,7 +451,17 @@ async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
   console.log(`[checks] ${t("lc.start", { n: todo.length, sha: d.sha.slice(0, 7) })}`);
   await Promise.all(todo.map((c) => publish(c, "pending", t("lc.pending"))));
   const run = d.run ?? runCommand;
-  const wt = await (d.worktree ?? ((sha) => createDetachedWorktree(d.repoPath, d.worktreesDir, `_checks-${sha.slice(0, 12)}`, sha)))(d.sha);
+  // Como mucho CHECK_RUNS_MAX lotes de checks a la vez en este ordenador (todos los proyectos y runners): un merge solo
+  // sigue pasando sus checks a la vez; el tercero que coincide espera a que acabe uno (con la máquina saturada todos
+  // irían más lentos y los emuladores llegan a colgarse).
+  // (Con `run` inyectado, en los tests, sin hueco salvo que se pase `slot`.)
+  const takeOne = d.slot ?? (d.run ? async () => () => undefined : (signal: AbortSignal) => takeCheckSlot(CHECK_SLOTS_DIR, CHECK_RUNS_MAX, signal, () => console.log(`[checks] ${t("lc.waitMachine", { n: CHECK_RUNS_MAX })}`)));
+
+  const release = await takeOne(abort);
+  const wt = await (d.worktree ?? ((sha) => createDetachedWorktree(d.repoPath, d.worktreesDir, `_checks-${sha.slice(0, 12)}`, sha)))(d.sha).catch((e: unknown) => {
+    release();
+    throw e;
+  });
   const logs: string[] = [];
   try {
     // Las dependencias de cada carpeta se instalan una vez aunque varios checks las usen, y todos van a la vez.
@@ -427,7 +480,7 @@ async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
             installRes = await installs.get(inst.dir)!;
           }
           res = installRes.ok
-            ? await oneAtATime(`${d.repoPath}#${c.name}`, () => run(c.cmd, cwd, checkEnv(wt, cwd), c.timeoutMs, abort), () => console.log(`[checks] ${statusName(c)}: ${t("lc.waitTurn")}`))
+            ? await oneAtATime(`${d.repoPath}#${c.name}`, () => run(c.cmd, cwd, checkEnv(wt, cwd), c.timeoutMs, abort, { idleMs: c.idleMs }), () => console.log(`[checks] ${statusName(c)}: ${t("lc.waitTurn")}`))
             : { ok: false, out: `${t("lc.installFail", { dir: inst?.dir || "." })}\n${installRes.out}` };
         }
         return { c, res, took: duration(Date.now() - started) };
@@ -448,6 +501,7 @@ async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
       }
     }
   } finally {
+    release();
     await (d.cleanup ?? (async (path: string) => {
       await removeWorktree(d.repoPath, path);
       rmSync(path, { recursive: true, force: true });
