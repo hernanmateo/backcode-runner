@@ -756,6 +756,11 @@ Cuándo se usan:
      confirmación, **Pasar en local y mergear**. Con **Exigir checks** esto último no se puede: un check del host en rojo
      sigue bloqueando. Queda anotado en el historial de la tarea qué checks se sustituyeron.
 
+3. **Despliegues, OTA y builds** (también «Desplegarlo todo»): si se bloquean porque los checks del último commit de la
+   rama **no llegaron a ejecutarse**, el runner lo dice (`blocked: "ciNotStarted"`) y la app, en lugar de «Arreglar con
+   Claude», ofrece **Pasar los checks en local y reintentar** (repite la misma acción con `localChecks`) y **Pausar GitHub
+   Actions**. Si los checks fallaron de verdad, esto no se ofrece.
+
 Si fallan, el final de la salida va al resultado del merge (la app lo enseña) y a **Devolver a Claude Code**.
 
 ### GitHub Actions: minutos, pausa y reactivación

@@ -271,9 +271,14 @@ async function doRun(d: LocalRunDeps): Promise<LocalRun> {
  * app ofrece «Pasar los checks en local». Si alguno falló de verdad o sigue en curso, no.
  */
 export async function onlyNotStarted(host: PrHost, prUrl: string, checks: Checks): Promise<boolean> {
-  if (checks.state !== "failing" || !host.notStarted) return false;
+  return onlyNotStartedIn(host.notStarted ? () => host.notStarted!(prUrl) : undefined, checks);
+}
+
+/** Como onlyNotStarted, con la lista de los que no arrancaron de donde sea (un PR o un commit). */
+export async function onlyNotStartedIn(read: (() => Promise<string[]>) | undefined, checks: Checks): Promise<boolean> {
+  if (checks.state !== "failing" || !read) return false;
   const failing = checks.pending.filter((p) => p.endsWith(": fail")).map((p) => p.slice(0, -": fail".length));
   if (checks.pending.some((p) => !p.endsWith(": fail") && !p.startsWith(LOCAL_CHECK_PREFIX))) return false;
-  const notStarted = new Set(await host.notStarted(prUrl).catch(() => [] as string[]));
+  const notStarted = new Set(await read().catch(() => [] as string[]));
   return failing.length > 0 && failing.every((n) => notStarted.has(n) || n.startsWith(LOCAL_CHECK_PREFIX));
 }

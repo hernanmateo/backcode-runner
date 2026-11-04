@@ -13,7 +13,8 @@ import { t } from "./i18n.js";
 import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-checks.js";
 import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
-import { type ChecksMode, type LocalRun, localChecksAt, onlyNotStarted, rememberPrLog, runLocalChecks } from "./local-checks.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { type ChecksMode, type LocalRun, localChecksAt, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
@@ -76,6 +77,8 @@ export interface Action {
   /**
    * Merge «Pasar los checks en local»: el runner ejecuta los checks del backcode.toml de la rama base sobre el PR y, si
    * pasan, sustituyen a los de la CI del host que no llegaron a ejecutarse (o, sin «Exigir checks», a los que fallaron).
+   * En un despliegue, OTA, build o «Desplegarlo todo»: solo si los checks del último commit de la rama no llegaron a
+   * ejecutarse, se pasan en local y, en verde, se publica (ver requireGreenBase).
    */
   localChecks?: boolean;
   /** «Pausar GitHub Actions»: reactivarlos solo al renovarse los minutos (el día 1 del mes siguiente). */
@@ -225,6 +228,9 @@ function checksWhenDone(read: () => Promise<Checks>, what: string, noneGraceMs =
   return waitForChecks(read, { noneGraceMs, onWait: () => console.log(`[action] ${t("act.waitingChecks", { what })}`) });
 }
 
+// La acción en curso pidió «Pasar los checks en local» (lo lee requireGreenBase sin pasarlo por todas las capas).
+const actionScope = new AsyncLocalStorage<{ localChecks: boolean }>();
+
 /** Checks del último commit de la rama base antes de publicar (OTA, builds y despliegues). */
 async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, commit: string, branch = cfg.baseBranch): Promise<ActionResult | null> {
   const what = `${branch} (${commit.slice(0, 7)})`;
@@ -235,10 +241,24 @@ async function requireGreenBase(cfg: RunnerConfig, host: PrHost | undefined, com
   const grace = (await ciConfigAt(cfg.repoPath, commit)) ? BASE_CHECKS_APPEAR_MS : 0;
   const checks = await checksWhenDone(() => host.commitChecks(commit), what, grace);
   if (checks.state === "none" && grace && requireChecks) return { error: t("act.ciNoChecks", { what }) };
-  return requireGreen(checks, what);
+  const blocked = requireGreen(checks, what);
+  if (!blocked || checks.state !== "failing") return blocked;
+  // Checks de la rama que no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido): pasarlos en local si
+  // la acción lo pidió; si no, decirlo (la app ofrece «Pasar los checks en local» junto al error).
+  if (!(await onlyNotStartedIn(host.commitNotStarted ? () => host.commitNotStarted!(commit) : undefined, checks))) return blocked;
+  if (ghActions && !ghActions.isPaused()) {
+    ghActions.markOutOfMinutes();
+    onActionsChange();
+  }
+  if (actionScope.getStore()?.localChecks) return requireLocalGreen(await localChecks(cfg, host, commit, commit), what);
+  return { error: t("act.ciNotStartedBase", { what }), checks: checks.pending, blocked: "ciNotStarted" };
 }
 
 export async function runAction(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
+  return actionScope.run({ localChecks: action.localChecks === true && action.type !== "merge" }, () => runActionIn(cfg, store, host, action));
+}
+
+async function runActionIn(cfg: RunnerConfig, store: Store, host: PrHost | undefined, action: Action): Promise<{ ok: boolean; result: ActionResult }> {
   if (action.type === "merge") return merge(cfg, store, host, action.featureId ?? "", { confirmCi: action.confirmCi === true, localChecks: action.localChecks === true });
   if (action.type === "rerunChecks") return rerunChecks(store, host, action.featureId ?? "");
   if (action.type === "actionsPause" || action.type === "actionsResume") return pauseActions(action.type === "actionsPause", action.autoResume !== false);
@@ -1016,7 +1036,7 @@ export async function deployAll(cfg: RunnerConfig, store: Store, host: PrHost | 
     log.push(`${ok ? "✓" : "✗"} ${label}${result.url ? ` · ${result.url}` : ""}`);
     if (!ok) {
       const skipped = steps.slice(i + 1).map((s, j) => `${i + j + 2}. ${stepLabel(s)}`);
-      return finalResult({ ok: false, result: { order: steps, steps: progress.steps, ...(features.length ? { features } : {}), ...(result.autoRetry ? { autoRetry: result.autoRetry } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } });
+      return finalResult({ ok: false, result: { order: steps, steps: progress.steps, ...(result.blocked === "ciNotStarted" ? { blocked: "ciNotStarted" as const } : {}), ...(features.length ? { features } : {}), ...(result.autoRetry ? { autoRetry: result.autoRetry } : {}), error: t("plan.stepFailed", { step: label, skipped: skipped.join(", ") || "—", error: String(result.error ?? "").slice(-2000) }), log: log.join("\n") } });
     }
   }
   return finalResult({ ok: true, result: { order: steps, steps: progress.steps, sha: progress.steps.at(-1)?.sha, features, log: log.join("\n") } });
