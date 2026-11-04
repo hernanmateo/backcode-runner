@@ -780,6 +780,12 @@ description = "App · tipos y lint"          # opcional
   última vez que pasó en tu ordenador, **no se repite**: un PR que no toca `app/` no vuelve a pasar los checks de la app, y
   el despliegue tras el squash no repite los checks del PR. Lo recuerda `~/.backcode/checks-cache.json`, que solo guarda
   claves y fechas, caduca a los 7 días y guarda como mucho 300 entradas.
+- **Sin pisarse ni dejar procesos vivos:** el mismo check de un repo no se ejecuta en dos commits a la vez en tu ordenador
+  (dos PR, un merge y una verificación…): el segundo espera su turno, porque suelen usar recursos fijos como los puertos de
+  los emuladores de Firebase. Si un check se corta por `timeout` (o se abandona su verificación), el runner para todo lo
+  que lanzó, también los procesos que salen de su grupo como los emuladores: primero SIGTERM y, a los 10 s, SIGKILL.
+- **La salida de lo que falla queda guardada:** la de cada check que falla, entera, en
+  `~/.backcode/logs/checks/<fecha>-<commit>-<nombre>.log` (las 30 últimas), para ver qué pasó aunque el runner se reinicie.
 - **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
   sobre su último commit en segundo plano (como mucho 30 min; no frena la cola) y guarda el resultado en la tarea
   (subdocumento `checks/verify`: commit del PR, commit de la rama principal, fecha, checks y un resumen si fallan). También lo publica en

@@ -223,9 +223,11 @@ export async function verifyTaskChecks(cfg: RunnerConfig, store: Store, host: Pr
     const names = checks.map((c) => c.name);
     console.log(`[checks] ${t("lc.verifyStart", { sha: headSha.slice(0, 7) })}`);
     await store.setChecksVerify(featureId, { state: "verifying", headSha, baseSha, checks: names });
+    // Si se cansa de esperar, aborta: los checks que deja no siguen vivos (ni sus emuladores ocupando puertos).
+    const abort = new AbortController();
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<null>((r) => (timer = setTimeout(() => r(null), VERIFY_TIMEOUT_MS)));
-    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
+    const timeout = new Promise<null>((r) => (timer = setTimeout(() => (abort.abort(), r(null)), VERIFY_TIMEOUT_MS)));
+    const run = await Promise.race([runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: headSha, checks, signal: abort.signal }).catch(() => null), timeout]).finally(() => clearTimeout(timer));
     const passed = run?.checks.state === "green";
     const failing = run ? run.checks.pending.filter((p) => p.endsWith(": fail")).map((p) => p.slice(0, -": fail".length).replace(LOCAL_CHECK_PREFIX, "")) : [];
     const summary = passed ? "" : run ? t("lc.verifyFail", { checks: failing.join(", ") || run.checks.state }) : t("lc.verifyTimeout");
