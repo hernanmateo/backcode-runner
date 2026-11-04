@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import type { LiveUsageSnapshot } from "./live-usage.js";
+import type { FollowUp } from "./follow-ups.js";
 import { MAX_FINDINGS, type ReviewLevel, type ReviewState, reviewLevel } from "./code-review.js";
 import { initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, signInWithCustomToken } from "firebase/auth";
@@ -253,6 +254,9 @@ export interface FeatureResult {
   /** Pasos a mano tras mergear (desplegar reglas, migraciones…): la app los muestra con botón de copiar y, si el repo
    * declara un destino backcode:deploy:<deployTarget>, con botón para ejecutarlo con el runner de un admin. */
   afterMerge?: { why: string; command?: string; deployTarget?: string }[];
+  /** Siguientes tareas que propuso Claude al abrir el PR (follow-ups.ts): la app ofrece crearlas en el backlog o, si
+   * están bloqueadas por un permiso, una key o algo externo, seguir en el Claude Code de la persona. */
+  followUps?: FollowUp[];
   /** Modo plan: la vuelta terminó con un plan propuesto, pendiente de aprobar. */
   planReady?: boolean;
   /** Tarea de CI: ficheros que cambia su PR respecto a la base (la app los enseña al confirmar el merge). */

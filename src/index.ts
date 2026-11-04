@@ -57,6 +57,7 @@ import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
+import { FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, normalizeFollowUps } from "./follow-ups.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { dropProgress, restoreProgress, saveProgress } from "./handoff.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
@@ -366,7 +367,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ),
       tool(
         "open_pull_request",
-        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${deployNames.length ? ` This repo can run these deploy targets from the app (set deployTarget to the matching one instead of, or as well as, the command): ${deployNames.join(", ")}.` : ""}`,
+        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${deployNames.length ? ` This repo can run these deploy targets from the app (set deployTarget to the matching one instead of, or as well as, the command): ${deployNames.join(", ")}.` : ""}`,
         {
           title: z.string().min(5).max(120),
           body: z.string().min(20).max(20_000),
@@ -380,8 +381,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             )
             .max(10)
             .optional(),
+          followUps: z.array(FOLLOW_UP_INPUT).max(10).optional(),
         },
-        async ({ title, body, afterMerge: steps }) => {
+        async ({ title, body, afterMerge: steps, followUps: proposed }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
           if (prUrl) return fail(t("pr.already", { url: prUrl }));
 
@@ -416,6 +418,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
           afterMerge = ciHost ? undefined : steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
+          // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
+          // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
+          const next = ciHost ? undefined : normalizeFollowUps(proposed);
+          if (next) result = { ...result, followUps: next };
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
@@ -474,7 +480,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     });
   }, FEATURE_LEASE_MS / 3);
 
-  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}) };
+  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}), ...(feature.result?.followUps ? { followUps: feature.result.followUps } : {}) };
   let sessionId = feature.sessionId;
   const model = modelFor(feature, cfg.model);
   // Límite del plan de Claude Code: el último rate_limit_event rechazado y, si la vuelta acaba en error por él, el motivo.
