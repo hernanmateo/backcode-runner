@@ -149,7 +149,8 @@ cable, on a phone paired with your runner's computer; the panel's **Phones** sec
 phone" on its page — or run a deploy script. A **Pending deploys** card lists what's on the main branch and hasn't gone out yet, as numbered steps in
 the right order (rules → functions → other deploys → OTA), each with its own button plus **Deploy everything**, which stops at the
 first failure. Deploys done outside the app count too: what Claude Code deploys through the plugin, `backcode deployed <name>`
-or **I already deployed it** on a step (admins), and Firebase rules the runner checks against what's published (with
+or **I already deployed it** on a step (admins; also on the **Build iOS/Android** rows and the Build tab for a build made
+and shipped outside Backcode, recorded as `build:ios` / `build:android`), and Firebase rules the runner checks against what's published (with
 `gcloud auth print-access-token`, kept in memory only; without gcloud it skips the check). If the main branch has native
 changes (`ios/`, `android/`, Expo config, `eas.json`, config plugins/modules, native dependencies or the Expo SDK) since the
 last tester build of a platform made from Backcode, the card shows a pending **Build iOS/Android** with a button to the Build

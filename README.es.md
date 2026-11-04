@@ -592,7 +592,9 @@ una vez y al cambiar, no todo el historial en cada cálculo (sin conexión, los 
 - **Lo desplegado fuera de la app también cuenta** (registro `projects/{pid}/deployLog`: paso, commit, cuándo, quién y vía):
   - lo que despliega **Claude Code** con el plugin (ver «Despliegues que hace Claude Code» arriba);
   - **a mano**: `backcode deployed <nombre>` desde el repo, o **Ya lo desplegué** en el paso (admins, con confirmación), que lo
-    da por desplegado con la punta de la rama principal. No despliega nada;
+    da por desplegado con la punta de la rama principal. No despliega nada. También en las filas **Build iOS/Android** (y en
+    la pestaña Build) para una build hecha y enviada fuera de Backcode: se apunta como `build:ios` / `build:android` y deja de
+    faltar build de esa plataforma; no compila nada;
   - **reglas de Firebase comprobadas**: para un paso de reglas que no está al día, el runner pregunta a Firebase Rules qué reglas
     de Firestore y Storage están publicadas y, si son las de la rama principal, lo da por desplegado (como mucho cada 30 min por
     paso y commit). Usa `gcloud auth print-access-token` (solo en memoria, nunca se escribe) con el propio proyecto como proyecto
@@ -841,7 +843,10 @@ o API key. Si el runner está apagado, ocupado con otro refinado, falla o tarda 
 OpenAI como siempre y la app lo indica. Solo se usa tu propio runner: las ideas de otros nunca gastan tu cuota.
 
 ## Uso y cuota
-El runner publica en tu grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
+Mientras una tarea se ejecuta, la ficha y «En directo» muestran sus tokens y un coste aproximado («≈ $1.20») calculado
+con la tabla de precios por familia de modelo de `src/prices.ts`; al acabar cada turno lo sustituye el coste exacto de
+Claude Code. Si el modelo no está en la tabla no se inventa precio: se ve «coste al terminar». El runner publica en tu
+grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
 cuota de 5 h y semanal (dato orientativo de una API experimental de Claude Code). Lo ves en **Grupo → Uso del equipo** y en el
 perfil de cada miembro. La cuota se lee al arrancar, tras cada tarea, cada 5 minutos y cuando alguien pulsa ↻ en la app (leerla no
 llama al modelo ni consume); si tu runner está apagado, se ve la última lectura.
