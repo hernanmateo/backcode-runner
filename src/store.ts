@@ -40,6 +40,7 @@ import type { DeployPlan } from "./pending.js";
 import type { DeployVia } from "./deploy-log.js";
 import type { TaskBuild } from "./deploy-tasks.js";
 import type { OpenPr } from "./hosts.js";
+import { type ChecksVerification, readVerification } from "./checks-verify.js";
 import type { DiagnosticPayload } from "./diagnostics.js";
 import type { AutoRetryState } from "./auto-retry.js";
 
@@ -893,6 +894,21 @@ export class Store {
   /** Marca (o desmarca, con []) los ficheros en conflicto de la rama de una tarea con la base. */
   async setConflicts(featureId: string, files: string[]): Promise<void> {
     await updateDoc(this.feature(featureId), { conflicts: files.length ? files.slice(0, 50) : deleteField() });
+  }
+
+  /**
+   * Guarda la verificación de los checks de una tarea al terminar (checks-verify.ts) en su subdocumento checks/verify (la
+   * regla de update de la tarea ya roza el límite de expresiones de Firestore); la fecha, la del servidor.
+   */
+  async setChecksVerify(featureId: string, v: ChecksVerification): Promise<void> {
+    const { checkedAt: _at, ...rest } = v;
+    await setDoc(doc(this.feature(featureId), "checks", "verify"), { ...rest, checkedAt: serverTimestamp() });
+  }
+
+  /** La verificación de los checks guardada en una tarea (null si no hay). */
+  async checksVerifyOf(featureId: string): Promise<ChecksVerification | null> {
+    const d = await getDoc(doc(this.feature(featureId), "checks", "verify"));
+    return d.exists() ? readVerification(d.data()) : null;
   }
 
   /** `ciConfirmed`: PR de una tarea de CI mergeado tras la confirmación explícita de quien lo pidió (`by`). */

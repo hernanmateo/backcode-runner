@@ -757,6 +757,14 @@ description = "App · tipos y lint"          # opcional
   última vez que pasó en tu ordenador, **no se repite**: un PR que no toca `app/` no vuelve a pasar los checks de la app, y
   el despliegue tras el squash no repite los checks del PR. Lo recuerda `~/.backcode/checks-cache.json`, que solo guarda
   claves y fechas, caduca a los 7 días y guarda como mucho 300 entradas.
+- **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
+  sobre su último commit en segundo plano (como mucho 30 min; no frena la cola) y guarda el resultado en la tarea
+  (subdocumento `checks/verify`: commit del PR, commit de la rama principal, fecha, checks y un resumen si fallan). También lo publica en
+  el commit como el estado `backcode/local-checks`. La app lo enseña en la tarjeta del merge y en la lista de merges
+  («Checks OK» / «Checks fallidos» / «verificando…»). Al mergear, si pasaron, el PR sigue en ese commit y la rama
+  principal no se ha movido (o la rama ya la contiene) y los checks declarados son los mismos, **no se repiten**: «checks ya
+  verificados en &lt;sha&gt;, no se repiten». Si falta, falló, es de hace más de 7 días o algo cambió, se pasan como
+  siempre. Con la CI del host no se verifica nada al terminar: manda la CI del PR.
 
 Cuándo se usan:
 

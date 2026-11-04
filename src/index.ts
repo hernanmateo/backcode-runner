@@ -28,7 +28,7 @@ import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
 import { localChecksAt } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
-import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { clampRetryMax, decideRetry } from "./auto-retry.js";
 import { materializeAttachments } from "./attachments.js";
@@ -1106,6 +1106,8 @@ async function runOne(id: string, feature: Feature): Promise<void> {
       await store.event(id, status, result.prUrl ?? result.error ?? "");
       // Un PR de CI nunca entra en el modo auto: se revisa y se mergea a mano.
       if (status === "done" && result.prUrl?.startsWith("https://") && !isCiTask(feature)) queueAutoMerge(id);
+      // Con checks en local, se verifican ya sobre el último commit del PR (en segundo plano: no frena la cola).
+      if (status === "done" && result.prUrl?.startsWith("https://") && result.branch) void verifyTaskChecks(cfg, store, prHost, id, result.branch);
       if (status === "failed") await afterFailure(id, feature, result, !!cancelled).catch((err) => console.warn(`[retry] ${id} ${(err as Error).message}`));
     }
     console.log(`[${status}] ${id} ${result.prUrl ?? result.error ?? ""}`);
