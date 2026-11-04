@@ -7,7 +7,11 @@
 //   dir = "app"                                 # opcional: carpeta, relativa a la raíz; por defecto la raíz
 //   install = true                              # opcional: instalar antes las dependencias de esa carpeta (por defecto sí)
 //   timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+//   paths = ["app", "firestore.rules"]          # opcional: de qué depende (carpetas o ficheros); por defecto, todo el repo
 //   description = "Tipos y lint de la app"      # opcional
+//
+// Rápidos: se ejecutan a la vez, y un check que ya pasó con el mismo contenido de sus `paths` (el mismo commit, el squash
+// de un PR ya comprobado o un PR que no los toca) no se repite: checks-cache.ts lo recuerda en este ordenador.
 //
 // Los comandos se leen del backcode.toml de la rama base (no del PR): un PR no puede rebajar lo que se comprueba.
 // Se usan en dos casos: el proyecto tiene «Checks en local» (checksMode = "local") o, con la CI del host, alguien pide
@@ -17,6 +21,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { looksSecret } from "./diagnostics.js";
 import { parseToml } from "./deploy-config.js";
+import { checkKey, type ChecksCache, fileChecksCache } from "./checks-cache.js";
 import { createDetachedWorktree, git, removeWorktree } from "./git.js";
 import { type Checks, type CheckItem, type PrHost, summarize } from "./hosts.js";
 import { t } from "./i18n.js";
@@ -38,6 +43,8 @@ export interface LocalCheck {
   cmd: string[];
   install: boolean;
   timeoutMs: number;
+  /** De qué depende, relativo al repo (carpetas o ficheros). Vacío: de todo el repo. */
+  paths: string[];
   description?: string;
 }
 
@@ -71,7 +78,8 @@ export function readCheckConfig(text: string): { checks: LocalCheck[]; errors: s
     }
     const minutes = typeof d.timeout === "number" && d.timeout >= 1 ? Math.min(60, d.timeout) : DEFAULT_TIMEOUT_MIN;
     const description = typeof d.description === "string" ? d.description.replace(/\s+/g, " ").trim().slice(0, 80) : "";
-    checks.push({ name, dir, cmd, install: d.install !== false, timeoutMs: minutes * 60_000, ...(description ? { description } : {}) });
+    const paths = Array.isArray(d.paths) && d.paths.every((p) => typeof p === "string") ? (d.paths as string[]).map(norm).filter((p) => p && inside(p)) : [];
+    checks.push({ name, dir, cmd, install: d.install !== false, timeoutMs: minutes * 60_000, paths, ...(description ? { description } : {}) });
   }
   return { checks, errors };
 }
@@ -179,6 +187,10 @@ export interface LocalRunDeps {
   run?: (cmd: string[], cwd: string, env: Record<string, string>, timeoutMs: number) => Promise<{ ok: boolean; out: string }>;
   worktree?: (sha: string) => Promise<string>;
   cleanup?: (wt: string) => Promise<void>;
+  /** Lo ya comprobado en este ordenador (por defecto, ~/.backcode/checks-cache.json). */
+  cache?: ChecksCache;
+  /** Clave de contenido de un check en `sha` (por defecto, checkKey con git). */
+  key?: (check: LocalCheck) => Promise<string | null>;
 }
 
 // Dos acciones a la vez sobre el mismo commit (un merge y un despliegue, dos merges seguidos) comparten la ejecución.
@@ -215,42 +227,62 @@ async function doRun(d: LocalRunDeps): Promise<LocalRun> {
   const publish = async (check: LocalCheck, state: CheckItem["state"], description: string) => {
     await d.host?.setStatus?.(d.sha, { name: statusName(check), state, description }).catch((e: Error) => console.warn(`\x1b[33m⚠ ${t("lc.publishFail", { name: check.name, error: e.message.split("\n")[0] })}\x1b[0m`));
   };
-  // Los que ya pasaron en este commit (otro merge, el despliegue de después…) no se vuelven a ejecutar.
+  const cache = d.cache ?? fileChecksCache();
+  const keyOf = d.key ?? ((c: LocalCheck) => checkKey(d.repoPath, d.sha, c));
+  // Los que ya pasaron en este commit (estado en el host) o con el mismo contenido (caché local) no se repiten.
   const existing = (await d.host?.commitItems?.(d.sha).catch(() => [] as CheckItem[])) ?? [];
   const before = new Map(existing.map((i) => [i.name, i.state]));
-  const todo = d.checks.filter((c) => before.get(statusName(c)) !== "ok");
-  const items: CheckItem[] = d.checks.filter((c) => !todo.includes(c)).map((c) => ({ name: statusName(c), state: "ok" }));
+  const keys = new Map<LocalCheck, string | null>();
+  for (const c of d.checks) keys.set(c, await keyOf(c).catch(() => null));
+  const items: CheckItem[] = [];
+  const todo: LocalCheck[] = [];
+  for (const c of d.checks) {
+    const key = keys.get(c);
+    if (before.get(statusName(c)) === "ok") {
+      items.push({ name: statusName(c), state: "ok" });
+      if (key) cache.remember(key);
+    } else if (key && cache.has(key)) {
+      items.push({ name: statusName(c), state: "ok" });
+      console.log(`[checks] ${statusName(c)}: ${t("lc.cached")}`);
+      await publish(c, "ok", t("lc.cachedStatus"));
+    } else todo.push(c);
+  }
   if (!todo.length) return { checks: summarize(items), log: "" };
 
   console.log(`[checks] ${t("lc.start", { n: todo.length, sha: d.sha.slice(0, 7) })}`);
-  for (const c of todo) await publish(c, "pending", t("lc.pending"));
+  await Promise.all(todo.map((c) => publish(c, "pending", t("lc.pending"))));
   const run = d.run ?? runCommand;
   const wt = await (d.worktree ?? ((sha) => createDetachedWorktree(d.repoPath, d.worktreesDir, `_checks-${sha.slice(0, 12)}`, sha)))(d.sha);
   const logs: string[] = [];
   try {
-    const installed = new Map<string, { ok: boolean; out: string }>();
-    for (const c of todo) {
-      const started = Date.now();
-      const cwd = join(wt, c.dir);
-      const env = checkEnv(wt, cwd);
-      let res: { ok: boolean; out: string };
-      if (!existsSync(cwd)) res = { ok: false, out: t("lc.noDir", { dir: c.dir }) };
-      else {
-        // Las dependencias de cada carpeta se instalan una vez aunque varios checks las usen.
-        const inst = c.install ? installFor(wt, c.dir) : null;
-        let installRes: { ok: boolean; out: string } = { ok: true, out: "" };
-        if (inst) {
-          const k = inst.dir;
-          if (!installed.has(k)) installed.set(k, await run(inst.cmd, join(wt, inst.dir), checkEnv(wt, join(wt, inst.dir)), c.timeoutMs));
-          installRes = installed.get(k)!;
+    // Las dependencias de cada carpeta se instalan una vez aunque varios checks las usen, y todos van a la vez.
+    const installs = new Map<string, Promise<{ ok: boolean; out: string }>>();
+    const results = await Promise.all(
+      todo.map(async (c) => {
+        const started = Date.now();
+        const cwd = join(wt, c.dir);
+        let res: { ok: boolean; out: string };
+        if (!existsSync(cwd)) res = { ok: false, out: t("lc.noDir", { dir: c.dir }) };
+        else {
+          const inst = c.install ? installFor(wt, c.dir) : null;
+          let installRes: { ok: boolean; out: string } = { ok: true, out: "" };
+          if (inst) {
+            if (!installs.has(inst.dir)) installs.set(inst.dir, run(inst.cmd, join(wt, inst.dir), checkEnv(wt, join(wt, inst.dir)), c.timeoutMs));
+            installRes = await installs.get(inst.dir)!;
+          }
+          res = installRes.ok ? await run(c.cmd, cwd, checkEnv(wt, cwd), c.timeoutMs) : { ok: false, out: `${t("lc.installFail", { dir: inst?.dir || "." })}\n${installRes.out}` };
         }
-        res = installRes.ok ? await run(c.cmd, cwd, env, c.timeoutMs) : { ok: false, out: `${t("lc.installFail", { dir: inst?.dir || "." })}\n${installRes.out}` };
-      }
-      const took = duration(Date.now() - started);
+        return { c, res, took: duration(Date.now() - started) };
+      }),
+    );
+    for (const { c, res, took } of results) {
       console.log(`[checks] ${statusName(c)}: ${res.ok ? "ok" : "fail"} (${took})`);
       items.push({ name: statusName(c), state: res.ok ? "ok" : "fail" });
-      if (res.ok) await publish(c, "ok", t("lc.ok", { took }));
-      else {
+      if (res.ok) {
+        const key = keys.get(c);
+        if (key) cache.remember(key);
+        await publish(c, "ok", t("lc.ok", { took }));
+      } else {
         await publish(c, "fail", `${t("lc.fail", { took })} ${lastLine(res.out)}`.trim());
         logs.push(`## ${statusName(c)}\n${cleanOutput(res.out, LOG_MAX)}`);
       }

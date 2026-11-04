@@ -743,6 +743,7 @@ run = "npm run typecheck && npm run lint"   # el comando (con sh -c) o una lista
 dir = "app"                                 # opcional: carpeta; por defecto la raíz
 install = true                              # opcional: instalar antes las dependencias (npm ci, pnpm/yarn/bun congelados)
 timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+paths = ["app"]                             # opcional: de qué depende; por defecto, todo el repo
 description = "App · tipos y lint"          # opcional
 ```
 
@@ -751,6 +752,11 @@ description = "App · tipos y lint"          # opcional
   resultado se publica en el commit como un estado **«Backcode · &lt;nombre&gt;»**: sale en el PR de GitHub/Bitbucket como un
   check más. Si un check ya consta en verde en ese commit, no se repite.
 - Son comandos de shell fijos, **sin Claude**: no gastan tokens.
+- **Rápidos:** se ejecutan **a la vez** (las dependencias de cada carpeta se instalan una sola vez). Con `paths = [...]`
+  cada check dice de qué carpetas o ficheros depende (sin `paths`, de todo el repo). Si ese contenido no cambió desde la
+  última vez que pasó en tu ordenador, **no se repite**: un PR que no toca `app/` no vuelve a pasar los checks de la app, y
+  el despliegue tras el squash no repite los checks del PR. Lo recuerda `~/.backcode/checks-cache.json`, que solo guarda
+  claves y fechas, caduca a los 7 días y guarda como mucho 300 entradas.
 
 Cuándo se usan:
 
