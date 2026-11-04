@@ -5,7 +5,7 @@ import { z } from "zod";
 import { materializeAttachments, type LocalAttachment } from "./attachments.js";
 import type { RunnerConfig } from "./config.js";
 import { hasMarkers } from "./conflicts.js";
-import { createDetachedWorktree, git, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { createDetachedWorktree, git, gitPush, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
@@ -319,7 +319,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
             const ahead = Number(await git(path, ["rev-list", "--count", `refs/remotes/${remote}/${branch}..HEAD`]));
             if (!ahead) return fail(t("ch.nothing"));
             // Sin forzar: si la rama avanzó en el remoto, el push falla y no se pisa nada.
-            await git(path, ["push", "--quiet", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
+            await gitPush(path, ["--quiet", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
             await git(path, ["fetch", "--quiet", remote, `+${branch}:refs/remotes/${remote}/${branch}`]).catch(() => undefined);
           } catch (err) {
             return fail(String(err).slice(0, 1000));

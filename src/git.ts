@@ -1,3 +1,4 @@
+import { withRemoteRetry } from "./remote-retry.js";
 import { execFile } from "node:child_process";
 import { readDeployConfig } from "./deploy-config.js";
 
@@ -25,6 +26,11 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 export async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", [...NO_HOOKS, ...args], { cwd, maxBuffer: 50 * 1024 * 1024 });
   return stdout.trim();
+}
+
+/** `git push <args>` reintentando las caídas pasajeras del host (remote-retry.ts). Sin forzar, repetirlo no pisa nada. */
+export function gitPush(cwd: string, args: string[]): Promise<string> {
+  return withRemoteRetry(() => git(cwd, ["push", ...args]), { label: "git push" });
 }
 
 /**
@@ -76,7 +82,7 @@ export async function findConflicts(repoPath: string, worktreesDir: string, remo
 
 /** Sube la rama de una tarea (p. ej. tras mezclar la base sin conflictos): el PR se actualiza solo. */
 export async function pushBranch(worktree: string, remote: string, branch: string): Promise<void> {
-  await git(worktree, ["push", "--no-verify", "--force-with-lease", remote, `${branch}:${branch}`]);
+  await gitPush(worktree, ["--no-verify", "--force-with-lease", remote, `${branch}:${branch}`]);
 }
 
 /** Trae la rama base y la de una tarea del remoto. */
@@ -562,7 +568,7 @@ export async function commitPushAndOpenPr(opts: {
     "-m", opts.title,
     "-m", `Backcode-Feature: ${opts.featureId}`,
   ]);
-  await git(opts.worktree, ["push", "--no-verify", "--force-with-lease", opts.remote, `${opts.branch}:${opts.branch}`]);
+  await gitPush(opts.worktree, ["--no-verify", "--force-with-lease", opts.remote, `${opts.branch}:${opts.branch}`]);
   if (!opts.host) return `${opts.remote}/${opts.branch}`;
   // En una conversación el PR ya existe: el push de arriba lo actualiza.
   return opts.host.openOrUpdatePr({ cwd: opts.worktree, branch: opts.branch, base: opts.baseBranch, title: opts.title, body: opts.body });

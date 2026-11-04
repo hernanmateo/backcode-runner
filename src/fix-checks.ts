@@ -4,7 +4,7 @@ import { failingLog } from "./check-logs.js";
 import { CI_TOOLS, ciGuard, type CiHost, isCiTask } from "./ci-task.js";
 import { followLocalWorktree } from "./conflicts.js";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, git, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { createDetachedWorktree, git, gitPush, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
@@ -147,7 +147,7 @@ export async function fixChecks(
       if (blocked.length) return { ok: false, result: { error: t("checksFix.protected", { files: blocked.join(", ") }), url: prUrl } };
     }
     // Sin forzar: si alguien subió a la rama mientras tanto, falla y no se pisa nada.
-    await git(path, ["push", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
+    await gitPush(path, ["--no-verify", remote, `HEAD:refs/heads/${branch}`]);
     await followLocalWorktree(cfg, featureId, branch);
     const text = t("checksFix.done");
     await store.event(featureId, "start", summary ? `${text}\n${summary}` : text);

@@ -93,6 +93,8 @@ export interface Feature {
   attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
   sessionId?: string;
+  /** Un admin cambió el ejecutor (reassignFeature): sin sesión, este runner la continúa con una de relevo (handoff.ts). */
+  handoff?: { from?: string; by?: string };
   /** Modelo elegido en la app ("auto" = el que sugirió el refinador) y la sugerencia. */
   model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
   /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
@@ -304,7 +306,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -405,12 +407,23 @@ export class Store {
 
   /** Estado de GitHub Actions del repo (github-actions.ts): se guarda solo si cambia. */
   private githubActionsKey = "";
+  /** Lo último guardado: la renovación del lock reescribe el documento entero, así que lo lleva dentro. */
+  githubActions: Record<string, unknown> | null = null;
+  /** Por qué esperan en cola mis tareas (setQueue); también va en cada renovación del lock. */
+  queue: { reason: string; featureIds: string[]; at: Timestamp } | null = null;
   async saveGithubActions(status: unknown): Promise<void> {
     const { checkedAt: _checkedAt, ...rest } = (status ?? {}) as Record<string, unknown>;
     const key = JSON.stringify(rest);
     if (key === this.githubActionsKey) return;
+    const clean = JSON.parse(JSON.stringify(status)) as Record<string, unknown>;
+    // La clave y el estado guardado solo se actualizan si la escritura fue bien: si falla, la próxima vez se reintenta.
+    try {
+      await updateDoc(doc(this.project(), "runners", this.uid), { githubActions: clean });
+    } catch {
+      return;
+    }
     this.githubActionsKey = key;
-    await updateDoc(doc(this.project(), "runners", this.uid), { githubActions: JSON.parse(JSON.stringify(status)) }).catch(() => undefined);
+    this.githubActions = clean;
   }
 
   /** Si la rama base tiene CI (ver ci.ts): se guarda solo si cambia (también va en cada renovación del lock). */
@@ -427,6 +440,20 @@ export class Store {
     await updateDoc(doc(this.project(), "runners", this.uid), { plan: this.plan }).catch(() => undefined);
   }
 
+  /** Lo que escribe cada renovación del lock (sin merge): debe incluir todo campo que otros métodos guardan con updateDoc en el mismo documento. */
+  lockPayload(): Record<string, unknown> {
+    return {
+      holder: this.cfg.runnerId,
+      leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS),
+      warnings: this.warnings,
+      capabilities: this.capabilities,
+      ...(this.plan ? { plan: this.plan } : {}),
+      ...(this.prs ? { prs: this.prs } : {}),
+      ...(this.githubActions ? { githubActions: this.githubActions } : {}),
+      ...(this.queue ? { queue: this.queue } : {}),
+    };
+  }
+
   /** Garantiza un único runner por usuario y proyecto. Devuelve una función para liberar el lock. */
   async acquireLock(): Promise<() => Promise<void>> {
     const ref = doc(this.project(), "runners", this.uid);
@@ -438,7 +465,7 @@ export class Store {
         if (holder && holder !== this.cfg.runnerId && until > Date.now()) {
           throw new Error(t("store.lockHeld", { holder }));
         }
-        tx.set(ref, { holder: this.cfg.runnerId, leaseUntil: Timestamp.fromMillis(Date.now() + LOCK_LEASE_MS), warnings: this.warnings, capabilities: this.capabilities, ...(this.plan ? { plan: this.plan } : {}), ...(this.prs ? { prs: this.prs } : {}) });
+        tx.set(ref, this.lockPayload());
       });
     await take();
     const timer = setInterval(() => {
@@ -1172,7 +1199,9 @@ export class Store {
 
   /** Por qué esperan en cola mis tareas de este proyecto (scheduler.ts): lo enseña la app en su tarjeta. */
   async setQueue(queue: { reason: string; featureIds: string[] } | null): Promise<void> {
-    await updateDoc(doc(this.project(), "runners", this.uid), { queue: queue ? { ...queue, at: serverTimestamp() } : null });
+    const next = queue ? { ...queue, at: Timestamp.now() } : null;
+    await updateDoc(doc(this.project(), "runners", this.uid), { queue: next });
+    this.queue = next;
   }
 
   /** «Conectar en <host>» / «Clonar en <host>» pedidos desde la app a este ordenador. */

@@ -430,6 +430,14 @@ Opus y Fable gastan la cuota del plan bastante más deprisa. La ficha muestra el
 - **Seguir en Claude Code:** la app te da el comando (`cd ~/.backcode/worktrees/… && claude --resume <sesión>`). Ahí
   trabajas con tus permisos normales, fuera del sandbox del runner.
 
+## Caídas de GitHub o Bitbucket
+Cuando GitHub o Bitbucket fallan de forma pasajera (500, 502 o 503, «fatal error in commit_refs», «Merge already in
+progress», timeouts…), el runner no se rinde a la primera. Reintenta los **push** (tareas, conflictos, checks, chat,
+`backcode task pr`), la **creación del PR** y el **merge** con esperas de 5 s, 15 s y 30 s, y en el merge hasta 60 s.
+Antes de cada reintento comprueba si la operación sí se hizo: el PR ya existe o ya consta como mergeado. Si aun así
+falla, el error lo dice y, si GitHub tiene una incidencia abierta (githubstatus.com), la nombra, para no buscar el fallo
+en tu código (`src/remote-retry.ts`).
+
 ## PRs mergeados fuera de la app
 Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket (o con `gh pr merge`), tu runner lo detecta en
 **un minuto como mucho** y la marca como **Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**. Cada
