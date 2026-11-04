@@ -459,8 +459,19 @@ map made from an almost empty repo is redone early once, as soon as the repo has
 <summary><strong>Can someone run code on my computer without my consent?</strong></summary>
 <br>
 Only tasks assigned to you run, and only after you accept them. An admin can also start one directly on your Claude Code
-(“Decretazos”, on by default), and you can turn that off in your profile. Either way, the brief is treated as untrusted
+(“Decretazos”, on by default), and you can turn that off in your profile. The same setting covers an admin handing you a
+stopped task that another runner started (“Change who runs it”). Either way, the brief is treated as untrusted
 and everything above applies.
+</details>
+
+<details>
+<summary><strong>What happens when an admin moves a task to another runner?</strong></summary>
+<br>
+When a task stops without a PR (needs a reply or failed), the runner pushes whatever it had not pushed yet to
+`refs/backcode/wip/<task id>`: not a branch, so it doesn't touch the PR or trigger CI, and never with protected files or
+possible secrets. If an admin then moves the task to someone else's runner, that runner continues on the same branch,
+restores those changes (uncommitted, as they were) and starts a new Claude Code session with the request and the task
+thread. The previous Claude Code session stays on the previous computer; it is never copied.
 </details>
 
 <details>

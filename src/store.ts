@@ -93,6 +93,8 @@ export interface Feature {
   attachments?: Attachment[];
   /** Sesión de Claude de esta tarea: si existe, el runner la continúa en lugar de empezar de cero. */
   sessionId?: string;
+  /** Un admin cambió el ejecutor (reassignFeature): sin sesión, este runner la continúa con una de relevo (handoff.ts). */
+  handoff?: { from?: string; by?: string };
   /** Modelo elegido en la app ("auto" = el que sugirió el refinador) y la sugerencia. */
   model?: "auto" | "haiku" | "sonnet" | "opus" | "fable";
   /** Ficheros en conflicto con la base que marcó la comprobación periódica. */
@@ -304,7 +306,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así

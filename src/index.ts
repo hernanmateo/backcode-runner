@@ -4,6 +4,7 @@ import { lastCliPublish, markCliPublished } from "./ota-watch.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { exitSupervised, RESTART_CODE, SUPERVISED, UPDATE_EVERY_MS, updateIfAvailable } from "./autoupdate.js";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { onSnapshot, type QueryDocumentSnapshot } from "firebase/firestore";
@@ -53,7 +54,8 @@ import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
-import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { dropProgress, restoreProgress, saveProgress } from "./handoff.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
@@ -268,19 +270,25 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const project = await store.projectInfo();
   // Con sesión previa, es una conversación: se continúa la misma sesión en el mismo worktree y rama.
   const resuming = !!feature.sessionId;
+  // Cambio de ejecutor (un admin la pasó a este runner): sin la sesión del otro ordenador, pero con su rama, su punto de
+  // guardado (handoff.ts) y el hilo. Una sesión nueva de relevo, sobre lo que ya hay.
+  const handoff = !resuming && !!feature.handoff;
   // Modo plan: hasta que quien la ejecuta aprueba el plan, Claude solo lee el repo y propone (o rehace) el plan.
   const planning = !!feature.planFirst && !feature.planApproved;
-  const wt = await withRepoLock(() => createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), featureId: id, branch: feature.branch!, resume: resuming }));
+  const wt = await withRepoLock(() => createWorktree({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), featureId: id, branch: feature.branch!, resume: resuming || handoff }));
   // Hecha con Claude Code desde el repo: su sesión está guardada en la carpeta del repo, no en la del worktree.
   if (resuming && feature.origin === "local" && !adoptTranscript(wt.path, feature.sessionId!)) {
     await store.event(id, "say", t("run.localTask"));
     return { status: "done", result: { ...(feature.result ?? {}), error: undefined } };
   }
-  await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}` }));
+  await store.event(id, "start", resuming ? t("run.resume", { branch: wt.branch }) : handoff ? t("run.handoff", { branch: wt.branch }) : t("run.worktree", { branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}` }));
+  // Lo que el ejecutor anterior dejó sin subir. Antes de mezclar la base: el punto de guardado continúa la rama de entonces.
+  const restored = handoff ? await restoreProgress({ worktree: wt.path, remote: cfg.remote, featureId: id }).catch((err: Error) => (void store.event(id, "say", t("run.handoffRestoreFail", { error: err.message.slice(0, 300) })), "none" as const)) : "none";
+  if (restored === "restored") await store.event(id, "start", t("run.handoffRestored"));
   // Al retomar, la rama se pone al día con la base: sin conflictos se sube ya (el PR se actualiza); con conflictos,
   // Claude los resuelve en esta vuelta y el commit de open_pull_request cierra el merge.
   let conflicts: string[] = [];
-  if (resuming) {
+  if (resuming || (handoff && wt.resumed)) {
     const sync = await mergeBaseIntoBranch(wt.path, cfg.remote, taskBase(cfg.baseBranch)).catch((err: Error) => {
       void store.event(id, "say", t("run.syncFail", { base: taskBase(cfg.baseBranch), error: err.message }));
       return null;
@@ -311,7 +319,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
 
   // Permisos personales (permissions.ts): los suyos del proyecto y lo concedido en el hilo, solo si la tarea la creó y
   // la ejecuta quien tiene este runner. Se suman a los límites de siempre, nunca los quitan.
-  const history = resuming ? await store.thread(id) : [];
+  const history = resuming || handoff ? await store.thread(id) : [];
   const permCtx = await loadPermissionContext({ applies: appliesTo(feature, store.uid), store, grants: threadGrants(history), projectId: cfg.projectId });
   const { perms, roots } = permCtx;
   const permissionsText = permCtx.prompt;
@@ -394,6 +402,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
             return fail(t("pr.failed", { error: String(err).slice(0, 500) }));
           }
           await store.event(id, "pr", prUrl);
+          // Un punto de guardado de antes ya no hace falta: lo hecho está en la rama.
+          void dropProgress({ worktree: wt.path, remote: cfg.remote, featureId: id });
           // Tarea de CI: los ficheros que cambia el PR respecto a la base, para enseñarlos al confirmar su merge en la app.
           if (ciHost) {
             const changed = await git(wt.path, ["diff", "--name-only", `${cfg.remote}/${taskBase(cfg.baseBranch)}...HEAD`]).catch(() => "");
@@ -846,7 +856,19 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     if (delivered.length) void store.markRead(id, delivered);
     // Recién aprobado: el último mensaje de Claude es un plan y aún no hay PR.
     const justApproved = !!feature.planApproved && !previousPr && thread.filter((m) => m.author === "claude").pop()?.kind === "plan";
-    const prompt = planning
+    const prompt = handoff
+      ? buildHandoffPrompt(id, ciHost ? { ...feature, title: "CI", refinedPrompt: buildCiPrompt(ciHost), acceptanceCriteria: [] } : feature, {
+          attachments,
+          thread: thread.filter((m) => m.kind !== "grant" && m.kind !== "permission").map((m) => ({ author: m.author, kind: m.kind, text: m.text })),
+          replies,
+          hasPr: !!previousPr,
+          planning,
+          planApproved: !!feature.planApproved,
+          restored: restored === "restored",
+          base: taskBase(cfg.baseBranch),
+          conflicts,
+        })
+      : planning
       ? resuming
         ? buildPlanFollowUpPrompt(replies)
         : buildPlanPrompt(id, ciHost ? { ...feature, title: "CI", refinedPrompt: buildCiPrompt(ciHost), acceptanceCriteria: [] } : feature, attachments)
@@ -862,7 +884,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     if (remoteWanted && resuming && (await runRemote())) {
       if (!stopRequested) await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!previousPr }));
     } else {
-      if (planning) await store.event(id, "start", t(resuming ? "run.replanning" : "run.planning"));
+      if (planning) await store.event(id, "start", t(resuming || handoff ? "run.replanning" : "run.planning"));
       else if (justApproved) await store.event(id, "start", t("run.planApproved"));
       await runPhase(prompt);
     }
@@ -941,7 +963,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   if (planning) return { status: "failed", result: { ...result, error: result.error ?? t("run.noPlan"), ...(result.error ? {} : { errorCode: "noPlan" as const }) }, sessionId, cancelled: stopRequested && !released };
   if (prUrl) return { status: "done", result: { ...result, prUrl, error: undefined, ...(afterMerge?.length ? { afterMerge } : {}) }, sessionId };
   // Continuación sin cambios nuevos (p. ej. solo respondió una duda): sigue con el PR que ya había.
-  if (resuming && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
+  if ((resuming || handoff) && previousPr && !result.error) return { status: "done", result: { ...result, prUrl: previousPr }, sessionId };
   // Acabó sin PR pero con trabajo hecho (p. ej. no pudo pasar los tests y pregunta cómo seguir en su resumen): espera a
   // quien la ejecuta, que puede contestarle en el hilo, en vez de darla por fallida.
   if (!result.error && sessionId && (await hasWork(wt.path))) {
@@ -1058,6 +1080,9 @@ async function runOne(id: string, feature: Feature): Promise<void> {
   const release = awake.hold();
   try {
     const { status, result, sessionId, cancelled, planLimit } = await runFeature(id, feature);
+    // Parada sin PR (necesita respuesta, fallida o en espera del límite): lo hecho se sube aparte, por si un admin la pasa a
+    // otro ejecutor. Antes del estado, para que ya esté cuando la app la enseñe parada.
+    if (status === "waiting" || status === "failed" || planLimit) await checkpoint(id, feature);
     if (status === "released") {
       console.log(`[released] ${id} ${result.prUrl ?? ""}`);
       return;
@@ -1086,11 +1111,24 @@ async function runOne(id: string, feature: Feature): Promise<void> {
   } catch (err) {
     console.error(`[error] ${id}`, err);
     const result = { error: String(err).slice(0, 2000) };
+    await checkpoint(id, feature);
     await store.finish(id, "failed", result).catch(() => undefined);
     await afterFailure(id, feature, result, false).catch(() => undefined);
   } finally {
     release();
   }
+}
+
+/** Punto de guardado de una tarea parada (handoff.ts): nunca la hace fallar ni la retrasa más de lo que tarde el push. */
+async function checkpoint(id: string, feature: Feature): Promise<void> {
+  const worktree = join(cfg.worktreesDir, id);
+  if (!feature.branch || isCiTask(feature) || feature.origin === "local" || !existsSync(worktree)) return;
+  const saved = await saveProgress({ worktree, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), branch: feature.branch, featureId: id, isProtected }).catch((err: Error) => {
+    console.warn(`[checkpoint] ${id} ${err.message}`);
+    return null;
+  });
+  if (saved?.saved) await store.event(id, "say", t("run.checkpoint", { n: saved.files })).catch(() => undefined);
+  else if (saved && saved.reason !== "clean") await store.event(id, "say", t("run.checkpointSkipped", { files: (saved.files ?? []).join(", ").slice(0, 300) })).catch(() => undefined);
 }
 
 /**
@@ -1210,6 +1248,8 @@ async function main(): Promise<void> {
 
     refine: true,
     knowledge: true,
+    // Continúa tareas que un admin le pasa desde otro runner (handoff.ts): el servidor solo se las pasa si lo anuncia.
+    handoff: true,
     fixConflicts: true,
     fixChecks: true,
     // Checks en local (local-checks.ts): los que declara el backcode.toml de la rama base. La app ofrece «Pasar los checks en
