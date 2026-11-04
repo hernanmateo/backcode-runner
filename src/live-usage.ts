@@ -1,6 +1,8 @@
 // Consumo de una tarea: el que se escribe al final en `result` (a partir de los mensajes `result` del SDK) y el que se
 // va enseñando en directo mientras se ejecuta (`liveUsage`), con el mismo cálculo para que cuadren.
 
+import { estimateCost } from "./prices.js";
+
 /** Uso por modelo de un mensaje `result` del SDK (solo los campos que se usan). */
 export interface SdkModelUsage {
   inputTokens: number;
@@ -55,8 +57,20 @@ export interface LiveUsageSnapshot {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** Exacto (de los `result`) más lo estimado con la tabla de precios para los tokens aún sin `result`. */
   costUsd: number;
-  models?: Record<string, { tokens: number; costUsd: number }>;
+  /** Hay tokens pendientes con coste estimado: `costUsd` es aproximado hasta el próximo `result`. */
+  costEstimated?: true;
+  /** Hay tokens pendientes de un modelo sin precio en la tabla: `costUsd` no los incluye (se sabrá al acabar). */
+  costUnknown?: true;
+  models?: Record<string, LiveModelUsage>;
+}
+
+export interface LiveModelUsage {
+  tokens: number;
+  costUsd: number;
+  estimated?: true;
+  unknown?: true;
 }
 
 /** Modelos como máximo en `liveUsage.models` (las reglas de Firestore limitan el tamaño). */
@@ -73,21 +87,22 @@ const n = (v: number | null | undefined) => (typeof v === "number" && Number.isF
 
 /**
  * Consumo acumulado de una vuelta mientras se ejecuta. Cada `result` de un turno trae el total exacto de la fase (coste
- * incluido); entre uno y otro se suman los tokens de los mensajes `assistant` (sin coste: no hay tabla de precios). Al
- * llegar el siguiente `result`, esos parciales se sustituyen por su total.
+ * incluido); entre uno y otro se suman los tokens de los mensajes `assistant` con un coste estimado con la tabla de
+ * prices.ts (o desconocido si el modelo no está). Al llegar el siguiente `result`, esos parciales se sustituyen por su
+ * total exacto.
  */
 export class LiveUsage {
   private spent: Spent = { costUsd: 0, turns: 0, input: 0, output: 0, cache: 0 };
   private spentModels: Record<string, { tokens: number; costUsd: number }> = {};
   private phase: ResultUsage | null = null;
   /** Mensajes `assistant` desde el último `result`, por id de mensaje de la API (el SDK repite el mismo en cada bloque). */
-  private pending = new Map<string, { model?: string; input: number; output: number; cache: number }>();
+  private pending = new Map<string, { model?: string; input: number; output: number; cacheRead: number; cacheWrite: number }>();
 
   /** Un mensaje `assistant`: sus tokens cuentan hasta que llegue el `result` del turno. */
   assistant(messageId: string | undefined, model: string | undefined, usage: SdkTurnUsage | undefined): void {
     if (!usage) return;
     const key = messageId || `anon-${this.pending.size}`;
-    this.pending.set(key, { model: cleanModelId(model), input: n(usage.input_tokens), output: n(usage.output_tokens), cache: n(usage.cache_read_input_tokens) + n(usage.cache_creation_input_tokens) });
+    this.pending.set(key, { model: cleanModelId(model), input: n(usage.input_tokens), output: n(usage.output_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheWrite: n(usage.cache_creation_input_tokens) });
   }
 
   /** El `result` de un turno: el total de la fase (el mismo cálculo que va a `result`). */
@@ -110,27 +125,51 @@ export class LiveUsage {
 
   snapshot(): LiveUsageSnapshot {
     const base = this.phase ?? { costUsd: this.spent.costUsd, tokens: { input: this.spent.input, output: this.spent.output, cache: this.spent.cache }, models: {} };
-    const models: Record<string, { tokens: number; costUsd: number }> = {};
-    const add = (name: string | undefined, tokens: number, costUsd: number) => {
+    const models: Record<string, LiveModelUsage> = {};
+    /** `costUsd` undefined = pendiente sin precio; `pending` = estimado (aún sin `result`). */
+    const add = (name: string | undefined, tokens: number, costUsd: number | undefined, pending = false) => {
       if (!name || (!(name in models) && Object.keys(models).length >= LIVE_MAX_MODELS)) return;
       const acc = (models[name] ??= { tokens: 0, costUsd: 0 });
       acc.tokens += tokens;
-      acc.costUsd += costUsd;
+      if (costUsd === undefined) acc.unknown = true;
+      else {
+        acc.costUsd += costUsd;
+        if (pending) acc.estimated = true;
+      }
     };
     for (const [name, m] of Object.entries(this.spentModels)) add(name, m.tokens, m.costUsd);
     for (const [name, m] of Object.entries(base.models)) add(name, m.tokens, m.costUsd);
     let input = base.tokens.input;
     let output = base.tokens.output;
     let cache = base.tokens.cache;
+    let cost = base.costUsd;
+    let estimated = false;
+    let unknown = false;
     for (const p of this.pending.values()) {
+      const tokens = p.input + p.output + p.cacheRead + p.cacheWrite;
+      if (!tokens) continue;
       input += p.input;
       output += p.output;
-      cache += p.cache;
-      add(p.model, p.input + p.output + p.cache, 0);
+      cache += p.cacheRead + p.cacheWrite;
+      const est = estimateCost(p.model, p);
+      if (est === undefined) unknown = true;
+      else {
+        cost += est;
+        estimated = true;
+      }
+      add(p.model, tokens, est, true);
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     for (const m of Object.values(models)) m.costUsd = round(m.costUsd);
-    return { inputTokens: input, outputTokens: output, cacheTokens: cache, costUsd: round(base.costUsd), ...(Object.keys(models).length ? { models } : {}) };
+    return {
+      inputTokens: input,
+      outputTokens: output,
+      cacheTokens: cache,
+      costUsd: round(cost),
+      ...(estimated ? { costEstimated: true as const } : {}),
+      ...(unknown ? { costUnknown: true as const } : {}),
+      ...(Object.keys(models).length ? { models } : {}),
+    };
   }
 }
 

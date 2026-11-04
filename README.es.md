@@ -843,7 +843,10 @@ o API key. Si el runner está apagado, ocupado con otro refinado, falla o tarda 
 OpenAI como siempre y la app lo indica. Solo se usa tu propio runner: las ideas de otros nunca gastan tu cuota.
 
 ## Uso y cuota
-El runner publica en tu grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
+Mientras una tarea se ejecuta, la ficha y «En directo» muestran sus tokens y un coste aproximado («≈ $1.20») calculado
+con la tabla de precios por familia de modelo de `src/prices.ts`; al acabar cada turno lo sustituye el coste exacto de
+Claude Code. Si el modelo no está en la tabla no se inventa precio: se ve «coste al terminar». El runner publica en tu
+grupo el consumo de cada tarea (tokens y coste estimado) y, si usas un plan Pro o Max, el % usado de tu
 cuota de 5 h y semanal (dato orientativo de una API experimental de Claude Code). Lo ves en **Grupo → Uso del equipo** y en el
 perfil de cada miembro. La cuota se lee al arrancar, tras cada tarea, cada 5 minutos y cuando alguien pulsa ↻ en la app (leerla no
 llama al modelo ni consume); si tu runner está apagado, se ve la última lectura.
