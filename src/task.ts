@@ -1,10 +1,12 @@
+import { explainRemoteError } from "./remote-retry.js";
+import { remoteTexts } from "./i18n.js";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { collection, doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { copyLocalFiles } from "./actions.js";
 import { loadConfig } from "./config.js";
-import { checkRepo, commitsAhead, createWorktree, git, SECRET_PATTERNS } from "./git.js";
+import { checkRepo, commitsAhead, createWorktree, git, gitPush, SECRET_PATTERNS } from "./git.js";
 import { bitbucketHost, githubHost } from "./hosts.js";
 import { lang, t } from "./i18n.js";
 import { connect } from "./store.js";
@@ -99,9 +101,12 @@ async function pr(args: string[], json: boolean): Promise<void> {
   const repo = await checkRepo(cfg.repoPath, cfg.remote, cfg.baseBranch, cfg.pullRequest, !!cfg.bitbucket);
   const host = repo.pullRequest === "github" ? githubHost(cfg.repoPath) : repo.pullRequest === "bitbucket" && cfg.bitbucket ? bitbucketHost(repo.remoteUrl, cfg.bitbucket.email, cfg.bitbucket.token) : undefined;
   if (!host) fail(t("task.noHost"));
-  await git(dir, ["push", "--quiet", "-u", cfg.remote, `${branch}:${branch}`]);
   const footer = `\n\n---\n${t("task.footer")}`;
-  const url = await host.openOrUpdatePr({ cwd: dir, branch, base: repo.baseBranch, title, body: body + footer });
+  // Push y PR con reintentos ante caídas del host (remote-retry.ts); si aun así falla, se dice si GitHub tiene una incidencia.
+  const url = await (async () => {
+    await gitPush(dir, ["--quiet", "-u", cfg.remote, `${branch}:${branch}`]);
+    return host.openOrUpdatePr({ cwd: dir, branch, base: repo.baseBranch, title, body: body + footer });
+  })().catch(async (e: Error) => fail(await explainRemoteError(String(e.message ?? e), remoteTexts())));
 
   const { fns } = await connect(cfg);
   await httpsCallable(fns, "registerLocalWork")({ projectId: cfg.projectId, featureId, title, summary: body.slice(0, 4000), prUrl: url, branch, ...claudeSession(), lang: lang() });

@@ -1,3 +1,4 @@
+import { explainRemoteError, isTransientRemoteError, withRemoteRetry } from "./remote-retry.js";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { smokeCliPath } from "./paths.js";
 import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, isAncestor, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
 import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
-import { t } from "./i18n.js";
+import { remoteTexts, t } from "./i18n.js";
 import { BASE_CHECKS_APPEAR_MS, gatePrChecks, waitForChecks } from "./wait-checks.js";
 import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
@@ -551,7 +552,7 @@ async function syncPreview(cfg: RunnerConfig, host: PrHost | undefined) {
   let reason = "";
   if (mode === "fast-forward") {
     // Sin --force: el remoto solo lo acepta si de verdad es un fast-forward.
-    const pushed = await exec(["git", "push", "--no-verify", cfg.remote, `${baseSha}:refs/heads/${to}`], cfg.repoPath).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
+    const pushed = await withRemoteRetry(() => exec(["git", "push", "--no-verify", cfg.remote, `${baseSha}:refs/heads/${to}`], cfg.repoPath), { label: "git push" }).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
     if (pushed) return { ok: true, result: { sha: baseSha, log: t("env.synced", { to, base: cfg.baseBranch }) } };
   } else {
     const wt = await createDetachedWorktree(cfg.repoPath, cfg.worktreesDir, "_sync", toSha);
@@ -563,7 +564,7 @@ async function syncPreview(cfg: RunnerConfig, host: PrHost | undefined) {
         return false;
       });
       if (merged) {
-        const ok = await exec(["git", "push", "--no-verify", cfg.remote, `HEAD:refs/heads/${to}`], wt).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
+        const ok = await withRemoteRetry(() => exec(["git", "push", "--no-verify", cfg.remote, `HEAD:refs/heads/${to}`], wt), { label: "git push" }).then(() => true, (e: Error) => ((reason = e.message.slice(-400)), false));
         if (ok) return { ok: true, result: { sha: (await exec(["git", "rev-parse", "HEAD"], wt)).trim(), log: t("env.synced", { to, base: cfg.baseBranch }) } };
       }
     } finally {
@@ -627,6 +628,8 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
     rememberPrLog(prUrl, run.log);
     return run;
   };
+  // Dónde pasaron los checks (para decirlo si luego el merge falla por una caída de GitHub/Bitbucket).
+  let greenWhere: "local" | "host" | "none" = "none";
   if (await useLocal(cfg, baseRef)) {
     // Checks en local: los de la CI del host no cuentan. Antes, los conflictos (el merge fallaría igualmente).
     const files = await conflictFiles(cfg, branch);
@@ -635,6 +638,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
     if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "noChecks" };
     const blocked = requireLocalGreen(run, "PR");
     if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+    greenWhere = "local";
   } else {
     // Con CI en el repo, un PR sin checks no es «sin CI»: o GitHub aún no los ha registrado (se espera a que aparezcan) o
     // no los lanzó porque el PR choca con la base (no puede crear el merge ref), y entonces se trata como conflictos.
@@ -666,6 +670,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const blocked = requireLocalGreen(run, "PR");
       if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
       await store.event(featureId, "merge", t(notStarted ? "act.localReplacedNotStarted" : "act.localReplacedFailing", { checks: checks.pending.join(", ") }));
+      greenWhere = "local";
     } else {
       if (gate.ciNoChecks && strict) return { ok: false, result: { error: t("act.ciNoChecks", { what: "PR" }), url: prUrl }, blocked: "ciNoChecks" };
       const blocked = requireGreen(checks, "PR", strict);
@@ -673,9 +678,16 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const why: MergeBlock = checks.state === "failing" ? "checks" : checks.state === "pending" ? "pending" : "noChecks";
       // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
       if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked, blocked: why };
+      if (checks.state === "green") greenWhere = "host";
     }
   }
-  const merged = await mergeUnlessConflict(host, prUrl);
+  // Con los checks ya en verde, un merge que falla por una caída de GitHub/Bitbucket (ya reintentado) lo dice: los checks
+  // están bien, solo falta volver a mergear cuando el host responda.
+  const merged = await mergeUnlessConflict(host, prUrl).catch(async (e: Error) => {
+    if (greenWhere === "none" || !isTransientRemoteError(e)) throw e;
+    const why = await explainRemoteError(String(e.message ?? e), remoteTexts());
+    throw new Error(`${t(greenWhere === "local" ? "act.greenLocalMergeFailed" : "act.greenHostMergeFailed")}\n\n${why}`);
+  });
   if (!merged) return conflictsBlock(cfg, store, featureId, prUrl, await conflictFiles(cfg, branch));
   const { sha } = merged;
   await store.markMerged(featureId, sha, opts.auto, ciTask);
@@ -1494,7 +1506,7 @@ async function commitAndPush(cfg: RunnerConfig, wt: string, files: string[], mes
     const secrets = await scanStagedForSecrets(wt);
     if (secrets.length) return { error: t("act.dirtyRisky", { files: secrets.join("; ") }) };
     await exec(["git", "-c", "user.name=Backcode", "-c", "user.email=backcode@users.noreply.github.com", "commit", "-m", t("act.dirtyCommit", { message: message.slice(0, 120), n: files.length })], wt);
-    await exec(["git", "push", cfg.remote, `HEAD:refs/heads/${branch}`], wt);
+    await withRemoteRetry(() => exec(["git", "push", cfg.remote, `HEAD:refs/heads/${branch}`], wt), { label: "git push" });
     return { sha: (await exec(["git", "rev-parse", "HEAD"], wt)).trim() };
   } catch (err) {
     return { error: t("act.dirtyPushFailed", { error: String((err as Error).message).slice(-800) }) };

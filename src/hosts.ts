@@ -1,3 +1,4 @@
+import { isTransientRemoteError, withRemoteRetry } from "./remote-retry.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { t } from "./i18n.js";
@@ -90,8 +91,7 @@ export const summarize = (items: CheckItem[]): Checks => {
 
 /** Fallos de GitHub que no dependen del PR (p. ej. "GraphQL: Something went wrong…" justo tras sacarlo de borrador, 5xx, timeouts). */
 export function isTransientGhError(e: unknown): boolean {
-  const text = `${(e as { stderr?: unknown })?.stderr ?? ""}\n${(e as Error)?.message ?? e}`;
-  return /something went wrong|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|try again later/i.test(text);
+  return isTransientRemoteError(e);
 }
 
 /** El PR choca con la rama base (GitHub: "not mergeable: the merge commit cannot be cleanly created"; Bitbucket: "merge conflicts"). */
@@ -104,7 +104,7 @@ export function isMergeConflictError(e: unknown): boolean {
  * Mergea reintentando los fallos transitorios de GitHub. Si el merge falla pero el PR ya consta como mergeado
  * (--delete-branch no puede borrar la rama local de un worktree, o GitHub mergeó pese al error), se da por bueno.
  */
-export async function mergeWithRetry(merge: () => Promise<unknown>, state: () => Promise<string>, delaysMs = [3000, 10000]): Promise<void> {
+export async function mergeWithRetry(merge: () => Promise<unknown>, state: () => Promise<string>, delaysMs = [5_000, 15_000, 30_000, 60_000]): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       await merge();
@@ -144,7 +144,9 @@ export function githubHost(repoPath: string): PrHost {
   };
   return {
     kind: "github",
-    async openOrUpdatePr({ cwd, branch, base, title, body }) {
+    openOrUpdatePr({ cwd, branch, base, title, body }) {
+      // Con reintentos ante caídas de GitHub: si el PR llegó a crearse pese al error, el siguiente intento lo encuentra.
+      return withRemoteRetry(async () => {
       // El abierto de la rama, o uno ya mergeado (p. ej. a mano en GitHub): no se crea otro.
       const existing = await gh(["pr", "view", branch, "--json", "url,state", "-q", 'select(.state == "OPEN" or .state == "MERGED") | .url'], cwd).catch(() => "");
       if (/^https:\/\//.test(existing)) return existing;
@@ -152,6 +154,7 @@ export function githubHost(repoPath: string): PrHost {
       const url = out.split("\n").pop() ?? "";
       if (!/^https:\/\//.test(url)) throw new Error(t("host.ghNoUrl", { out }));
       return url;
+      }, { label: "gh pr create" });
     },
     async prChecks(prUrl) {
       // Sin checks configurados, gh sale con error "no checks reported": se trata como "none".
@@ -206,7 +209,16 @@ export function githubHost(repoPath: string): PrHost {
       return out;
     },
     async merge(prUrl, opts) {
-      await gh(["pr", "ready", prUrl]).catch(() => undefined); // si ya no era borrador, da igual
+      // Sacarlo de borrador. Con GitHub caído, `gh pr ready` puede fallar: antes se ignoraba y el merge fallaba luego con
+      // «Pull Request is still a draft». Ahora se reintenta hasta que consta como no borrador (si ya no lo era, da igual).
+      const isDraft = async () => (await gh(["pr", "view", prUrl, "--json", "isDraft", "-q", ".isDraft"])) === "true";
+      await withRemoteRetry(
+        async () => {
+          await gh(["pr", "ready", prUrl]).catch(() => undefined);
+          if (await isDraft()) throw new Error("Pull Request is still a draft (gh pr ready no ha llegado a aplicarse)");
+        },
+        { label: "gh pr ready" },
+      );
       await mergeWithRetry(
         () => gh(ghMergeArgs(prUrl, opts)),
         () => gh(["pr", "view", prUrl, "--json", "state", "-q", ".state"]).catch(() => ""),

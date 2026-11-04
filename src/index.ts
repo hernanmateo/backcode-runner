@@ -1,3 +1,5 @@
+import { explainRemoteError } from "./remote-retry.js";
+import { remoteTexts } from "./i18n.js";
 import { findMergedOutside, MERGED_POLL_MS } from "./merged-watch.js";
 import { homedir } from "node:os";
 import { lastCliPublish, markCliPublished } from "./ota-watch.js";
@@ -1640,9 +1642,11 @@ async function main(): Promise<void> {
                 : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
         let thrown: Error | undefined;
         const { ok, result } = await work
-          .catch((err): { ok: boolean; result: ActionResult } => {
+          .catch(async (err): Promise<{ ok: boolean; result: ActionResult }> => {
             thrown = err as Error;
-            return { ok: false, result: { error: String((err as Error).message ?? err).slice(0, 1500) } };
+            // Caída pasajera de GitHub/Bitbucket (ya reintentada): decirlo y, si GitHub tiene una incidencia, nombrarla.
+            const error = await explainRemoteError(String((err as Error).message ?? err), remoteTexts());
+            return { ok: false, result: { error: error.slice(0, 1500) } };
           })
           .finally(() => {
             clearInterval(actionLease);

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { ActionResult } from "./actions.js";
 import type { RunnerConfig } from "./config.js";
-import { createDetachedWorktree, git, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { createDetachedWorktree, git, gitPush, mergeBaseIntoBranch, removeWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
@@ -76,7 +76,7 @@ export async function fixConflicts(cfg: RunnerConfig, store: Store, host: PrHost
     }
     if (sync.status !== "uptodate") {
       // Sin forzar: si alguien subió a la rama mientras tanto, falla y no se pisa nada.
-      await git(path, ["push", "--no-verify", remote, `HEAD:refs/heads/${branch}`]);
+      await gitPush(path, ["--no-verify", remote, `HEAD:refs/heads/${branch}`]);
       await followLocalWorktree(cfg, featureId, branch);
     }
     await store.setConflicts(featureId, []).catch(() => undefined);

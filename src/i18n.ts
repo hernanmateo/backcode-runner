@@ -251,6 +251,10 @@ const es = {
   "all.exited": "terminado ({code})",
   // acciones
   "act.notGreen": "{what}: los checks no están en verde ({state})",
+  "act.greenLocalMergeFailed": "Los checks pasaron en verde (en local, con tu runner); lo que falló fue el merge en GitHub/Bitbucket. Vuelve a mergear: no se repetirán los checks que ya pasaron.",
+  "act.greenHostMergeFailed": "Los checks del PR están en verde; lo que falló fue el merge en GitHub/Bitbucket. Vuelve a mergear cuando responda.",
+  "remote.transient": "Fallo pasajero de GitHub/Bitbucket (no de tu cambio): se reintentó varias veces sin éxito. Vuelve a probar en unos minutos.",
+  "remote.incident": "GitHub tiene una incidencia abierta ({names}): no es un fallo de tu cambio. Se reintentó varias veces; vuelve a probar cuando la resuelvan (githubstatus.com).",
   "act.ciNotStartedBase": "{what}: los checks de GitHub no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido). Puedes pasarlos en local con tu runner y publicar, o pausar GitHub Actions hasta que se renueven.",
   "act.ciNotStarted": "PR: los checks de GitHub no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido). Puedes pasarlos en local con tu runner o relanzarlos cuando se arregle la facturación.",
   "act.localNone": "{what}: el proyecto pasa los checks en local, pero el backcode.toml de la rama principal no declara ninguno ([check.<nombre>] con run = \"…\").",
@@ -975,6 +979,10 @@ const en: Record<Key, string> = {
   "all.starting": "Starting {n} runner(s): {list}",
   "all.exited": "exited ({code})",
   "act.notGreen": "{what}: checks aren't green ({state})",
+  "act.greenLocalMergeFailed": "Checks passed (locally, on your runner); what failed was the merge on GitHub/Bitbucket. Merge again: checks that already passed won't run again.",
+  "act.greenHostMergeFailed": "The PR's checks are green; what failed was the merge on GitHub/Bitbucket. Merge again once it responds.",
+  "remote.transient": "Temporary GitHub/Bitbucket failure (not your change): retried several times without luck. Try again in a few minutes.",
+  "remote.incident": "GitHub has an open incident ({names}): it's not your change. Retried several times; try again once it's resolved (githubstatus.com).",
   "act.ciNotStartedBase": "{what}: GitHub checks never ran (GitHub Actions out of minutes or a failed payment). You can run them locally with your runner and publish, or pause GitHub Actions until they renew.",
   "act.ciNotStarted": "PR: GitHub checks never ran (GitHub Actions out of minutes or a failed payment). You can run them locally with your runner, or re-run them once billing is fixed.",
   "act.localNone": "{what}: the project runs checks locally, but the main branch's backcode.toml declares none ([check.<name>] with run = \"…\").",
@@ -1688,6 +1696,10 @@ const ca: Record<Key, string> = {
   "all.starting": "Engegant {n} runner(s): {list}",
   "all.exited": "acabat ({code})",
   "act.notGreen": "{what}: els checks no estan en verd ({state})",
+  "act.greenLocalMergeFailed": "Els checks han passat en verd (en local, amb el teu runner); el que ha fallat és el merge a GitHub/Bitbucket. Torna a fer el merge: no es repetiran els checks que ja han passat.",
+  "act.greenHostMergeFailed": "Els checks del PR estan en verd; el que ha fallat és el merge a GitHub/Bitbucket. Torna a fer el merge quan respongui.",
+  "remote.transient": "Fallada temporal de GitHub/Bitbucket (no del teu canvi): s'ha reintentat diverses vegades sense èxit. Torna-ho a provar d'aquí a uns minuts.",
+  "remote.incident": "GitHub té una incidència oberta ({names}): no és una fallada del teu canvi. S'ha reintentat diverses vegades; torna-ho a provar quan la resolguin (githubstatus.com).",
   "act.ciNotStartedBase": "{what}: els checks de GitHub no es van arribar a executar (GitHub Actions sense minuts o amb un pagament fallit). Els pots passar en local amb el teu runner i publicar, o posar GitHub Actions en pausa fins que es renovin.",
   "act.ciNotStarted": "PR: els checks de GitHub no es van arribar a executar (GitHub Actions sense minuts o amb un pagament fallit). Els pots passar en local amb el teu runner o tornar-los a llançar quan s'arregli la facturació.",
   "act.localNone": "{what}: el projecte passa els checks en local, però el backcode.toml de la branca principal no en declara cap ([check.<nom>] amb run = \"…\").",
@@ -2198,4 +2210,9 @@ export function panelStrings(): Record<string, string> {
 export function t(key: Key, vars?: Record<string, string | number>): string {
   const text = command(STRINGS[lang()][key]);
   return vars ? text.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m)) : text;
+}
+
+/** Textos de explainRemoteError (remote-retry.ts) en el idioma del runner. */
+export function remoteTexts(): { transient: string; incident: (names: string) => string } {
+  return { transient: t("remote.transient"), incident: (names) => t("remote.incident", { names }) };
 }
