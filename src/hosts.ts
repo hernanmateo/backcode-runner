@@ -43,6 +43,8 @@ export interface PrHost {
    * Solo GitHub; ausente si el host no lo sabe.
    */
   notStarted?(prUrl: string): Promise<string[]>;
+  /** Lo mismo en un commit (la rama base antes de un despliegue, OTA o build). */
+  commitNotStarted?(sha: string): Promise<string[]>;
   /** Vuelve a lanzar los jobs en rojo del PR (GitHub Actions) y devuelve cuántos runs relanzó; ausente si el host no puede. */
   rerunFailed?(prUrl: string): Promise<number>;
   /** Log en bruto de los checks que fallan del PR (GitHub Actions); ausente si el host no lo da. Ver check-logs.ts. */
@@ -177,6 +179,16 @@ export function githubHost(repoPath: string): PrHost {
       const runs = [...new Set(rows.filter((r) => r.bucket === "fail").map((r) => /\/actions\/runs\/(\d+)/.exec(r.link ?? "")?.[1]).filter((id): id is string => !!id))];
       for (const id of runs) await gh(["run", "rerun", id, "--failed"]);
       return runs.length;
+    },
+    async commitNotStarted(sha) {
+      const name = await repo();
+      const runs = JSON.parse(await gh(["api", `repos/${name}/commits/${sha}/check-runs`, "--paginate"])) as { check_runs: { id: number; name: string; status: string; conclusion: string | null }[] };
+      const out: string[] = [];
+      for (const r of runs.check_runs.filter((x) => x.status === "completed" && x.conclusion === "failure").slice(0, 10)) {
+        const notes = JSON.parse((await gh(["api", `repos/${name}/check-runs/${r.id}/annotations`]).catch(() => "[]")) || "[]") as { message?: string }[];
+        if (notes.some((n) => NOT_STARTED_RE.test(n.message ?? ""))) out.push(r.name);
+      }
+      return out;
     },
     async notStarted(prUrl) {
       // Los jobs que no arrancaron no tienen log: solo una anotación de GitHub que explica por qué.

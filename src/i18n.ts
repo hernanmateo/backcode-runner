@@ -246,6 +246,7 @@ const es = {
   "all.exited": "terminado ({code})",
   // acciones
   "act.notGreen": "{what}: los checks no están en verde ({state})",
+  "act.ciNotStartedBase": "{what}: los checks de GitHub no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido). Puedes pasarlos en local con tu runner y publicar, o pausar GitHub Actions hasta que se renueven.",
   "act.ciNotStarted": "PR: los checks de GitHub no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido). Puedes pasarlos en local con tu runner o relanzarlos cuando se arregle la facturación.",
   "act.localNone": "{what}: el proyecto pasa los checks en local, pero el backcode.toml de la rama principal no declara ninguno ([check.<nombre>] con run = \"…\").",
   "act.localNoBranch": "No se pudo saber el último commit de la rama del PR para pasarle los checks en local.",
@@ -964,6 +965,7 @@ const en: Record<Key, string> = {
   "all.starting": "Starting {n} runner(s): {list}",
   "all.exited": "exited ({code})",
   "act.notGreen": "{what}: checks aren't green ({state})",
+  "act.ciNotStartedBase": "{what}: GitHub checks never ran (GitHub Actions out of minutes or a failed payment). You can run them locally with your runner and publish, or pause GitHub Actions until they renew.",
   "act.ciNotStarted": "PR: GitHub checks never ran (GitHub Actions out of minutes or a failed payment). You can run them locally with your runner, or re-run them once billing is fixed.",
   "act.localNone": "{what}: the project runs checks locally, but the main branch's backcode.toml declares none ([check.<name>] with run = \"…\").",
   "act.localNoBranch": "Couldn't find the latest commit of the PR's branch to run the checks locally.",
@@ -1671,6 +1673,7 @@ const ca: Record<Key, string> = {
   "all.starting": "Engegant {n} runner(s): {list}",
   "all.exited": "acabat ({code})",
   "act.notGreen": "{what}: els checks no estan en verd ({state})",
+  "act.ciNotStartedBase": "{what}: els checks de GitHub no es van arribar a executar (GitHub Actions sense minuts o amb un pagament fallit). Els pots passar en local amb el teu runner i publicar, o posar GitHub Actions en pausa fins que es renovin.",
   "act.ciNotStarted": "PR: els checks de GitHub no es van arribar a executar (GitHub Actions sense minuts o amb un pagament fallit). Els pots passar en local amb el teu runner o tornar-los a llançar quan s'arregli la facturació.",
   "act.localNone": "{what}: el projecte passa els checks en local, però el backcode.toml de la branca principal no en declara cap ([check.<nom>] amb run = \"…\").",
   "act.localNoBranch": "No s'ha pogut saber l'últim commit de la branca del PR per passar-hi els checks en local.",

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { CheckItem, CommitStatus, PrHost } from "../src/hosts.js";
-import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, readCheckConfig, runLocalChecks } from "../src/local-checks.js";
+import { checkEnv, cleanOutput, installFor, type LocalCheck, onlyNotStarted, onlyNotStartedIn, readCheckConfig, runLocalChecks } from "../src/local-checks.js";
 
 test("backcode.toml: [check.<nombre>] con run, dir, install, timeout y description", () => {
   const { checks, errors } = readCheckConfig(`
@@ -152,4 +152,11 @@ test("onlyNotStarted: solo si todo lo que está en rojo no llegó a ejecutarse",
   assert.equal(await onlyNotStarted(host, "u", { state: "failing", pending: ["Tests: fail", "Lint: pending"] }), false);
   assert.equal(await onlyNotStarted(host, "u", { state: "green", pending: [] }), false);
   assert.equal(await onlyNotStarted({} as PrHost, "u", { state: "failing", pending: ["Tests: fail"] }), false);
+});
+
+test("onlyNotStartedIn: lo mismo en un commit (antes de un despliegue)", async () => {
+  assert.equal(await onlyNotStartedIn(async () => ["Runner"], { state: "failing", pending: ["Runner: fail"] }), true);
+  assert.equal(await onlyNotStartedIn(async () => [], { state: "failing", pending: ["Runner: fail"] }), false);
+  assert.equal(await onlyNotStartedIn(undefined, { state: "failing", pending: ["Runner: fail"] }), false);
+  assert.equal(await onlyNotStartedIn(async () => { throw new Error("x"); }, { state: "failing", pending: ["Runner: fail"] }), false);
 });
