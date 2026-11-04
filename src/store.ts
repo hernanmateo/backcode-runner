@@ -304,7 +304,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -401,6 +401,16 @@ export class Store {
     if (JSON.stringify(deploys) === JSON.stringify(this.capabilities.deploys)) return;
     this.capabilities = { ...this.capabilities, deploys: JSON.parse(JSON.stringify(deploys)) as this["capabilities"]["deploys"] };
     await updateDoc(doc(this.project(), "runners", this.uid), { "capabilities.deploys": this.capabilities.deploys }).catch(() => undefined);
+  }
+
+  /** Estado de GitHub Actions del repo (github-actions.ts): se guarda solo si cambia. */
+  private githubActionsKey = "";
+  async saveGithubActions(status: unknown): Promise<void> {
+    const { checkedAt: _checkedAt, ...rest } = (status ?? {}) as Record<string, unknown>;
+    const key = JSON.stringify(rest);
+    if (key === this.githubActionsKey) return;
+    this.githubActionsKey = key;
+    await updateDoc(doc(this.project(), "runners", this.uid), { githubActions: JSON.parse(JSON.stringify(status)) }).catch(() => undefined);
   }
 
   /** Si la rama base tiene CI (ver ci.ts): se guarda solo si cambia (también va en cada renovación del lock). */
@@ -964,6 +974,11 @@ export class Store {
   /** «Exigir checks» del proyecto (plan Equipo; lo cambian los admins en la app). */
   watchRequireChecks(onChange: (on: boolean) => void): () => void {
     return onSnapshot(this.project(), (d) => onChange(d.get("requireChecks") === true), () => undefined);
+  }
+
+  /** «Dónde se pasan los checks» del proyecto: "local" (el runner, local-checks.ts) o, sin campo, la CI del host. */
+  watchChecksMode(onChange: (mode: "host" | "local") => void): () => void {
+    return onSnapshot(this.project(), (d) => onChange(d.get("checksMode") === "local" ? "local" : "host"), () => undefined);
   }
 
   /** «Rama de preview» del proyecto (opcional; la cambian los admins en la app). Sin ella, undefined. */

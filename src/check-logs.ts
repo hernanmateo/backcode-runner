@@ -2,6 +2,7 @@
 // Claude para que lo arregle (fix-checks.ts). Solo el final de cada job, sin colores y sin líneas que parezcan secretos.
 import { looksSecret } from "./diagnostics.js";
 import type { PrHost } from "./hosts.js";
+import { prLocalLog } from "./local-checks.js";
 
 /** Lo que cabe del log en el resultado de la acción y en el mensaje a Claude (los mensajes de la tarea, hasta 4000). */
 export const CHECK_LOG_MAX = 3000;
@@ -44,6 +45,9 @@ export function cleanFailedLog(raw: string, max = CHECK_LOG_MAX): string {
 
 /** El log de los checks que fallan del PR, o "" si el host no lo da (Bitbucket) o no se pudo leer. */
 export async function failingLog(host: PrHost, prUrl: string, max = CHECK_LOG_MAX): Promise<string> {
+  // Los checks locales que fallaron en este runner (local-checks.ts): su log ya está limpio.
+  const local = prLocalLog(prUrl);
+  if (local) return local.slice(-max);
   if (!host.failedLog) return "";
   return cleanFailedLog(await host.failedLog(prUrl).catch(() => ""), max);
 }
