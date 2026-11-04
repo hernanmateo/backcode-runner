@@ -359,8 +359,13 @@ export interface LocalRunDeps {
   repoPath: string;
   worktreesDir: string;
   host: PrHost | undefined;
-  /** El commit que se comprueba. */
+  /** El commit que se comprueba (p. ej. el PR mezclado con la base: mergedCommit, que solo existe en local). */
   sha: string;
+  /**
+   * Dónde se publican los estados «Backcode · …» si no es `sha` (la cabeza del PR, que sí está en el host). Entonces los
+   * estados que ya tenga ese commit no cuentan (eran de la rama sola o de otra base): solo la caché por contenido.
+   */
+  publishSha?: string;
   /** Los checks a ejecutar (leídos de la rama base: localChecksAt). */
   checks: LocalCheck[];
   /** Inyectable para los tests. */
@@ -424,12 +429,13 @@ export function runLocalChecks(d: LocalRunDeps): Promise<LocalRun> {
 
 async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
   const publish = async (check: LocalCheck, state: CheckItem["state"], description: string) => {
-    await d.host?.setStatus?.(d.sha, { name: statusName(check), state, description }).catch((e: Error) => console.warn(`\x1b[33m⚠ ${t("lc.publishFail", { name: check.name, error: e.message.split("\n")[0] })}\x1b[0m`));
+    await d.host?.setStatus?.(d.publishSha ?? d.sha, { name: statusName(check), state, description }).catch((e: Error) => console.warn(`\x1b[33m⚠ ${t("lc.publishFail", { name: check.name, error: e.message.split("\n")[0] })}\x1b[0m`));
   };
   const cache = d.cache ?? fileChecksCache();
   const keyOf = d.key ?? ((c: LocalCheck) => checkKey(d.repoPath, d.sha, c));
   // Los que ya pasaron en este commit (estado en el host) o con el mismo contenido (caché local) no se repiten.
-  const existing = (await d.host?.commitItems?.(d.sha).catch(() => [] as CheckItem[])) ?? [];
+  const own = !d.publishSha || d.publishSha === d.sha;
+  const existing = own ? ((await d.host?.commitItems?.(d.sha).catch(() => [] as CheckItem[])) ?? []) : [];
   const before = new Map(existing.map((i) => [i.name, i.state]));
   const keys = new Map<LocalCheck, string | null>();
   for (const c of d.checks) keys.set(c, await keyOf(c).catch(() => null));
@@ -495,7 +501,7 @@ async function doRun(d: LocalRunDeps, abort: AbortSignal): Promise<LocalRun> {
         await publish(c, "ok", t("lc.ok", { took }));
       } else {
         await publish(c, "fail", `${t("lc.fail", { took })} ${lastLine(res.out)}`.trim());
-        const saved = d.run ? "" : saveFailedLog(c.name, d.sha, res.out);
+        const saved = d.run ? "" : saveFailedLog(c.name, d.publishSha ?? d.sha, res.out);
         if (saved) console.log(`[checks] ${statusName(c)}: ${t("lc.savedLog", { file: saved })}`);
         logs.push(`## ${statusName(c)}\n${cleanOutput(res.out, LOG_MAX)}`);
       }

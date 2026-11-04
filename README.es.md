@@ -805,6 +805,15 @@ description = "App · tipos y lint"          # opcional
   coincide espera a que acabe uno, para que el Mac saturado no los haga ir lentos a todos.
 - **La salida de lo que falla queda guardada:** la de cada check que falla, entera, en
   `~/.backcode/logs/checks/<fecha>-<commit>-<nombre>.log` (las 30 últimas), para ver qué pasó aunque el runner se reinicie.
+- **El PR tal como quedaría mergeado:** si la rama principal ha avanzado desde que se creó el PR (p. ej. con «Mergear
+  todo» ya se mergeó otro antes), los checks no se pasan sobre la rama sola sino sobre un commit local que la mezcla con lo
+  último de la principal (`git merge-tree`, sin subir nada ni crear ramas). Así no se mergea algo en verde por separado y
+  en rojo junto a lo demás. Los estados «Backcode · …» se siguen publicando en el último commit del PR; los que ya tuviera
+  no cuentan (eran de la rama sola), pero la caché por contenido sí. Si la rama ya contiene la principal, es lo de siempre.
+- **Con la CI del host, el PR se pone al día:** con **Exigir checks** o en **modo auto**, si el PR va por detrás de la rama
+  principal, antes de esperar a los checks el runner mezcla la principal en la rama (en una copia aparte), la sube sin
+  forzar y espera a que la CI corra sobre ese commit nuevo. Si choca, es el caso de conflictos de siempre («Arreglar con
+  Claude»). Sin ninguno de los dos, un merge a mano no toca la rama (no gasta otra vuelta de CI).
 - **Verificados al terminar la tarea:** con «En local», cuando una tarea abre o actualiza su PR el runner pasa los checks
   sobre su último commit en segundo plano (como mucho 30 min; no frena la cola) y guarda el resultado en la tarea
   (subdocumento `checks/verify`: commit del PR, commit de la rama principal, fecha, checks y un resumen si fallan). También lo publica en

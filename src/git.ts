@@ -85,6 +85,27 @@ export async function findConflicts(repoPath: string, worktreesDir: string, remo
   }
 }
 
+/**
+ * El PR tal como quedaría mergeado: un commit local (sin subir ni ninguna rama que lo apunte) con la mezcla de `baseSha`
+ * en `headSha`, para pasar los checks sobre el resultado y no sobre la rama sola («en verde por separado, en rojo
+ * juntos»). Si la rama ya contiene la base, es `headSha` tal cual; si chocan, null. Mismo PR y misma base dan siempre el
+ * mismo commit (autor y fecha fijos), así dos acciones a la vez comparten la ejecución. Lanza con git < 2.38.
+ */
+export async function mergedCommit(repoPath: string, headSha: string, baseSha: string): Promise<string | null> {
+  if (await isAncestor(repoPath, baseSha, headSha)) return headSha;
+  const tree = await run("git", [...NO_HOOKS, "merge-tree", "--write-tree", "--no-messages", headSha, baseSha], { cwd: repoPath }).then(
+    (r) => String(r.stdout).split("\n")[0].trim(),
+    (e: { code?: number }) => {
+      if (e.code === 1) return null;
+      throw e;
+    },
+  );
+  if (!tree) return null;
+  const who = { GIT_AUTHOR_NAME: "Backcode", GIT_AUTHOR_EMAIL: "runner@backcode.invalid", GIT_COMMITTER_NAME: "Backcode", GIT_COMMITTER_EMAIL: "runner@backcode.invalid", GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000" };
+  const { stdout } = await run("git", [...NO_HOOKS, "commit-tree", tree, "-p", headSha, "-p", baseSha, "-m", `Backcode: ${headSha.slice(0, 12)} + ${baseSha.slice(0, 12)}`], { cwd: repoPath, env: { ...process.env, ...who } });
+  return String(stdout).trim();
+}
+
 /** Sube la rama de una tarea (p. ej. tras mezclar la base sin conflictos): el PR se actualiza solo. */
 export async function pushBranch(worktree: string, remote: string, branch: string): Promise<void> {
   await gitPush(worktree, ["--no-verify", "--force-with-lease", remote, `${branch}:${branch}`]);
