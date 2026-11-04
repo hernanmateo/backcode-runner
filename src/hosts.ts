@@ -14,12 +14,37 @@ export interface Checks {
   pending: string[];
 }
 
+/** Un check de un commit: nombre y estado. */
+export interface CheckItem {
+  name: string;
+  state: "ok" | "pending" | "fail";
+}
+
+/** Estado que publica el runner en un commit (los checks locales: local-checks.ts). */
+export interface CommitStatus {
+  name: string;
+  state: "ok" | "pending" | "fail";
+  /** Frase corta (GitHub admite 140 caracteres). */
+  description: string;
+}
+
 export interface PrHost {
   kind: "github" | "bitbucket";
   /** Abre el PR en borrador o devuelve el abierto de esa rama (el push ya lo actualizó). */
   openOrUpdatePr(o: { cwd: string; branch: string; base: string; title: string; body: string }): Promise<string>;
   prChecks(prUrl: string): Promise<Checks>;
   commitChecks(sha: string): Promise<Checks>;
+  /** Los checks de un commit uno a uno (los locales que ya pasaron no se repiten). */
+  commitItems?(sha: string): Promise<CheckItem[]>;
+  /** Publica un estado en el commit («Backcode · …»): sale en el PR como un check más. */
+  setStatus?(sha: string, status: CommitStatus): Promise<void>;
+  /**
+   * Checks en rojo del PR que no llegaron a ejecutarse (GitHub Actions sin minutos o con un pago fallido): sus nombres.
+   * Solo GitHub; ausente si el host no lo sabe.
+   */
+  notStarted?(prUrl: string): Promise<string[]>;
+  /** Vuelve a lanzar los jobs en rojo del PR (GitHub Actions) y devuelve cuántos runs relanzó; ausente si el host no puede. */
+  rerunFailed?(prUrl: string): Promise<number>;
   /** Log en bruto de los checks que fallan del PR (GitHub Actions); ausente si el host no lo da. Ver check-logs.ts. */
   failedLog?(prUrl: string): Promise<string>;
   /**
@@ -48,7 +73,7 @@ export interface OpenPr {
   updatedAt: string;
 }
 
-const summarize = (items: { name: string; state: "ok" | "pending" | "fail" }[]): Checks => {
+export const summarize = (items: CheckItem[]): Checks => {
   if (!items.length) return { state: "none", pending: [] };
   const bad = items.filter((i) => i.state !== "ok");
   return {
@@ -88,8 +113,31 @@ export async function mergeWithRetry(merge: () => Promise<unknown>, state: () =>
   }
 }
 
+/**
+ * Aviso de GitHub en un job que no llegó a arrancar por la facturación de Actions («The job was not started because recent
+ * account payments have failed or your spending limit needs to be increased…»).
+ */
+export const NOT_STARTED_RE = /job was not started|spending limit needs|payments? (?:have|has) failed|billing & plans/i;
+
+const GH_STATE = { ok: "success", pending: "pending", fail: "failure" } as const;
+const BB_STATE = { ok: "SUCCESSFUL", pending: "INPROGRESS", fail: "FAILED" } as const;
+
 export function githubHost(repoPath: string): PrHost {
   const gh = async (args: string[], cwd = repoPath) => (await run("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024 })).stdout.trim();
+  let repoName: Promise<string> | undefined;
+  const repo = () => (repoName ??= gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]).catch((e) => {
+    repoName = undefined;
+    throw e;
+  }));
+  const commitItems = async (sha: string): Promise<CheckItem[]> => {
+    const name = await repo();
+    const runs = JSON.parse(await gh(["api", `repos/${name}/commits/${sha}/check-runs`, "--paginate"])) as { check_runs: { name: string; status: string; conclusion: string | null }[] };
+    const statuses = JSON.parse(await gh(["api", `repos/${name}/commits/${sha}/status`])) as { statuses: { context: string; state: string }[] };
+    return [
+      ...runs.check_runs.filter((r) => r.conclusion !== "skipped" && r.conclusion !== "neutral").map((r) => ({ name: r.name, state: (r.status !== "completed" ? "pending" : r.conclusion === "success" ? "ok" : "fail") as CheckItem["state"] })),
+      ...statuses.statuses.map((s) => ({ name: s.context, state: (s.state === "success" ? "ok" : s.state === "pending" ? "pending" : "fail") as CheckItem["state"] })),
+    ];
+  };
   return {
     kind: "github",
     async openOrUpdatePr({ cwd, branch, base, title, body }) {
@@ -116,13 +164,32 @@ export function githubHost(repoPath: string): PrHost {
       return logs.filter(Boolean).join("\n");
     },
     async commitChecks(sha) {
-      const repo = await gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);
-      const runs = JSON.parse(await gh(["api", `repos/${repo}/commits/${sha}/check-runs`, "--paginate"])) as { check_runs: { name: string; status: string; conclusion: string | null }[] };
-      const statuses = JSON.parse(await gh(["api", `repos/${repo}/commits/${sha}/status`])) as { statuses: { context: string; state: string }[] };
-      return summarize([
-        ...runs.check_runs.filter((r) => r.conclusion !== "skipped" && r.conclusion !== "neutral").map((r) => ({ name: r.name, state: (r.status !== "completed" ? "pending" : r.conclusion === "success" ? "ok" : "fail") as "ok" | "pending" | "fail" })),
-        ...statuses.statuses.map((s) => ({ name: s.context, state: (s.state === "success" ? "ok" : s.state === "pending" ? "pending" : "fail") as "ok" | "pending" | "fail" })),
-      ]);
+      return summarize(await commitItems(sha));
+    },
+    commitItems,
+    async setStatus(sha, st) {
+      await gh(["api", "-X", "POST", `repos/${await repo()}/statuses/${sha}`, "-f", `state=${GH_STATE[st.state]}`, "-f", `context=${st.name}`, "-f", `description=${st.description.slice(0, 140)}`]);
+    },
+    async rerunFailed(prUrl) {
+      const rows = JSON.parse((await gh(["pr", "checks", prUrl, "--json", "bucket,link"]).catch(() => "[]")) || "[]") as { bucket: string; link?: string }[];
+      const runs = [...new Set(rows.filter((r) => r.bucket === "fail").map((r) => /\/actions\/runs\/(\d+)/.exec(r.link ?? "")?.[1]).filter((id): id is string => !!id))];
+      for (const id of runs) await gh(["run", "rerun", id, "--failed"]);
+      return runs.length;
+    },
+    async notStarted(prUrl) {
+      // Los jobs que no arrancaron no tienen log: solo una anotación de GitHub que explica por qué.
+      const rows = JSON.parse((await gh(["pr", "checks", prUrl, "--json", "name,bucket,link"]).catch(() => "[]")) || "[]") as { name: string; bucket: string; link?: string }[];
+      const failing = rows.filter((r) => r.bucket === "fail").slice(0, 10);
+      if (!failing.length) return [];
+      const name = await repo();
+      const out: string[] = [];
+      for (const r of failing) {
+        const id = /\/job\/(\d+)/.exec(r.link ?? "")?.[1];
+        if (!id) continue;
+        const notes = JSON.parse((await gh(["api", `repos/${name}/check-runs/${id}/annotations`]).catch(() => "[]")) || "[]") as { message?: string }[];
+        if (notes.some((n) => NOT_STARTED_RE.test(n.message ?? ""))) out.push(r.name);
+      }
+      return out;
     },
     async merge(prUrl, opts) {
       await gh(["pr", "ready", prUrl]).catch(() => undefined); // si ya no era borrador, da igual
@@ -203,6 +270,16 @@ export function bitbucketHost(remoteUrl: string, email: string, token: string): 
     },
     async commitChecks(sha) {
       return toChecks((await api<{ values: { name?: string; key: string; state: string }[] }>(`/commit/${sha}/statuses?pagelen=50`)).values);
+    },
+    async commitItems(sha) {
+      const values = (await api<{ values: { name?: string; key: string; state: string }[] }>(`/commit/${sha}/statuses?pagelen=50`)).values;
+      return values.map((v) => ({ name: v.name ?? v.key, state: v.state === "SUCCESSFUL" ? "ok" : v.state === "INPROGRESS" ? "pending" : "fail" }));
+    },
+    async setStatus(sha, st) {
+      // La clave identifica el estado (se reemplaza al volver a publicarlo); la URL es obligatoria en Bitbucket.
+      const key = `backcode-${st.name.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}`.slice(0, 40);
+      const url = `https://bitbucket.org/${repo.workspace}/${repo.slug}/commits/${sha}`;
+      await api(`/commit/${sha}/statuses/build`, { method: "POST", body: { key, state: BB_STATE[st.state], name: st.name, description: st.description.slice(0, 140), url } });
     },
     async merge(prUrl, opts) {
       const id = await prId(prUrl);

@@ -199,7 +199,7 @@ explains how to add a `backcode:deploy:<name>` script or a `backcode.toml` and, 
   <tr>
     <td valign="top">
       <h4>Ship from the app</h4>
-      Merge with green checks, Expo OTA (EAS Update or your own script) with a boot test, store builds and monorepo deploys.
+      Merge with green checks (from your CI, or run locally by the runner from <code>[check.*]</code> in <code>backcode.toml</code> when CI is unavailable), Expo OTA (EAS Update or your own script) with a boot test, store builds and monorepo deploys.
     </td>
     <td valign="top">
       <h4>Always up to date</h4>

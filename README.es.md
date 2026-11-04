@@ -508,6 +508,8 @@ tokens de GitHub, Bitbucket ni EAS. Los comandos son fijos: nunca los decide Cla
 |---|---|---|
 | **Abrir PR** | cualquier miembro | Para tareas con solo la rama subida: abre el PR (sin volver a ejecutar a Claude). |
 | **Mergear PR** | admins y owner | Comprueba que los checks del PR están en verde, lo saca de borrador, hace squash y borra la rama. Después pone al día tu copia local (ver abajo). |
+| **Pasar los checks en local** | admins y owner | Merge con los checks del `backcode.toml` ejecutados en tu ordenador (ver [Checks en local](#checks-en-local-sin-la-ci-del-host)). |
+| **Relanzar los checks** | admins y owner | Vuelve a lanzar en GitHub Actions los jobs en rojo del PR (`gh run rerun --failed`). |
 | **Publicar OTA** | admins y owner | Solo en apps Expo con OTA configurado (ver abajo). Comprueba que el último commit de la rama base está en verde, instala dependencias y publica al canal **preview** o **production**, siempre al 100 % y para iOS y Android. |
 | **Build** | admins y owner | Build local con EAS (iOS y/o Android) con la versión y runtimeVersion escritas en la app, y envío a TestFlight / Internal Testing (ver abajo). |
 | **Instalar en mi móvil** | cualquier miembro | Compila la app en Release con lo último de la rama base y la instala en uno de **tus** móviles emparejados con el ordenador de tu runner, por wifi o por cable (ver abajo). |
@@ -720,6 +722,57 @@ derbi-admin-staging · canal staging»; la carpeta y el comando salen en la conf
 
 (o `firebase deploy --only hosting -P <proyecto-staging>` si el staging es otro proyecto de Firebase). La sesión de Firebase es
 la de tu ordenador (`firebase login`): si falla por sesión, proyecto o CLI, la app lo explica encima del error.
+
+### Checks en local (sin la CI del host)
+El runner puede pasar los checks de un commit **en tu ordenador** en vez de (o además de) la CI de GitHub o Bitbucket. Se
+declaran en el `backcode.toml` de la raíz, junto a los despliegues:
+
+```toml
+[check.app]
+run = "npm run typecheck && npm run lint"   # el comando (con sh -c) o una lista ["make", "test"] (sin shell)
+dir = "app"                                 # opcional: carpeta; por defecto la raíz
+install = true                              # opcional: instalar antes las dependencias (npm ci, pnpm/yarn/bun congelados)
+timeout = 20                                # opcional: minutos (1-60, por defecto 20)
+description = "App · tipos y lint"          # opcional
+```
+
+- Se leen del `backcode.toml` de **la rama principal**, no del PR: un PR no puede rebajar lo que se comprueba.
+- Se ejecutan en una copia limpia del commit, uno detrás de otro, sin `.env` y sin las variables con tokens del runner. Cada
+  resultado se publica en el commit como un estado **«Backcode · &lt;nombre&gt;»**: sale en el PR de GitHub/Bitbucket como un
+  check más. Si un check ya consta en verde en ese commit, no se repite.
+- Son comandos de shell fijos, **sin Claude**: no gastan tokens.
+
+Cuándo se usan:
+
+1. **Editar proyecto › Dónde se pasan los checks › En local** (`checksMode: "local"`): antes de mergear y de publicar (OTA,
+   builds, despliegues) cuentan solo estos; los de la CI del host no. Sin ningún `[check.*]` declarado no se mergea ni se despliega.
+2. **Con la CI del host**, cuando un merge se bloquea por checks en rojo, la tarjeta ofrece:
+   - Si **no llegaron a ejecutarse** (GitHub Actions sin minutos o con un pago fallido; el runner lo reconoce por la
+     anotación de GitHub y devuelve `blocked: "ciNotStarted"`): **Pasar los checks en local** como acción principal. Si
+     pasan, sustituyen a los que no arrancaron y se mergea.
+   - Si **fallaron de verdad**: **Devolver a Claude Code** (como siempre), **Relanzar los checks en GitHub** y, con
+     confirmación, **Pasar en local y mergear**. Con **Exigir checks** esto último no se puede: un check del host en rojo
+     sigue bloqueando. Queda anotado en el historial de la tarea qué checks se sustituyeron.
+
+Si fallan, el final de la salida va al resultado del merge (la app lo enseña) y a **Devolver a Claude Code**.
+
+### GitHub Actions: minutos, pausa y reactivación
+En repos de GitHub, el runner mira cada 30 minutos el estado de GitHub Actions y lo publica para la app
+(`runners/{uid}.githubActions`): workflows activos, **minutos gastados del mes frente a los incluidos** y cuándo se renuevan
+(el día 1). La facturación solo la ve **el dueño de la cuenta de GitHub del repo** (o un admin de la organización), así
+que solo su runner la lee, y una sola vez hay que darle permiso a su `gh`: `gh auth refresh -h github.com -s user`
+(`-s admin:org` en una organización). La app se lo explica solo a él, en «CI y checks» y en Editar proyecto; los
+minutos que lee su runner los ve todo el proyecto. En el runner de un compañero no se pide nada (`billingError:
+"notOwner"`), y lo demás (estado, aviso de «sin minutos» por jobs que no arrancan, pausar y reactivar) funciona igual.
+
+- **Sin minutos:** si la facturación dice que se han gastado los incluidos, o el último run o un merge ve jobs que no
+  arrancaron, la app avisa en el proyecto (a los admins) y ofrece **Pausar GitHub Actions**. También aparece junto a un merge
+  bloqueado por checks que no arrancaron.
+- **Pausar** (acción `actionsPause`, solo admins): desactiva los workflows activos del repo (`.github/workflows/*`) y apunta
+  cuáles fueron en `~/.backcode/actions-paused/<proyecto>.json`. Se puede pausar hasta la renovación (se reactiva solo el
+  día 1) o hasta reactivarlo a mano. **Mientras está en pausa, los checks se pasan en local** (ver arriba) si el repo
+  declara alguno; si no, se mergea sin comprobar nada.
+- **Reactivar** (acción `actionsResume`): reactiva solo los workflows que pausó Backcode.
 
 ## Mapa e icono del proyecto
 Al arrancar (y como mucho una vez al día si cambia la rama base), Claude analiza el repo **en solo lectura** con un modelo barato

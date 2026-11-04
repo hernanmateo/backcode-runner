@@ -22,7 +22,9 @@ import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployC
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
-import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setDeployRetry, setRequireChecks, type Action, type ActionResult } from "./actions.js";
+import { localChecksAt } from "./local-checks.js";
+import { githubActions } from "./github-actions.js";
+import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { clampRetryMax, decideRetry } from "./auto-retry.js";
 import { materializeAttachments } from "./attachments.js";
@@ -1209,6 +1211,13 @@ async function main(): Promise<void> {
     knowledge: true,
     fixConflicts: true,
     fixChecks: true,
+    // Checks en local (local-checks.ts): los que declara el backcode.toml de la rama base. La app ofrece «Pasar los checks en
+    // local» y el ajuste «Checks en local» solo a runners que lo saben hacer ([] = lo sabe, pero el repo no declara ninguno).
+    localChecks: (await localChecksAt(cfg.repoPath, `${cfg.remote}/${cfg.baseBranch}`).catch(() => [])).map((c) => c.name),
+    // «Relanzar los checks» (GitHub Actions).
+    rerunChecks: prHost?.kind === "github",
+    // «Pausar / Reactivar GitHub Actions» y el estado de sus minutos (runners/{uid}.githubActions).
+    githubActions: prHost?.kind === "github",
     // Tareas de CI (ci-task.ts): la app ofrece «Prepararla con Claude Code» en «CI y checks» si el repo no tiene CI.
     ciSetup: !!prHost,
     chat: true,
@@ -1319,6 +1328,25 @@ async function main(): Promise<void> {
   };
   void refreshPrs();
   const prsTimer = setInterval(() => void refreshPrs(), 5 * 60_000);
+  // GitHub Actions (github-actions.ts): estado y minutos del mes para la app, aviso si se acaban y reactivación al renovarse.
+  const ghActions = prHost?.kind === "github" ? githubActions(cfg.repoPath, cfg.projectId) : undefined;
+  let ghActionsBusy = false;
+  const refreshActions = async () => {
+    if (!ghActions || ghActionsBusy) return;
+    ghActionsBusy = true;
+    try {
+      if (await ghActions.autoResumeIfDue().catch(() => false)) console.log(`[actions] ${t("ga.autoResumed")}`);
+      const status = await ghActions.status();
+      await store.saveGithubActions(status);
+    } catch (err) {
+      console.warn(`\x1b[33m⚠ ${t("ga.statusFail", { error: String((err as Error).message).split("\n")[0] })}\x1b[0m`);
+    } finally {
+      ghActionsBusy = false;
+    }
+  };
+  setGithubActions(ghActions, () => void refreshActions());
+  void refreshActions();
+  const actionsTimer = setInterval(() => void refreshActions(), 30 * 60_000);
   // Móviles listos para «Instalar en mi móvil»: se miran cada 45 s y se guardan solo si cambian.
   let devicesKey = "";
   const watchDevices = async () => {
@@ -1352,6 +1380,7 @@ async function main(): Promise<void> {
     }
   });
   const stopRequireChecks = store.watchRequireChecks(setRequireChecks);
+  const stopChecksMode = store.watchChecksMode(setChecksMode);
   const stopDeployRetry = store.watchDeployRetry(setDeployRetry);
   // «Rama de preview» (opcional): solo cuenta si es válida y existe en el remoto; si no, todo sigue en la rama base.
   const stopPreviewBranch = store.watchPreviewBranch((branch) => {
@@ -1828,6 +1857,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopChecksMode();
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
@@ -1845,6 +1875,7 @@ async function main(): Promise<void> {
     stopDeployLog();
     clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
+    clearInterval(actionsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(quotaWaitTimer);
@@ -1887,6 +1918,7 @@ async function main(): Promise<void> {
     stopWorkspace();
     stopWorkflow();
     stopRequireChecks();
+    stopChecksMode();
     stopDeployRetry();
     stopPreviewBranch();
     stopAutoMerge();
@@ -1902,6 +1934,7 @@ async function main(): Promise<void> {
     stopDeployLog();
     clearInterval(cliOtaTimer);
     clearInterval(prsTimer);
+    clearInterval(actionsTimer);
     stopDevServer();
     clearInterval(quotaTimer);
     clearInterval(quotaWaitTimer);
