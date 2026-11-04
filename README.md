@@ -295,7 +295,10 @@ For the work itself, **`/backcode:feature`**, or by hand:
   under your name and marked “Made in Claude Code”. It stays there until `backcode task pr`: the runner leaves it alone, also
   when it restarts (it isn't one of its own tasks left running).
 - `backcode task pr --title "…" --body-file pr.md` (from that worktree): checks for uncommitted changes and secrets, pushes the
-  branch, opens (or updates) the PR and moves the task to “PR ready”. Then it moves by itself: **Merged** when the PR is merged,
+  branch, opens (or updates) the PR and moves the task to “PR ready”. With the project's **auto mode**, it also leaves it
+  “waiting” and **your runner for that project merges it on its own**, like the tasks it runs (project turn, waits for CI,
+  Claude fixes conflicts or checks and retries; never without CI). On start it also picks up the ones already in “PR ready”,
+  and a new `task pr` on one left for review sets it going again (runner 1.5.24+). Then it moves by itself: **Merged** when the PR is merged,
   **Deployed** when an OTA includes it (from the app, or from the terminal: the runner watches the commit the script leaves in
   `<app>/.expo/eoas-last-publish-<branch>`), with push notifications to the whole project. When Claude Code runs `task start`
   or `task pr`, the task keeps that session (`CLAUDE_CODE_SESSION_ID`): once it's in “PR ready”, you can write to Claude from
@@ -613,7 +616,10 @@ npm test
 To try it without touching your real setup: `BACKCODE_HOME=/tmp/bc BACKCODE_PANEL_PORT=47999 npm run panel`.
 `npm run build:bin` compiles the executables (needs [Bun](https://bun.sh)) into `dist-bin/`, and `npm run build:mac` builds the
 universal `Backcode Runner.app` and `Backcode-Runner.dmg` (on a Mac; signed and notarized when `MAC_SIGN_IDENTITY` and the
-notarization variables are set). Pushing a `vX.Y.Z` tag publishes everything as a GitHub Release, together with the npm package.
+notarization variables, or a `NOTARY_PROFILE` keychain profile, are set). Executables are always built with the exact Bun version in
+`.bun-version` (also used by CI), and the one for your platform must pass a smoke test (`backcode selftest`). Pushing a `vX.Y.Z`
+tag publishes everything as a GitHub Release, together with the npm package; if GitHub doesn't start the macOS job within 10 min,
+the monorepo's `scripts/release-runner.sh` builds, signs, notarizes and publishes it from your Mac (see the Spanish guide).
 The agent's instructions live in [`instructions/AGENT.md`](instructions/AGENT.md). The full reference (every action, OTA, builds,
 deploys, Bitbucket, variables) is in the [Spanish guide](README.es.md).
 

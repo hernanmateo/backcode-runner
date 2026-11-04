@@ -18,6 +18,29 @@ export interface AutoMergeState {
   reason?: string;
 }
 
+/** Lo que hace falta de una tarea hecha en el terminal (`backcode task pr`) para saber si el modo auto la coge. */
+export interface LocalPrTask {
+  origin?: string;
+  createdBy?: string;
+  status?: string;
+  kind?: string;
+  merged?: unknown;
+  result?: { prUrl?: string };
+  autoMerge?: { state?: string };
+}
+
+/**
+ * ¿El modo auto de este runner (`uid`) tiene que mergear esta tarea hecha en Claude Code desde el terminal? La de quien la
+ * creó (su runner: `backcode task pr` la registra a su nombre), con PR abierto y sin mergear, que no sea de CI y cuyo modo
+ * auto no haya terminado ya (mergeada, para revisar o abandonada). Un `task pr` nuevo la vuelve a dejar «waiting».
+ */
+export function localAutoMergeCandidate(f: LocalPrTask, uid: string): boolean {
+  if (f.origin !== "local" || f.createdBy !== uid || f.status !== "done" || f.merged || f.kind === "ci") return false;
+  if (!f.result?.prUrl?.startsWith("https://")) return false;
+  const state = f.autoMerge?.state;
+  return !state || state === "waiting" || state === "fixing";
+}
+
 /** Reintentos por defecto (el proyecto puede fijar otro entre 1 y 10: autoMergeRetries). */
 export const DEFAULT_RETRIES = 3;
 export const clampRetries = (n: unknown) => (typeof n === "number" && Number.isInteger(n) ? Math.min(10, Math.max(1, n)) : DEFAULT_RETRIES);

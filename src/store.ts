@@ -389,6 +389,14 @@ export class Store {
     return query(this.features(), where("status", "==", "execute"), where("assignee", "==", this.uid));
   }
 
+  /**
+   * Mis tareas hechas en Claude Code desde el terminal (`backcode task`, origin "local") con PR listo: el modo auto también
+   * las mergea (ver localAutoMergeCandidate). Solo igualdades: no pide índice compuesto.
+   */
+  myLocalPrReady() {
+    return query(this.features(), where("origin", "==", "local"), where("createdBy", "==", this.uid), where("status", "==", "done"));
+  }
+
   /** Tareas de compañeros que se aceptaron con mi runner (runnerUid): van a su nombre, pero las ejecuto yo. */
   sharedQueue() {
     return query(this.features(), where("status", "==", "execute"), where("runnerUid", "==", this.uid));

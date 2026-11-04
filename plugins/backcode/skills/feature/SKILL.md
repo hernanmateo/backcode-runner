@@ -55,7 +55,8 @@ that work: skip to step 2 and keep everything there.
    It checks there are no uncommitted changes and no secrets, pushes the branch, opens (or updates) the PR and moves the
    task to "PR ready" on the Backcode board, under the user's name. It prints `{ "prUrl" }`. From there it moves by
    itself: Merged when the PR is merged, Deployed when an OTA (from the app or the terminal) includes it, with push
-   notifications to the team.
+   notifications to the team. If the project has auto mode on, `task pr` says so and the user's runner merges it on its
+   own once CI is green: tell the user, and don't merge it yourself.
 3. If it fails, read the message, fix the cause (commit pending changes, remove a secret…) and run it again.
 4. Tell the user the PR link and that it's on the Backcode board, where it's reviewed, merged and deployed.
 

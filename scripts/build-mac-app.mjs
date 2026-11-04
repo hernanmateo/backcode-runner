@@ -7,6 +7,7 @@
 // Firma y notarización, si están las variables (en CI vienen de los secretos del repo):
 //   MAC_SIGN_IDENTITY   "Developer ID Application: Nombre (TEAMID)" (el certificado ya en el llavero)
 //   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   para notarytool (contraseña de aplicación del Apple ID)
+//   NOTARY_PROFILE      o, en vez de esas tres, un perfil de notarytool guardado en el llavero (en un Mac propio)
 // Sin ellas, la app sale sin firmar: sirve para probarla en tu Mac (clic derecho → Abrir), no para distribuirla.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -102,8 +103,14 @@ if (identity && process.env.APPLE_ID && process.env.APPLE_TEAM_ID && process.env
   run("xcrun", ["notarytool", "submit", dmg, "--apple-id", process.env.APPLE_ID, "--team-id", process.env.APPLE_TEAM_ID, "--password", process.env.APPLE_APP_PASSWORD, "--wait"]);
   run("xcrun", ["stapler", "staple", dmg]);
   console.log("✓ firmada y notarizada");
+} else if (identity && process.env.NOTARY_PROFILE) {
+  // En un Mac propio (plan B de scripts/release-runner.sh): las credenciales en el llavero, guardadas una vez con
+  // `xcrun notarytool store-credentials <perfil> --apple-id … --team-id …`.
+  run("xcrun", ["notarytool", "submit", dmg, "--keychain-profile", process.env.NOTARY_PROFILE, "--wait"]);
+  run("xcrun", ["stapler", "staple", dmg]);
+  console.log(`✓ firmada y notarizada (perfil ${process.env.NOTARY_PROFILE} del llavero)`);
 } else if (identity) {
-  console.log("⚠ firmada pero sin notarizar (faltan APPLE_ID, APPLE_TEAM_ID o APPLE_APP_PASSWORD)");
+  console.log("⚠ firmada pero sin notarizar (faltan APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD, o NOTARY_PROFILE)");
 } else {
   console.log("⚠ sin firmar (falta MAC_SIGN_IDENTITY): solo para probar en este Mac");
 }
