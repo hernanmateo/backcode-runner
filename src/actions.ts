@@ -140,6 +140,8 @@ export interface ActionResult {
    * app o sus tests (la app ofrece entonces una tarea normal para arreglarlo; `log` lleva su explicación).
    */
   blocked?: "ciAppCode" | "ciNotStarted";
+  /** Merge bloqueado por checks: dónde se pasaron (local: con el runner, «Backcode · …»; host: GitHub/Bitbucket). */
+  checksWhere?: "local" | "host";
   /** OTA: archivos sin commitear que impidieron publicar (la app ofrece «Commit y publicar»). */
   dirty?: string[];
   /** OTA de un PR (prOta): su canal de EAS Update y los enlaces que abren la app en él o la devuelven a su canal. */
@@ -719,7 +721,7 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const run = await runLocal();
       if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "noChecks" };
       const blocked = requireLocalGreen(run, "PR");
-      if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+      if (blocked) return { ok: false, result: { ...blocked, url: prUrl, checksWhere: "local" }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
     }
     greenWhere = "local";
   } else {
@@ -751,16 +753,16 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
       const run = await runLocal();
       if (!run) return { ok: false, result: { error: t("act.localNoBranch"), url: prUrl }, blocked: "checks" };
       const blocked = requireLocalGreen(run, "PR");
-      if (blocked) return { ok: false, result: { ...blocked, url: prUrl }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
+      if (blocked) return { ok: false, result: { ...blocked, url: prUrl, checksWhere: "local" }, blocked: run.checks.state === "failing" ? "checks" : "noChecks" };
       await store.event(featureId, "merge", t(notStarted ? "act.localReplacedNotStarted" : "act.localReplacedFailing", { checks: checks.pending.join(", ") }));
       greenWhere = "local";
     } else {
       if (gate.ciNoChecks && strict) return { ok: false, result: { error: t("act.ciNoChecks", { what: "PR" }), url: prUrl }, blocked: "ciNoChecks" };
       const blocked = requireGreen(checks, "PR", strict);
-      if (notStarted && blocked) return { ok: false, result: { error: t("act.ciNotStarted"), url: prUrl, checks: checks.pending, blocked: "ciNotStarted" }, blocked: "ciNotStarted" };
+      if (notStarted && blocked) return { ok: false, result: { error: t("act.ciNotStarted"), url: prUrl, checks: checks.pending, blocked: "ciNotStarted", checksWhere: "host" }, blocked: "ciNotStarted" };
       const why: MergeBlock = checks.state === "failing" ? "checks" : checks.state === "pending" ? "pending" : "noChecks";
       // En rojo, con el final del log de lo que falla: la app lo enseña y lo devuelve a Claude Code (fix-checks.ts).
-      if (blocked) return { ok: false, result: checks.state === "failing" ? { ...blocked, ...(await failingLog(host, prUrl).then((log) => (log ? { log } : {}))) } : blocked, blocked: why };
+      if (blocked) return { ok: false, result: { ...blocked, checksWhere: "host", ...(checks.state === "failing" ? await failingLog(host, prUrl).then((log) => (log ? { log } : {})) : {}) }, blocked: why };
       if (checks.state === "green") greenWhere = "host";
     }
   }
