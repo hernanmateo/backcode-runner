@@ -851,6 +851,11 @@ export class Store {
     await updateDoc(this.feature(id), { liveUsage: { ...usage, updatedAt: serverTimestamp() } }).catch(() => undefined);
   }
 
+  /** Posición de un merge que espera en la cola del runner (merge-queue.ts): la app la enseña en su tarjeta. */
+  async setActionQueue(id: string, queue: number, queueOf: number): Promise<void> {
+    await updateDoc(doc(this.project(), "actions", id), { result: { queue, queueOf }, updatedAt: serverTimestamp() });
+  }
+
   async finishAction(id: string, ok: boolean, result: Record<string, unknown>): Promise<void> {
     const clean = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
     await updateDoc(doc(this.project(), "actions", id), { status: ok ? "done" : "failed", result: clean, updatedAt: serverTimestamp() });

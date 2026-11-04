@@ -31,6 +31,10 @@ import { localChecksAt } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
 import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
+import { mergeOrder, prFiles, setAutoHoldsTurn, withMergeLock, withMergeTurn } from "./merge-queue.js";
+
+/** Espera desde que llega el primer merge antes de ordenar la cola (para que lleguen todos los de «Mergear todo»). */
+const MERGE_BATCH_MS = 3000;
 import { clampRetryMax, decideRetry } from "./auto-retry.js";
 import { materializeAttachments } from "./attachments.js";
 import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
@@ -164,12 +168,20 @@ async function drainAutoMerge(): Promise<void> {
         base: taskBase(cfg.baseBranch),
         retries: autoMergeSettings.retries,
         hasCi: store.capabilities.ci,
-        merge: () => mergeTask(cfg, store, prHost, featureId, { auto: true }),
+        // Un merge manual de este runner (cola de «Mergear todo») y uno automático no van nunca a la vez.
+        merge: () => withMergeLock(() => mergeTask(cfg, store, prHost, featureId, { auto: true })),
         fixChecks: () => fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, signal, featureId),
         fixConflicts: () => fixConflicts(cfg, store, prHost, agentEnv(), signal, featureId),
         setState: (state) => store.setAutoMerge(featureId, state),
-        takeTurn: () => store.takeMergeTurn(TURN_LEASE_MS),
-        releaseTurn: () => store.releaseMergeTurn(),
+        takeTurn: async () => {
+          const got = await store.takeMergeTurn(TURN_LEASE_MS);
+          if (got) setAutoHoldsTurn(true);
+          return got;
+        },
+        releaseTurn: async () => {
+          setAutoHoldsTurn(false);
+          await store.releaseMergeTurn();
+        },
         log: (text) => console.log(`[auto] ${featureId} ${text}`),
         // Con el code review automático del proyecto: no se mergea con fallos graves pendientes ni si el review falló.
         beforeMerge: async () => {
@@ -1645,12 +1657,49 @@ async function main(): Promise<void> {
   // Acciones pedidas desde la app por este usuario (mergear PR, publicar OTA), de una en una.
   let actionsBusy = false;
   let pendingActions: string[] = [];
+  // Cola de merges (merge-queue.ts): qué es cada acción pendiente, cuándo llegó y el lote de merges en curso.
+  const pendingInfo = new Map<string, { type: string; featureId?: string; seenAt: number }>();
+  const mergeBatch = new Set<string>();
+  const filesOf = new Map<string, string[] | null>();
+  const isMerge = (id: string) => pendingInfo.get(id)?.type === "merge" && !!pendingInfo.get(id)?.featureId;
+  /** Ficheros del PR de una tarea (una vez por lote: no cambian por mergear otros). */
+  const featureFiles = async (featureId: string): Promise<string[] | null> => {
+    if (filesOf.has(featureId)) return filesOf.get(featureId)!;
+    const branch = (await store.featureInfo(featureId).catch(() => null))?.branch;
+    const base = taskBase(cfg.baseBranch);
+    const files = branch && (await fetchBranches(cfg.repoPath, cfg.remote, base, branch).then(() => true, () => false)) ? await prFiles(cfg.repoPath, cfg.remote, base, branch) : null;
+    filesOf.set(featureId, files);
+    return files;
+  };
+  /**
+   * La siguiente acción: por orden de llegada, salvo los merges: si la primera es un merge, de todos los que esperan se
+   * elige el que menos choca con los demás (mergeOrder) y a los otros se les apunta su posición en la cola.
+   */
+  const nextAction = async (): Promise<string | undefined> => {
+    const first = pendingActions[0];
+    if (!first || !isMerge(first)) return pendingActions.shift();
+    // «Mergear todo» crea sus merges casi a la vez: un instante para que lleguen todos antes de elegir el orden.
+    const wait = MERGE_BATCH_MS - (Date.now() - (pendingInfo.get(first)?.seenAt ?? 0));
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    const merges = pendingActions.filter(isMerge);
+    for (const id of merges) mergeBatch.add(id);
+    if (merges.length < 2) return pendingActions.shift();
+    const items = await Promise.all(merges.map(async (id) => ({ id, files: await featureFiles(pendingInfo.get(id)!.featureId!) })));
+    const order = mergeOrder(items);
+    const chosen = order[0];
+    pendingActions = pendingActions.filter((id) => id !== chosen);
+    const done = mergeBatch.size - merges.length;
+    // Posición de cada uno en la cola (la 1 es el que empieza ahora), para la app en vivo.
+    await Promise.all(order.map((id, i) => store.setActionQueue(id, done + i + 1, mergeBatch.size).catch(() => undefined)));
+    return chosen;
+  };
   const drainActions = async () => {
     if (actionsBusy) return;
     actionsBusy = true;
     try {
       while (!stopping && !restarting && pendingActions.length) {
-        const id = pendingActions.shift()!;
+        const id = await nextAction();
+        if (!id) continue;
         const action = await store.claimAction(id);
         if (!action) continue;
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.steps) ? action.steps.join(" → ") : undefined) ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
@@ -1670,7 +1719,20 @@ async function main(): Promise<void> {
                   ? revertPr(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""), id)
                   : action.type === "revertCheck"
                     ? revertCheck(cfg, store, prHost, String(action.featureId ?? ""))
-                    : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
+                    : action.type === "merge"
+                      ? // En cola con los demás merges de este runner y con el turno de merge del proyecto (el del modo auto).
+                        withMergeLock(() =>
+                          withMergeTurn(
+                            {
+                              take: () => store.takeMergeTurn(TURN_LEASE_MS),
+                              release: () => store.releaseMergeTurn(),
+                              stop: () => stopping || restarting,
+                              onWait: () => console.log(`[action] ${t("mq.waitTurn")}`),
+                            },
+                            () => runAction(cfg, store, prHost, { ...(action as unknown as Action), id }),
+                          ),
+                        )
+                      : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
         let thrown: Error | undefined;
         const { ok, result } = await work
           .catch(async (err): Promise<{ ok: boolean; result: ActionResult }> => {
@@ -1695,6 +1757,14 @@ async function main(): Promise<void> {
   };
   const unsubscribeActions = onSnapshot(store.myActions(), (snap) => {
     pendingActions = snap.docs.map((d) => d.id);
+    const now = Date.now();
+    for (const d of snap.docs) if (!pendingInfo.has(d.id)) pendingInfo.set(d.id, { type: String(d.get("type") ?? ""), featureId: typeof d.get("featureId") === "string" ? (d.get("featureId") as string) : undefined, seenAt: now });
+    for (const id of [...pendingInfo.keys()]) if (!pendingActions.includes(id)) pendingInfo.delete(id);
+    // Sin merges esperando, el lote se acaba (el que esté en marcha ya contó).
+    if (!pendingActions.some(isMerge)) {
+      mergeBatch.clear();
+      filesOf.clear();
+    }
     void drainActions();
   });
 

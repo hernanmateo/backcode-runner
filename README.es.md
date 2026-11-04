@@ -445,6 +445,20 @@ Antes de cada reintento comprueba si la operación sí se hizo: el PR ya existe 
 falla, el error lo dice y, si GitHub tiene una incidencia abierta (githubstatus.com), la nombra, para no buscar el fallo
 en tu código (`src/remote-retry.ts`).
 
+## Cola de merges («Mergear todo»)
+
+«Mergear todo» crea una acción `merge` por PR. El runner, que ya ejecuta sus acciones de una en una, espera 3 s a que
+lleguen todas y, cada vez que va a mergear, elige de las que esperan la que menos choca (`src/merge-queue.ts`):
+
+1. la que comparte ficheros (diff desde el merge-base con la rama principal) con menos PR de la cola;
+2. a igualdad, la que cambia menos ficheros;
+3. a igualdad, la que se pidió antes.
+
+Se recalcula tras cada merge con las que quedan. A cada una que espera le apunta su posición (`result.queue` de
+`result.queueOf`), y la app la enseña en vivo en la tarjeta y la ficha. Si un merge falla (checks, conflictos) queda
+marcado como siempre y la cola sigue. Los merges a mano toman el turno de merge del proyecto (`locks/autoMerge`, el del
+modo auto), y en un mismo runner un merge manual y uno automático nunca van a la vez.
+
 ## PRs mergeados fuera de la app
 Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket (o con `gh pr merge`), tu runner lo detecta en
 **un minuto como mucho** y la marca como **Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**. Cada
