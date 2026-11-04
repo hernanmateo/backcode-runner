@@ -459,6 +459,20 @@ Se recalcula tras cada merge con las que quedan. A cada una que espera le apunta
 marcado como siempre y la cola sigue. Los merges a mano toman el turno de merge del proyecto (`locks/autoMerge`, el del
 modo auto), y en un mismo runner un merge manual y uno automático nunca van a la vez.
 
+### Parar una acción («Parar», runner ≥ 1.5.22)
+Cualquier acción del runner (merge, OTA, build, despliegue, «Desplegarlo todo», instalar…) se puede **parar** desde la
+app mientras está en cola o en marcha: **Parar** en la tarjeta de merge o en el detalle de la acción, y **Parar la cola**
+en «Mergear todo». Lo puede pedir quien la lanzó o un admin. La app solo escribe `stopRequested` (quién y cuándo); el runner:
+
+- **En cola:** la cierra sin ejecutarla.
+- **En marcha:** mata el árbol de procesos de lo que esté haciendo (comandos, checks en local y sus emuladores, Claude en
+  «Arreglar con Claude»…) y deja de esperar (CI del host, turno de merge, cola). Queda como **Parada** (`status: failed`,
+  `result.stopped`), sin contar como fallo: se puede volver a pedir.
+- **Sin vuelta atrás:** justo antes de pedir el merge al host, o en cuanto la OTA está publicada, el runner marca la acción
+  con `noStop`: desde ahí la app deja de ofrecer «Parar» y una petición que llegue tarde se ignora.
+- **Despliegue del runner** (`scripts/release-runner.sh`): al pararlo cancela también las ejecuciones de GitHub Actions de
+  esa versión que sigan en cola o en marcha. Reintentarlo luego termina lo que faltaba.
+
 ## PRs mergeados fuera de la app
 Si alguien mergea el PR de una de tus tareas a mano en GitHub o Bitbucket (o con `gh pr merge`), tu runner lo detecta en
 **un minuto como mucho** y la marca como **Mergeada** con su commit; la siguiente OTA la marcará como **Desplegada**. Cada

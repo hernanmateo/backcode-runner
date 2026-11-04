@@ -667,10 +667,34 @@ export class Store {
     return runTransaction(this.db, async (tx) => {
       const d = await tx.get(ref);
       if (!d.exists() || d.get("status") !== "pending" || d.get("requestedBy") !== this.uid) return null;
+      // Parada en cola («Parar» antes de que empezara): se cierra sin ejecutarla.
+      if (d.get("stopRequested")) {
+        tx.update(ref, { status: "failed", result: { error: t("act.stopped"), stopped: true }, updatedAt: serverTimestamp() });
+        return null;
+      }
       // startedAt: desde cuándo corre (el cronómetro de la app en los despliegues, OTA y builds sueltos).
       tx.update(ref, { status: "running", startedAt: serverTimestamp(), updatedAt: serverTimestamp(), leaseUntil: Timestamp.fromMillis(Date.now() + ACTION_LEASE_MS) });
       return d.data();
     });
+  }
+
+  /** Avisa (una vez) si piden «Parar» la acción desde la app (stopRequested). Devuelve la función que deja de escuchar. */
+  watchActionStop(id: string, onStop: () => void): () => void {
+    let fired = false;
+    return onSnapshot(
+      doc(this.project(), "actions", id),
+      (d) => {
+        if (fired || !d.get("stopRequested")) return;
+        fired = true;
+        onStop();
+      },
+      () => undefined,
+    );
+  }
+
+  /** Punto sin vuelta atrás (stop.ts › pointOfNoReturn): la app deja de ofrecer «Parar». */
+  async markActionNoStop(id: string): Promise<void> {
+    await updateDoc(doc(this.project(), "actions", id), { noStop: true, updatedAt: serverTimestamp() });
   }
 
   /** «Sigo vivo» de una acción en marcha: si el runner se cae, la app deja de tratarla como en curso al caducar. */

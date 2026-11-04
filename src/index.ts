@@ -30,6 +30,7 @@ import { stopWaitingForChecks } from "./wait-checks.js";
 import { localChecksAt } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
 import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
+import { isStoppedError, type StopScope, withStopScope } from "./stop.js";
 import { autoMerge, clampRetries, TURN_LEASE_MS } from "./auto-merge.js";
 import { mergeOrder, prFiles, setAutoHoldsTurn, withMergeLock, withMergeTurn } from "./merge-queue.js";
 
@@ -1705,18 +1706,27 @@ async function main(): Promise<void> {
         console.log(`[action] ${String(action.type)} ${String(action.featureId ?? action.channel ?? action.target ?? action.deviceName ?? action.deviceId ?? (Array.isArray(action.steps) ? action.steps.join(" → ") : undefined) ?? (Array.isArray(action.platforms) ? `${action.platforms.join("+")} ${String(action.version)}` : ""))}`);
         const actionLease = setInterval(() => void store.extendActionLease(id).catch(() => undefined), 60_000);
         const release = awake.hold();
+        // «Parar» desde la app (stop.ts): se aborta lo que esté haciendo, salvo si ya pasó el punto sin vuelta atrás.
+        const stopCtrl = new AbortController();
+        const stopState: StopScope = { signal: stopCtrl.signal, noStop: false, markNoStop: () => store.markActionNoStop(id) };
+        const offStop = store.watchActionStop(id, () => {
+          if (stopState.noStop || stopCtrl.signal.aborted) return;
+          console.log(`[action] ${t("act.stopping")}`);
+          stopCtrl.abort();
+        });
+        const agentSignal = AbortSignal.any([knowledgeAbort.signal, stopCtrl.signal]);
         // «Actualizar ahora» el mapa del código: aquí mismo (necesita el entorno de Claude y se cancela al cerrar el runner).
         // Igual «Arreglar con Claude» los conflictos de un PR y «Devolver a Claude Code» sus checks en rojo: Claude
         // arregla, el runner commitea y sube.
-        const work =
+        const work = withStopScope(stopState, () =>
           action.type === "knowledge"
-            ? refreshKnowledge(cfg, store, agentEnv(), knowledgeAbort.signal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
+            ? refreshKnowledge(cfg, store, agentEnv(), agentSignal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
             : action.type === "fixConflicts"
-              ? fixConflicts(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""))
+              ? fixConflicts(cfg, store, prHost, agentEnv(), agentSignal, String(action.featureId ?? ""))
               : action.type === "fixChecks"
-                ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, knowledgeAbort.signal, String(action.featureId ?? ""))
+                ? fixChecks(cfg, store, prHost, { env: agentEnv(), isProtected, denyRead: DENY_READ }, agentSignal, String(action.featureId ?? ""))
                 : action.type === "revert"
-                  ? revertPr(cfg, store, prHost, agentEnv(), knowledgeAbort.signal, String(action.featureId ?? ""), id)
+                  ? revertPr(cfg, store, prHost, agentEnv(), agentSignal, String(action.featureId ?? ""), id)
                   : action.type === "revertCheck"
                     ? revertCheck(cfg, store, prHost, String(action.featureId ?? ""))
                     : action.type === "merge"
@@ -1726,15 +1736,16 @@ async function main(): Promise<void> {
                             {
                               take: () => store.takeMergeTurn(TURN_LEASE_MS),
                               release: () => store.releaseMergeTurn(),
-                              stop: () => stopping || restarting,
+                              stop: () => stopping || restarting || stopCtrl.signal.aborted,
                               onWait: () => console.log(`[action] ${t("mq.waitTurn")}`),
                             },
                             () => runAction(cfg, store, prHost, { ...(action as unknown as Action), id }),
                           ),
                         )
-                      : runAction(cfg, store, prHost, { ...(action as unknown as Action), id });
+                      : runAction(cfg, store, prHost, { ...(action as unknown as Action), id }),
+        );
         let thrown: Error | undefined;
-        const { ok, result } = await work
+        const outcome = await work
           .catch(async (err): Promise<{ ok: boolean; result: ActionResult }> => {
             thrown = err as Error;
             // Caída pasajera de GitHub/Bitbucket (ya reintentada): decirlo y, si GitHub tiene una incidencia, nombrarla.
@@ -1743,10 +1754,15 @@ async function main(): Promise<void> {
           })
           .finally(() => {
             clearInterval(actionLease);
+            offStop();
             release();
           });
+        // Parada a mano antes del punto sin vuelta atrás: termine como termine lo que se cortó, queda como «Parada».
+        const stoppedByHand = !stopState.noStop && (stopCtrl.signal.aborted || isStoppedError(thrown));
+        const { ok, result } = stoppedByHand ? { ok: false, result: { error: t("act.stopped"), stopped: true } as ActionResult } : outcome;
+        if (stoppedByHand) console.log(`[action] ${t("act.stopped")}`);
         await store.finishAction(id, ok, result as Record<string, unknown>);
-        if (!ok) void report(store, diagnosticFor(action as unknown as Action, result, thrown));
+        if (!ok && !stoppedByHand) void report(store, diagnosticFor(action as unknown as Action, result, thrown));
         void refreshPlan();
         if (action.type === "closePr" || action.type === "mergePr" || action.type === "merge") void refreshPrs();
         console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);

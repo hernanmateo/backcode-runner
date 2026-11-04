@@ -18,7 +18,8 @@ import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { shouldVerifyAfterTask, verifiedChecksPlan, VERIFY_SUMMARY_MAX, VERIFY_TIMEOUT_MS } from "./checks-verify.js";
-import { type ChecksMode, LOCAL_CHECK_PREFIX, type LocalRun, isBranchProtectionError, localChecksAt, mergeChecksPlan, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
+import { type ChecksMode, LOCAL_CHECK_PREFIX, type LocalRun, isBranchProtectionError, killTree, localChecksAt, mergeChecksPlan, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
+import { pointOfNoReturn, stopSignal, StoppedError } from "./stop.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
 import { appConfig, buildErrors, prepareNativeProject, smokeTest } from "./smoke.js";
@@ -134,6 +135,8 @@ export interface ActionResult {
   /** OTA: id del grupo de update que imprime `eas update`. */
   updateId?: string;
   error?: string;
+  /** Parada a mano desde la app («Parar», stop.ts) antes de acabar. */
+  stopped?: boolean;
   /** Checks que no están en verde (si se rechaza por eso). */
   checks?: string[];
   log?: string;
@@ -205,7 +208,7 @@ async function useLocal(cfg: RunnerConfig, configRef: string): Promise<boolean> 
 async function localChecks(cfg: RunnerConfig, host: PrHost | undefined, sha: string, configRef: string): Promise<LocalRun> {
   const checks = await localChecksAt(cfg.repoPath, configRef);
   const combined = await withBase(cfg, sha, configRef);
-  return runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: combined, publishSha: sha, checks });
+  return runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host, sha: combined, publishSha: sha, checks, signal: stopSignal() });
 }
 
 /**
@@ -602,6 +605,7 @@ async function mergeExternal(cfg: RunnerConfig, host: PrHost | undefined, prUrl:
       : requireGreen(await checksWhenDone(() => host.prChecks(pr.url), "PR"), "PR");
   if (blocked) return { ok: false, result: blocked };
   const keep = protectedBranch(pr.branch, cfg.baseBranch);
+  await pointOfNoReturn();
   const merged = await mergeUnlessConflict(host, pr.url, keep ? { method: "merge", deleteBranch: false } : undefined);
   if (!merged) return { ok: false, result: { error: t("act.prConflictsExternal", { base: pr.base }), url: pr.url } };
   return { ok: true, result: { url: pr.url, sha: merged.sha } };
@@ -821,6 +825,8 @@ export async function merge(cfg: RunnerConfig, store: Store, host: PrHost | unde
   }
   // Con los checks ya en verde, un merge que falla por una caída de GitHub/Bitbucket (ya reintentado) lo dice: los checks
   // están bien, solo falta volver a mergear cuando el host responda.
+  // Desde aquí el merge ya no se para: se pide al host (stop.ts).
+  await pointOfNoReturn();
   const merged = await mergeUnlessConflict(host, prUrl).catch(async (e: Error) => {
     // Sin CI pero el host exige checks obligatorios (protección de rama): decirlo claro en vez del error crudo.
     if (plan === "skip" && isBranchProtectionError(e)) throw new Error(t("act.branchProtection", { host: host.kind === "github" ? "GitHub" : "Bitbucket" }));
@@ -950,6 +956,9 @@ async function publishOta(cfg: RunnerConfig, store: Store, host: PrHost | undefi
       // Siempre al 100 % y para todas las plataformas (sin despliegue gradual).
       out = await exec(["npx", "--yes", "eas-cli@latest", "update", "--channel", channel, "--environment", channel, "--message", message.slice(0, 200), "--platform", "all", "--non-interactive"], dir);
     }
+    // La OTA ya está publicada: lo que queda (apuntarla) ya no se para (stop.ts). Antes de esto, pararla mata el comando
+    // y no se publica nada.
+    await pointOfNoReturn();
     const url = out.match(/https:\/\/expo\.dev\/accounts\/\S+/g)?.pop();
     // Las tareas cuyo merge va en este commit quedan "desplegadas" en el canal (no en un rollback, sí al promocionar) y constan en el OTA.
     const features = rollbackTo && !promote ? [] : await markDeployedTasks(store, channel, commit, (a, c) => isAncestor(cfg.repoPath, a, c));
@@ -1674,8 +1683,19 @@ function copyLastPublish(fromAppDir: string, toAppDir: string): void {
  * en cuanto su salida lo cumple, se da por terminado bien y se cierra (con sus hijos).
  */
 export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number; doneWhen?: RegExp; settleWhen?: RegExp; settleMs?: number } = {}): Promise<string> {
+  // «Parar» la acción (stop.ts): se mata el árbol entero del comando (killTree) y se rechaza con StoppedError.
+  const abort = stopSignal();
+  if (abort?.aborted) return Promise.reject(new StoppedError(t("act.stopped")));
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: !!opts.doneWhen });
+    const onAbort = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      clearTimeout(settling);
+      void (child.pid ? killTree(child.pid) : Promise.resolve()).finally(() => reject(new StoppedError(t("act.stopped"))));
+    };
+    abort?.addEventListener("abort", onAbort, { once: true });
     let out = "";
     let finished = false;
     const killGroup = () => {
@@ -1710,10 +1730,12 @@ export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record
     const timer = setTimeout(killGroup, opts.timeoutMs ?? OTA_TIMEOUT_MS);
     child.on("error", (e) => {
       clearTimeout(timer);
+      abort?.removeEventListener("abort", onAbort);
       if (!finished) reject(e);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      abort?.removeEventListener("abort", onAbort);
       if (finished) return;
       if (code === 0) resolve(out);
       else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: failureOutput(out) })));

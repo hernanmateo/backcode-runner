@@ -1,4 +1,5 @@
 import type { Checks } from "./hosts.js";
+import { stopRequested } from "./stop.js";
 
 // Justo después de crear o actualizar un PR (o de mergear en la rama base) lo normal es que la CI siga en marcha: en vez
 // de rechazar al momento el merge, el OTA, la build o el despliegue, se espera a que los checks terminen. El lease de la
@@ -46,7 +47,8 @@ export async function waitForChecks(read: () => Promise<Checks>, opts: WaitOptio
   const maxMs = opts.maxMs ?? CHECKS_WAIT_MS;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
-  const shouldStop = opts.shouldStop ?? (() => stopped);
+  // Al parar el runner o al pedir «Parar» la acción que espera (stop.ts).
+  const shouldStop = opts.shouldStop ?? (() => stopped || stopRequested());
   const start = now();
   const deadline = start + maxMs;
   const noneDeadline = start + Math.min(opts.noneGraceMs ?? 0, maxMs);
