@@ -585,6 +585,21 @@ PR gets its position (`result.queue` of `result.queueOf`), which the app shows l
 merge (checks, conflicts) is marked as usual and the queue moves on. Manual merges take the project's merge turn (the same
 one auto mode uses), so they never overlap an automatic merge.
 
+
+### Stopping an action ("Stop", runner ≥ 1.5.22)
+Any runner action (merge, OTA, build, deploy, "Deploy everything", install…) can be **stopped** from the app while it is
+queued or running: **Stop** on the merge card or the action's detail, and **Stop the queue** in "Merge all". The requester
+or an admin can do it. The app only writes `stopRequested` (who and when); the runner:
+
+- **Queued:** closes it without running it.
+- **Running:** kills the process tree of whatever it is doing (commands, local checks and their emulators, Claude…) and
+  stops waiting (host CI, merge turn, queue). It ends as **Stopped** (`status: failed`, `result.stopped`), not as a
+  failure, and can be requested again.
+- **Point of no return:** right before asking the host to merge, or once the OTA is published, the runner sets `noStop`:
+  from then on the app no longer offers "Stop" and a late request is ignored.
+- **Runner deploy** (`scripts/release-runner.sh`): stopping it also cancels that version's GitHub Actions runs that are
+  still queued or running. Retrying it later finishes what was missing.
+
 ## Development
 
 ```bash
