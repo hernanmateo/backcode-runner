@@ -48,9 +48,36 @@ export function buildNumberFrom(output: string): string | undefined {
   return last ? (last[2] ?? last[1]) : undefined;
 }
 
-/** Runtime e identificador del update que imprime `eas update` («Runtime version  1.4.0», «Update group ID  …»). */
+// Códigos de color/estilo ANSI (eas-cli los imprime si cree que hay terminal).
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+
+/** Valor de runtime plausible: empieza por dígito («1.4.0») o lleva algún dígito (fingerprint, «exposdk:51.0.0»); nunca «s». */
+export function isRuntimeVersion(v: string | undefined): v is string {
+  return !!v && v.length <= 64 && (/^\d/.test(v) || (v.length >= 2 && /\d/.test(v))) && /^[0-9A-Za-z][0-9A-Za-z._:+-]*$/.test(v);
+}
+
+/** Primer valor de las líneas «<etiqueta>  valor» (texto plano, «Etiqueta: valor» o tabla con «│»/«|») que pase `ok`. */
+function field(lines: string[], label: string, ok: (v: string) => boolean): string | undefined {
+  // `\b` tras la etiqueta: «Runtime versions» no encaja con «Runtime version». Entre etiqueta y valor, al menos un espacio o separador.
+  const re = new RegExp(`^[\\s│|]*${label}\\b[^\\S\\n]*(?:[:│|][^\\S\\n]*|[^\\S\\n]+)([^\\s│|]+)`, "i");
+  for (const line of lines) {
+    const v = re.exec(line)?.[1];
+    if (v && ok(v)) return v;
+  }
+  return undefined;
+}
+
+const UPDATE_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^[0-9a-f-]{8,36}$/i;
+
+/**
+ * Runtime e identificador del update que imprime `eas update` («Runtime version  1.4.0», «Update group ID  …»), con o
+ * sin colores ANSI y en tabla. Si las plataformas van por separado («Android runtime version», «iOS update ID»), la de la
+ * primera. Lo que no parezca una versión o un id se descarta (el runner usa entonces la versión de la app).
+ */
 export function otaInfoFrom(output: string): { runtimeVersion?: string; updateId?: string } {
-  const runtimeVersion = /Runtime version\s*[:│|]?\s*([0-9A-Za-z][0-9A-Za-z._-]{0,39})/i.exec(output)?.[1];
-  const updateId = /Update group ID\s*[:│|]?\s*([0-9a-f-]{8,36})/i.exec(output)?.[1];
+  const lines = output.replace(ANSI, "").split(/\r?\n/);
+  const runtimeVersion = field(lines, "Runtime version", isRuntimeVersion) ?? field(lines, "(?:Android|iOS) runtime version", isRuntimeVersion);
+  const isId = (v: string) => UPDATE_ID.test(v) && /\d/.test(v);
+  const updateId = field(lines, "Update group ID", isId) ?? field(lines, "(?:Android|iOS) update ID", isId);
   return { ...(runtimeVersion ? { runtimeVersion } : {}), ...(updateId ? { updateId } : {}) };
 }
