@@ -5,7 +5,7 @@ import { createDetachedWorktree, findRepoIcon, git, remoteHead, removeWorktree, 
 import { createGuardHook } from "./guard.js";
 import { t } from "./i18n.js";
 import type { Store } from "./store.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 
 // Mapa del repositorio: Claude (modelo barato, solo lectura) resume el proyecto y se guarda en
 // projects/{pid}/knowledge/repo. La IA que prepara los encargos lo usa para conocer el código.
@@ -103,7 +103,7 @@ async function refreshMap(cfg: RunnerConfig, store: Store, env: Record<string, s
         allowedTools: ["Read", "Glob", "Grep"],
         disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task"],
         hooks: { PreToolUse: [{ hooks: [createGuardHook(path, () => true)] }] },
-        settingSources: [],
+        settingSources: [], settings: CLAUDE_SETTINGS,
         maxTurns: 40,
         maxBudgetUsd: 0.5,
         env,

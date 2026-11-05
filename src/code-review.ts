@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createGuardHook } from "./guard.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 
 // «Code review automático» (ajuste del proyecto codeReview: off | low | medium | high). Cuando una tarea termina y abre o
 // actualiza su PR, el runner revisa el diff de la rama contra la base en una sesión de Claude Code NUEVA (sin el contexto
@@ -151,7 +151,7 @@ export async function runReview(o: {
         model: o.model,
         abortController: abort,
         env: o.env,
-        settingSources: [],
+        settingSources: [], settings: CLAUDE_SETTINGS,
         permissionMode: "dontAsk",
         allowedTools: ["Read", "Glob", "Grep", "Bash", "TodoWrite", "Skill", "Agent", "Task", "ReportFindings"],
         disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch"],

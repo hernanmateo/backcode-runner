@@ -19,7 +19,7 @@ import { clampLimit, effectiveProjectLimit, MAX_MACHINE_LIMIT, MAX_PROJECT_LIMIT
 import { takeSlot } from "./slots.js";
 import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { previewBranch, setPreviewBranch, taskBase, validPreviewBranch } from "./environments.js";
-import { checkMachine, claudeExecutable, installedClaude } from "./preflight.js";
+import { checkMachine, CLAUDE_SETTINGS, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
 import { startWorktreeCleanup } from "./worktree-cleanup.js";
@@ -611,7 +611,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           append: buildSystemAppend({ projectName: project.name, projectContext: project.context, worktree: wt.path, branch: wt.branch, baseBranch: taskBase(cfg.baseBranch), remote: cfg.remote, language: LANGUAGE_NAME[lang()], permissions: permissionsText }) + (ciHost ? ciSystemAppend(ciHost) : ""),
         },
         // No cargamos settings de usuario ni del repo: permisos y hooks los define solo este runner.
-        settingSources: [],
+        settingSources: [], settings: CLAUDE_SETTINGS,
         // dontAsk: todo lo que no esté en allowedTools se deniega sin preguntar.
         permissionMode: "dontAsk",
         // Planificando solo puede leer el repo y proponer el plan (o preguntar); sin editar ni ejecutar comandos.

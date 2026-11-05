@@ -619,7 +619,12 @@ export const SECRET_PATTERNS: Array<[RegExp, Key]> = [
  * (MERGE_HEAD), para revisar solo lo que cambia la tarea y no todo lo que entró en la base (ya revisado allí).
  */
 async function stagedAgainst(worktree: string): Promise<string[]> {
-  return (await git(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).catch(() => "")) ? ["MERGE_HEAD"] : [];
+  return (await mergeInProgress(worktree)) ? ["MERGE_HEAD"] : [];
+}
+
+/** ¿Hay un merge a medias (MERGE_HEAD) en el worktree? */
+async function mergeInProgress(worktree: string): Promise<boolean> {
+  return Boolean(await git(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).catch(() => ""));
 }
 
 export async function scanStagedForSecrets(worktree: string): Promise<string[]> {
@@ -648,9 +653,12 @@ export async function commitPushAndOpenPr(opts: {
   /** Sin host (modo "solo subir la rama") no se abre PR. */
   host?: PrHost;
 }): Promise<string> {
-  // Un reintento tras fallar el push o la API puede no tener nada nuevo que commitear.
+  // Un reintento tras fallar el push o la API puede no tener nada nuevo que commitear. Un merge con la base a medias se
+  // cierra siempre, aunque no cambie ningún fichero respecto a HEAD: pasa al resolver los conflictos quedándose con la
+  // versión de la rama (p. ej. cuando la base trae squasheado un commit que la rama ya tenía). Sin ese commit el push
+  // subiría la rama sin el merge y el PR seguiría chocando con la base.
   const staged = await git(opts.worktree, ["diff", "--cached", "--name-only"]);
-  if (staged) await git(opts.worktree, [
+  if (staged || (await mergeInProgress(opts.worktree))) await git(opts.worktree, [
     "commit", "--no-verify",
     "-m", opts.title,
     "-m", `Backcode-Feature: ${opts.featureId}`,

@@ -6,7 +6,7 @@ import { createDetachedWorktree, remoteHead, removeWorktree, SECRET_PATTERNS } f
 import { createGuardHook } from "./guard.js";
 import { t } from "./i18n.js";
 import type { RefineJob, Store } from "./store.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 
 // Refinado de ideas con el Claude Code de quien lo pide (opción del perfil en la app). refineFeature (servidor) prepara
 // el encargo con las mismas instrucciones y el mismo contexto que usa con OpenAI; aquí Claude además puede leer el código
@@ -83,7 +83,7 @@ export async function refineIdea(cfg: RunnerConfig, store: Store, env: Record<st
         allowedTools: ["Read", "Glob", "Grep"],
         disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task"],
         hooks: { PreToolUse: [{ hooks: [createGuardHook(path, () => true)] }] },
-        settingSources: [],
+        settingSources: [], settings: CLAUDE_SETTINGS,
         maxTurns: 30,
         maxBudgetUsd: 1,
         env,

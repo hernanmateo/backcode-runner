@@ -8,7 +8,7 @@ import { createDetachedWorktree, git, gitPush, removeWorktree, scanStagedForSecr
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import type { Store } from "./store.js";
 
 // «Devolver a Claude Code» un PR con los checks en rojo (acción fixChecks), cuando no hay una sesión que retomar (tareas
@@ -108,7 +108,7 @@ export async function fixChecks(
         // Como en una tarea: editar y ejecutar comandos en el sandbox (para correr los tests), con el mismo guard (la CI
         // del repo, entre otros, está protegida). Sin abrir PR: el commit y el push los hace el runner. En un PR de una
         // tarea de CI, el alcance de esa tarea: solo su fichero de CI y docs, sin Bash ni leer secretos.
-        settingSources: [],
+        settingSources: [], settings: CLAUDE_SETTINGS,
         permissionMode: "dontAsk",
         allowedTools: scope.allowedTools,
         disallowedTools: scope.disallowedTools,

@@ -69,6 +69,12 @@ export function installedClaude(): string | null {
 }
 
 /**
+ * Ajustes que el runner pasa a cada sesión de Claude Code (settingSources está vacío, así que no lee los del usuario):
+ * sin atribución de Claude en commits ni PRs. El código es del usuario.
+ */
+export const CLAUDE_SETTINGS = { attribution: { commit: "", pr: "" }, includeCoAuthoredBy: false };
+
+/**
  * Qué Claude Code lanza el Agent SDK: con npm, el suyo (undefined = el que trae el paquete); en el ejecutable sin Node,
  * el que tienes instalado.
  */

@@ -7,7 +7,7 @@ import { createDetachedWorktree, git, gitPush, mergeBaseIntoBranch, removeWorktr
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import type { Store } from "./store.js";
 
 // «Arreglar con Claude» (acción fixConflicts): la rama del PR de una tarea choca con la principal y no hay una sesión
@@ -58,7 +58,7 @@ export async function fixConflicts(cfg: RunnerConfig, store: Store, host: PrHost
           allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write"],
           disallowedTools: ["Bash", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"],
           hooks: { PreToolUse: [{ hooks: [createGuardHook(path, () => false)] }] },
-          settingSources: [],
+          settingSources: [], settings: CLAUDE_SETTINGS,
           maxTurns: 60,
           maxBudgetUsd: cfg.maxBudgetUsd,
           env,
