@@ -879,6 +879,11 @@ export class Store {
     await updateDoc(this.feature(id), { runModel: model }).catch(() => undefined);
   }
 
+  /** Lo que está haciendo Claude, corto (con throttle desde index.ts): lo enseña la Live Activity de iOS. */
+  async setNow(id: string, now: string): Promise<void> {
+    await updateDoc(this.feature(id), { now: now.slice(0, 80) }).catch(() => undefined);
+  }
+
   /** Consumo en directo de la vuelta en curso (con throttle desde index.ts). */
   async setLiveUsage(id: string, usage: LiveUsageSnapshot): Promise<void> {
     await updateDoc(this.feature(id), { liveUsage: { ...usage, updatedAt: serverTimestamp() } }).catch(() => undefined);
