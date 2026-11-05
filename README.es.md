@@ -283,7 +283,7 @@ en reposo y tus runners salen desconectados en la app hasta que vuelves. Para ev
   gasta, y el panel lo dice).
 - **Siempre**: tampoco con batería (macOS: `caffeinate -i -s`). En Linux las dos usan `systemd-inhibit`, también con batería.
 
-Se elige en el panel de cada ordenador o, para todos tus ordenadores a la vez, en la app (**Perfil › Tu ordenador › Mantener
+Se elige en el panel de cada ordenador o, para todos tus ordenadores a la vez, en la app (**Perfil › Mis ordenadores › Mantener
 tus ordenadores despiertos**; lo recogen tus runners y lo aplica el panel). Si los dos dicen algo distinto, gana el más fuerte.
 La pantalla se apaga igual, y con la tapa cerrada sin pantalla externa el Mac se duerme igual (eso solo se cambia en macOS con
 permisos de administrador). Se suelta al apagar el runner con el botón general. Alternativa sin el runner: *Ajustes del Sistema › Batería › Opciones › Evitar el reposo automático con el
@@ -389,7 +389,7 @@ Cada petición se valida (tipo del enum, id con la regex, proyecto conectado), s
 una transacción) y deja `done` o `failed` con su resultado. La app nunca manda comandos: cada tipo hace algo fijo. El
 supervisor publica en el documento del ordenador `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
 stopped, crashed, retrying o paused): solo metadatos. Las reglas solo dejan crear estas peticiones al dueño, con los campos
-cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En la app: Perfil › Tu ordenador.
+cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En la app: Perfil › Mis ordenadores.
 
 ## Qué hace con cada tarea
 1. La reclama (`execute → running`) y verifica que es tuya, que sigues en el grupo y que el encargo y los adjuntos no han cambiado
@@ -953,7 +953,7 @@ cargado o en espera, bloqueado en Ítems de inicio, puerto 47474 ocupado, servic
 - `backcode` en la terminal arranca el panel sin el servicio y enseña el error.
 
 ## Diagnósticos de Backcode
-Si activas **Perfil › Enviar diagnósticos a Backcode** en la app (desactivado por defecto), cuando algo falla **por
+Si activas **Perfil › Tareas e ideas › Enviar diagnósticos a Backcode** en la app (desactivado por defecto), cuando algo falla **por
 Backcode** tu runner manda un informe para que se arregle (`src/diagnostics.ts`). Solo cuenta como de Backcode una
 excepción del propio runner (no la salida de un comando del proyecto) o un despliegue cuyo comando eligió Backcode
 (detectado o de `backcode.toml`) y que falla; los fallos de tu proyecto o de tu ordenador (tests, sesión de una
@@ -983,7 +983,7 @@ Las genera la app; las puedes ajustar a mano en `~/.backcode/config/<proyecto>.e
 Cada tarea sigue en su propio worktree y rama, pero un proyecto puede ejecutar varias a la vez:
 
 - **Límite por proyecto (personal)**: cuántas tareas de ese proyecto ejecuta *tu* ordenador a la vez. Se elige en los ajustes del proyecto en la app (`projects/{pid}/runnerSettings/{uid}`). Por defecto **1**, como antes.
-- **Límite por ordenador**: máximo de tareas a la vez en ese ordenador, sumando todos sus proyectos. Se elige en Perfil › Tu ordenador (`users/{uid}/machineSettings/{machineId}`). Por defecto, sin tope. Los runners del mismo ordenador comparten los huecos en `~/.backcode/slots` (un fichero por tarea en marcha; los de procesos muertos se limpian solos).
+- **Límite por ordenador**: máximo de tareas a la vez en ese ordenador, sumando todos sus proyectos. Se elige en Perfil › Mis ordenadores (`users/{uid}/machineSettings/{machineId}`). Por defecto, sin tope. Los runners del mismo ordenador comparten los huecos en `~/.backcode/slots` (un fichero por tarea en marcha; los de procesos muertos se limpian solos).
 - Nunca arrancan a la vez dos tareas creadas desde la misma conversación del runner.
 - **Freno automático**: aunque los límites lo permitan, no se arranca una tarea nueva con presión de memoria alta o con menos de 5 GB de disco libre. Espera en cola y el motivo se publica en `projects/{pid}/runners/{uid}.queue`, que la app enseña en su tarjeta. Se vuelve a mirar cada 30 s.
 - **Monitor de la máquina**: cada minuto uno de los runners del ordenador publica solo métricas agregadas (CPU, RAM, presión de memoria, RAM real por sesión de Claude Code, disco libre, tamaño de los worktrees, tareas en marcha y un número recomendado) en `users/{uid}/machines/{id}.metrics` y en `groups/{gid}/machines/{id}` para el equipo.

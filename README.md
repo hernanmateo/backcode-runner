@@ -355,7 +355,7 @@ next login or when you open the panel). Each request is validated (enum type, id
 (`pending → running` in a transaction) and ends `done` or `failed` with its result. The app never sends commands: each type
 does one fixed thing. The supervisor publishes `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
 stopped, crashed, retrying or paused) on the computer's document: metadata only. The rules only let the owner create these
-requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › Your computer.
+requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › My computers.
 
 ## The panel
 
@@ -409,7 +409,7 @@ Task briefs are written by other members of your group, so the runner treats the
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.
 
-**Diagnostics (opt-in).** With **Profile › Send diagnostics to Backcode** turned on in the app (off by default), when
+**Diagnostics (opt-in).** With **Profile › Tasks and ideas › Send diagnostics to Backcode** turned on in the app (off by default), when
 something fails **because of Backcode** (a runner exception, or a deploy whose command Backcode chose — detected or from
 `backcode.toml`), the runner sends a cleaned report: runner version, OS, action type, deploy source and platform, the error
 and the log tail (3000 chars max) and a fingerprint. Personal paths, worktrees, the repo name and remote, and emails are
@@ -511,7 +511,7 @@ With nothing running, an idle computer goes to sleep and your runners show as di
 tasks while you're away, use <strong>Keep the computer awake</strong> (for the whole computer): <em>No</em> (only while working),
 <em>Plugged in</em> (no idle sleep on the charger; macOS <code>caffeinate -s</code>, never drains the battery) or <em>Always</em>
 (on battery too; <code>caffeinate -i -s</code>). On Linux both use <code>systemd-inhibit</code>. Choose it in each computer's
-panel or, for all your computers at once, in the app (<strong>Profile › Your computer</strong>); the stronger one wins. The display
+panel or, for all your computers at once, in the app (<strong>Profile › My computers</strong>); the stronger one wins. The display
 still turns off, a Mac with the lid closed and no external display still sleeps, and it's released when you switch the runner off.
 </details>
 
@@ -571,7 +571,7 @@ Without a preview branch nothing changes. See `src/environments.ts`.
 Each task still gets its own worktree and branch, but a project can now run several at once:
 
 - **Per-project limit (personal)**: how many tasks of that project *your* computer runs at once. Set in the project settings in the app (`projects/{pid}/runnerSettings/{uid}`). Default **1**, as before.
-- **Per-computer limit**: maximum tasks at once on that computer, across all its projects. Set in Profile › Your computer (`users/{uid}/machineSettings/{machineId}`). Default: no cap (each project keeps its own limit, as before). The runners of the same computer share slots in `~/.backcode/slots` (one file per running task; files from dead processes are cleaned up), so it works with the panel and with runners started by hand.
+- **Per-computer limit**: maximum tasks at once on that computer, across all its projects. Set in Profile › My computers (`users/{uid}/machineSettings/{machineId}`). Default: no cap (each project keeps its own limit, as before). The runners of the same computer share slots in `~/.backcode/slots` (one file per running task; files from dead processes are cleaned up), so it works with the panel and with runners started by hand.
 - Two tasks created from the same runner conversation never start at the same time (they usually touch the same files).
 - **Automatic brake**: even if the limits allow it, no new task starts under high memory pressure (macOS `kern.memorystatus_vm_pressure_level`; Linux `MemAvailable` < 10 %) or with less than 5 GB of free disk. The task waits in the queue and the reason is published in `projects/{pid}/runners/{uid}.queue`, which the app shows on its card. It is checked again every 30 s.
 - **Machine monitor**: every minute one of the computer's runners publishes aggregated metrics only (CPU load and cores, total RAM, memory pressure, real RAM per Claude Code session, free disk, worktrees size, running tasks and a recommended number of tasks at once) to `users/{uid}/machines/{id}.metrics` and to `groups/{gid}/machines/{id}` for the team. No process names or paths.
