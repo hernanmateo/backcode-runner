@@ -368,7 +368,7 @@ Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.
 | **Connect a project** | Paste the configuration from the app. It validates your key, finds the repo on your computer by its remote (in the usual folders, `~/apps` included, and next to your other connected projects), or clones it into `~/Backcode/<project>` or lets you pick a folder (in the terminal, answer “n” and type its path) and asks for a Bitbucket token when needed. |
 | **Accounts** | See your `gh` sign-in and add, check or change your Bitbucket API token, used for every project and to create new repos from the app (add the `admin:repository:bitbucket` scope for that). |
 | **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. Turning it off stops nothing: what's running keeps going until you log out, and it just won't start at the next login (opening the Mac app won't turn it back on either). |
-| **Direct tasks from admins** | Shows whether admins can put tasks on your runner without asking (read live from your app profile). Read-only: change it in the app, Profile › Direct assignments (a runner never writes your profile). |
+| **Direct tasks from admins** | Shows your default for whether admins can put tasks on your runner without asking (read live from your app profile). Each project can override it in its settings in the app. Read-only: change it in the app (a runner never writes your profile). |
 | **On / Off** | The main switch, at the top. Off stops every runner (a task in progress goes back to the queue) and none starts again (not after a panel restart, not for new projects) until you turn it back on. Remembered. |
 
 Coming from the old `git clone` setup? The panel finds those projects and offers to import them.
@@ -485,7 +485,7 @@ map made from an almost empty repo is redone early once, as soon as the repo has
 <summary><strong>Can someone run code on my computer without my consent?</strong></summary>
 <br>
 Only tasks assigned to you run, and only after you accept them. An admin can also start one directly on your Claude Code
-(“Decretazos”, on by default), and you can turn that off in your profile. The same setting covers an admin handing you a
+(“Decretazos”, on by default), and you can turn that off per project in its settings (your profile holds the default). The same setting covers an admin handing you a
 stopped task that another runner started (“Change who runs it”). Either way, the brief is treated as untrusted
 and everything above applies.
 </details>
