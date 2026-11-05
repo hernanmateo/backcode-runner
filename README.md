@@ -355,7 +355,7 @@ next login or when you open the panel). Each request is validated (enum type, id
 (`pending → running` in a transaction) and ends `done` or `failed` with its result. The app never sends commands: each type
 does one fixed thing. The supervisor publishes `control: { paused, projects: [{ id, name, state }] }` (running, stopping,
 stopped, crashed, retrying or paused) on the computer's document: metadata only. The rules only let the owner create these
-requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › Your computer.
+requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › My computers.
 
 ## The panel
 
@@ -368,7 +368,6 @@ Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.
 | **Connect a project** | Paste the configuration from the app. It validates your key, finds the repo on your computer by its remote (in the usual folders, `~/apps` included, and next to your other connected projects), or clones it into `~/Backcode/<project>` or lets you pick a folder (in the terminal, answer “n” and type its path) and asks for a Bitbucket token when needed. |
 | **Accounts** | See your `gh` sign-in and add, check or change your Bitbucket API token, used for every project and to create new repos from the app (add the `admin:repository:bitbucket` scope for that). |
 | **Start at login** | Installs the runner as a user service (launchd on macOS, `systemd --user` on Linux): no terminal, restarts if it crashes, updates itself. Turning it off stops nothing: what's running keeps going until you log out, and it just won't start at the next login (opening the Mac app won't turn it back on either). |
-| **Direct tasks from admins** | Shows your default for whether admins can put tasks on your runner without asking (read live from your app profile). Each project can override it in its settings in the app. Read-only: change it in the app (a runner never writes your profile). |
 | **On / Off** | The main switch, at the top. Off stops every runner (a task in progress goes back to the queue) and none starts again (not after a panel restart, not for new projects) until you turn it back on. Remembered. |
 
 Coming from the old `git clone` setup? The panel finds those projects and offers to import them.
@@ -410,7 +409,7 @@ Task briefs are written by other members of your group, so the runner treats the
 
 Protect your base branch (required reviews) and review every PR as if it came from a stranger.
 
-**Diagnostics (opt-in).** With **Profile › Send diagnostics to Backcode** turned on in the app (off by default), when
+**Diagnostics (opt-in).** With **Profile › Tasks and ideas › Send diagnostics to Backcode** turned on in the app (off by default), when
 something fails **because of Backcode** (a runner exception, or a deploy whose command Backcode chose — detected or from
 `backcode.toml`), the runner sends a cleaned report: runner version, OS, action type, deploy source and platform, the error
 and the log tail (3000 chars max) and a fingerprint. Personal paths, worktrees, the repo name and remote, and emails are
@@ -485,7 +484,7 @@ map made from an almost empty repo is redone early once, as soon as the repo has
 <summary><strong>Can someone run code on my computer without my consent?</strong></summary>
 <br>
 Only tasks assigned to you run, and only after you accept them. An admin can also start one directly on your Claude Code
-(“Decretazos”, on by default), and you can turn that off per project in its settings (your profile holds the default). The same setting covers an admin handing you a
+(“Decretazos”, on by default), and you can turn that off per project in its settings in the app. The same setting covers an admin handing you a
 stopped task that another runner started (“Change who runs it”). Either way, the brief is treated as untrusted
 and everything above applies.
 </details>
@@ -512,7 +511,7 @@ With nothing running, an idle computer goes to sleep and your runners show as di
 tasks while you're away, use <strong>Keep the computer awake</strong> (for the whole computer): <em>No</em> (only while working),
 <em>Plugged in</em> (no idle sleep on the charger; macOS <code>caffeinate -s</code>, never drains the battery) or <em>Always</em>
 (on battery too; <code>caffeinate -i -s</code>). On Linux both use <code>systemd-inhibit</code>. Choose it in each computer's
-panel or, for all your computers at once, in the app (<strong>Profile › Your computer</strong>); the stronger one wins. The display
+panel or, for all your computers at once, in the app (<strong>Profile › My computers</strong>); the stronger one wins. The display
 still turns off, a Mac with the lid closed and no external display still sleeps, and it's released when you switch the runner off.
 </details>
 
@@ -572,7 +571,7 @@ Without a preview branch nothing changes. See `src/environments.ts`.
 Each task still gets its own worktree and branch, but a project can now run several at once:
 
 - **Per-project limit (personal)**: how many tasks of that project *your* computer runs at once. Set in the project settings in the app (`projects/{pid}/runnerSettings/{uid}`). Default **1**, as before.
-- **Per-computer limit**: maximum tasks at once on that computer, across all its projects. Set in Profile › Your computer (`users/{uid}/machineSettings/{machineId}`). Default: no cap (each project keeps its own limit, as before). The runners of the same computer share slots in `~/.backcode/slots` (one file per running task; files from dead processes are cleaned up), so it works with the panel and with runners started by hand.
+- **Per-computer limit**: maximum tasks at once on that computer, across all its projects. Set in Profile › My computers (`users/{uid}/machineSettings/{machineId}`). Default: no cap (each project keeps its own limit, as before). The runners of the same computer share slots in `~/.backcode/slots` (one file per running task; files from dead processes are cleaned up), so it works with the panel and with runners started by hand.
 - Two tasks created from the same runner conversation never start at the same time (they usually touch the same files).
 - **Automatic brake**: even if the limits allow it, no new task starts under high memory pressure (macOS `kern.memorystatus_vm_pressure_level`; Linux `MemAvailable` < 10 %) or with less than 5 GB of free disk. The task waits in the queue and the reason is published in `projects/{pid}/runners/{uid}.queue`, which the app shows on its card. It is checked again every 30 s.
 - **Machine monitor**: every minute one of the computer's runners publishes aggregated metrics only (CPU load and cores, total RAM, memory pressure, real RAM per Claude Code session, free disk, worktrees size, running tasks and a recommended number of tasks at once) to `users/{uid}/machines/{id}.metrics` and to `groups/{gid}/machines/{id}` for the team. No process names or paths.

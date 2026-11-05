@@ -157,17 +157,6 @@ function render() {
   renderService();
   renderKeepAwake();
   renderDevices();
-  renderAssign();
-}
-
-// «Decretazos» de tu perfil de la app, solo para verlo aquí (se cambia en la app: Perfil › Decretazos).
-function renderAssign() {
-  const known = typeof state.allowAdminAssign === "boolean";
-  $("assign-section").hidden = !known;
-  if (!known) return;
-  $("assign-dot").className = `dot ${state.allowAdminAssign ? "ok" : ""}`;
-  $("assign-state").textContent = s(state.allowAdminAssign ? "assignStateOn" : "assignStateOff");
-  $("assign-body").textContent = s(state.allowAdminAssign ? "assignOn" : "assignOff");
 }
 
 let updatingSince = 0;
