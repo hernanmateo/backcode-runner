@@ -199,3 +199,18 @@ export function throttled(write: () => Promise<void>, intervalMs: number, now: (
     },
   };
 }
+
+/**
+ * Lo que está haciendo Claude, corto, para la Live Activity de iOS (feature.now): a partir de la línea de actividad de
+ * describeTool. De Bash se queda la descripción (sin el comando); de un fichero, solo su nombre; como mucho 80 caracteres.
+ */
+export function nowLabel(described: string): string {
+  let s = described.replace(/\s+/g, " ").trim();
+  const bash = /^Bash: (.+?) — /.exec(s);
+  if (bash) s = bash[1];
+  else {
+    const file = /^(Read|Write|Edit|MultiEdit|NotebookEdit): (.+)$/.exec(s);
+    if (file) s = `${file[1]}: ${file[2].split("/").pop()}`;
+  }
+  return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s;
+}

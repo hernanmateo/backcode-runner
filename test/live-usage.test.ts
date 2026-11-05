@@ -123,3 +123,11 @@ test("throttled: como mucho una escritura por intervalo, salvo forzada", async (
   await w.stop();
   assert.equal(writes, 3);
 });
+
+test("nowLabel: lo que hace Claude, corto, para la Live Activity", async () => {
+  const { nowLabel } = await import("../src/live-usage.ts");
+  assert.equal(nowLabel("Bash: Ejecuta los tests — npm test -- --watch=false"), "Ejecuta los tests");
+  assert.equal(nowLabel("Edit: app/src/lib/live-activity.ts"), "Edit: live-activity.ts");
+  assert.equal(nowLabel("Plan: 2/5 — Escribir los tests"), "Plan: 2/5 — Escribir los tests");
+  assert.equal(nowLabel(`Grep: ${"x".repeat(200)}`).length, 80);
+});

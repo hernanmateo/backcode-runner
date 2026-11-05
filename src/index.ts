@@ -70,7 +70,7 @@ import { buildReport, notOurs, report, type DeploySource, type SanitizeContext }
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
 import { useGhForGit } from "./github.js";
 import { loadSavedApiKey } from "./anthropic.js";
-import { cleanModelId, LiveUsage, throttled, usageFromResult } from "./live-usage.js";
+import { cleanModelId, LiveUsage, nowLabel, throttled, usageFromResult } from "./live-usage.js";
 
 // Con `npm start` / `npm run connect` (sin pasar por cli.ts): git con la sesión de GitHub CLI.
 useGhForGit();
@@ -639,6 +639,15 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     liveQuery = messages;
     // Como mucho una escritura cada 20 s (y una al acabar cada turno).
     const liveWrite = throttled(() => store.setLiveUsage(id, live.snapshot()), 20_000);
+    // Lo que está haciendo Claude, para la Live Activity de iOS: como mucho una escritura cada 30 s y solo si cambia
+    // (cada cambio puede acabar en un push de APNs).
+    let nowText = "";
+    let nowSent = "";
+    const nowWrite = throttled(async () => {
+      if (nowText === nowSent) return;
+      nowSent = nowText;
+      await store.setNow(id, nowText);
+    }, 30_000);
     try {
       for await (const msg of messages) {
         clearTimeout(quiet);
@@ -660,7 +669,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
               // Lo que Claude va contando ("Voy a…"): da contexto a la actividad.
               await store.event(id, "say", block.text.trim().replace(/\n{3,}/g, "\n\n"));
             } else if (block.type === "tool_use") {
-              await store.event(id, "tool", describeTool(block.name, block.input as Record<string, unknown>, wt.path));
+              const described = describeTool(block.name, block.input as Record<string, unknown>, wt.path);
+              await store.event(id, "tool", described);
+              nowText = nowLabel(described);
+              nowWrite.touch();
             }
           }
         } else if (msg.type === "system" && msg.subtype === "init") {
@@ -712,6 +724,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         cache: result.tokens?.cache ?? 0,
       };
       await liveWrite.stop();
+      await nowWrite.stop();
       live.endPhase(spent);
     }
   }
