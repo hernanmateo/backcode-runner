@@ -9,7 +9,7 @@ import { createDetachedWorktree, git, gitPush, holdWorktree, mergeBaseIntoBranch
 import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import { buildChatPrompt, buildChatSystemAppend, type ChatVideo, type PromptImage, type PromptMessage } from "./prompt.js";
 import type { Attachment, ChatUserMessage, RunnerChat, Store, ThreadMessage } from "./store.js";
 
@@ -469,7 +469,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
             append: buildChatSystemAppend({ projectName: deps.project.name, projectContext: deps.project.context, worktree: path, baseBranch, remote, language: LANGUAGE_NAME[lang()], titleManual: !canRetitle(chat), permissions: permCtx.prompt }),
           },
           // Los mismos límites que una tarea: sin settings del usuario ni del repo, dontAsk, guard y sandbox.
-          settingSources: [],
+          settingSources: [], settings: CLAUDE_SETTINGS,
           permissionMode: "dontAsk",
           allowedTools: chatAllowedTools(permCtx),
           // Como en las tareas: WebFetch solo a los dominios concedidos; curl/wget y las carpetas de solo lectura, en el guard.

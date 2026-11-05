@@ -9,7 +9,7 @@ import { createDetachedWorktree, git, isAncestor, removeWorktree, scanStagedForS
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
-import { claudeExecutable } from "./preflight.js";
+import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import type { RevertInfo, Store } from "./store.js";
 
 // «Reverteix» (acciones revertCheck y revert): deshacer el PR de una tarea ya mergeada con un PR normal. Tu runner crea
@@ -194,7 +194,7 @@ async function resolveWithClaude(cfg: RunnerConfig, env: Record<string, string>,
       allowedTools: ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write"],
       disallowedTools: ["Bash", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"],
       hooks: { PreToolUse: [{ hooks: [createGuardHook(path, () => false)] }] },
-      settingSources: [],
+      settingSources: [], settings: CLAUDE_SETTINGS,
       maxTurns: 60,
       maxBudgetUsd: cfg.maxBudgetUsd,
       env,
