@@ -27,8 +27,6 @@ export interface PanelState {
   stopped?: string[];
   /** Apagado con el botón general del panel: ningún runner arranca hasta volver a encenderlo. */
   off?: boolean;
-  /** «Decretazos» de tu perfil en la app (lo apuntan los runners): si los admins pueden poner tareas en tu runner. */
-  allowAdminAssign?: boolean;
   /** «Mantener el ordenador despierto» elegido en el panel: off, plugged (solo enchufado) o always (también con batería). */
   keepAwake?: string;
   /** Lo mismo desde tu perfil en la app (vale para todos tus ordenadores; lo apuntan los runners). Gana el más fuerte. */

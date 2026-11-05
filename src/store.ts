@@ -354,9 +354,6 @@ export class Store {
           setLang(d.get("lang"));
           // El panel usa el mismo idioma que la app (antes de que lo elijas en él).
           if (["es", "en", "ca"].includes(d.get("lang")) && readState().profileLang !== d.get("lang")) updateState({ profileLang: d.get("lang") });
-          // «Decretazos» del perfil, para que el panel lo muestre (sin valor = activado, como en la app). Solo se cambia en la app.
-          const allow = d.get("allowAdminAssign") !== false;
-          if (readState().allowAdminAssign !== allow) updateState({ allowAdminAssign: allow });
           this.shareDiagnostics = d.get("shareDiagnostics") === true;
           done();
         },

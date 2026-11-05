@@ -128,8 +128,6 @@ export async function servePanel(opts: { open: boolean }): Promise<void> {
       // Móviles de este ordenador para «Instalar en mi móvil» (los mismos que ven los runners).
       devices: panelDevices,
       devicePlatforms,
-      // «Decretazos» de tu perfil (null hasta que un runner lo lea). Solo se muestra: se cambia en la app.
-      allowAdminAssign: readState().allowAdminAssign ?? null,
       // Reiniciando: los runners que aún terminan algo (el panel se reinicia cuando acaban).
       waitingFor: leaving === "restart" ? [...supervisor.projects.values()].filter((p) => p.child).map((p) => p.name ?? p.id) : [],
       lang: lang(),
