@@ -32,3 +32,29 @@ test("otaInfoFrom: runtime e id del update de `eas update`", () => {
   assert.deepEqual(otaInfoFrom(out), { runtimeVersion: "1.4.0", updateId: "3f2a9c1e-1111-2222-3333-444455556666" });
   assert.deepEqual(otaInfoFrom("nada"), {});
 });
+
+test("otaInfoFrom: «Runtime versions» (plural) no cuela «s»; se queda con la línea buena", () => {
+  const out = "✔ Computed runtime versions\nRuntime versions: checked\nBranch             production\nRuntime version    1.4.0\nUpdate group ID    3f2a9c1e-1111-2222-3333-444455556666\n";
+  assert.deepEqual(otaInfoFrom(out), { runtimeVersion: "1.4.0", updateId: "3f2a9c1e-1111-2222-3333-444455556666" });
+  assert.deepEqual(otaInfoFrom("Runtime versions  s\nRuntime version   s\n"), {});
+  assert.equal(otaInfoFrom("Runtime version: 1.4.0").runtimeVersion, "1.4.0");
+});
+
+test("otaInfoFrom: tabla con «│», ids por plataforma y colores ANSI", () => {
+  const table = [
+    "┌───────────────────┬──────────────────────────────────────┐",
+    "│ Branch            │ production                           │",
+    "│ Runtime version   │ 1.4.0                                │",
+    "│ Platform          │ android, ios                         │",
+    "│ Update group ID   │ 3f2a9c1e-1111-2222-3333-444455556666 │",
+    "│ Android update ID │ aaaaaaaa-1111-2222-3333-444455556666 │",
+    "│ iOS update ID     │ bbbbbbbb-1111-2222-3333-444455556666 │",
+    "└───────────────────┴──────────────────────────────────────┘",
+  ].join("\n");
+  assert.deepEqual(otaInfoFrom(table), { runtimeVersion: "1.4.0", updateId: "3f2a9c1e-1111-2222-3333-444455556666" });
+  const ansi = "\u001b[1mBranch\u001b[22m             production\n\u001b[1mRuntime version\u001b[22m    \u001b[36m1.4.0\u001b[39m\n\u001b[1mUpdate group ID\u001b[22m    \u001b[36m3f2a9c1e-1111-2222-3333-444455556666\u001b[39m\n";
+  assert.deepEqual(otaInfoFrom(ansi), { runtimeVersion: "1.4.0", updateId: "3f2a9c1e-1111-2222-3333-444455556666" });
+  // Sin «Update group ID»: el de la primera plataforma; runtime por plataforma.
+  const perPlatform = "Android runtime version  1.4.0\niOS runtime version      1.4.0\nAndroid update ID  aaaaaaaa-1111-2222-3333-444455556666\n";
+  assert.deepEqual(otaInfoFrom(perPlatform), { runtimeVersion: "1.4.0", updateId: "aaaaaaaa-1111-2222-3333-444455556666" });
+});
