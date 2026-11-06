@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { otaScriptArgs, promoteCheck } from "../src/ota.js";
+import { otaScriptArgs, promoteCheck, scriptChannels } from "../src/ota.js";
 
 test("script sin rama: el runner pasa prod (production) o preview una sola vez", () => {
   assert.deepEqual(otaScriptArgs("./scripts/ota-publish.sh", "npm", "production", "hola"), {
@@ -49,4 +49,11 @@ test("promocionar: solo el commit que estÃ¡ ahora en preview y que production aÃ
   assert.deepEqual(promoteCheck(a, {}), { error: "act.promoteNoPreview", vars: {} });
   assert.deepEqual(promoteCheck(a, { preview: b }), { error: "act.promoteNotPreview", vars: { sha: "aaaaaaa", preview: "bbbbbbb" } });
   assert.deepEqual(promoteCheck(a, { preview: a, production: a }), { error: "act.promoteSame", vars: { sha: "aaaaaaa" } });
+});
+
+test("scriptChannels: un script con la rama fija solo publica en ese canal", () => {
+  assert.deepEqual(scriptChannels("bash scripts/publish-update.sh prod", ["preview", "production"]), ["production"]);
+  assert.deepEqual(scriptChannels("bash scripts/publish-update.sh preview --yes", ["preview", "production"]), ["preview"]);
+  assert.deepEqual(scriptChannels("./scripts/ota-publish.sh", ["preview", "production"]), ["preview", "production"]);
+  assert.deepEqual(scriptChannels("bash scripts/publish-update.sh --env production", ["preview", "production"]), ["preview", "production"]);
 });

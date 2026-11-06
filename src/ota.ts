@@ -33,6 +33,15 @@ export function otaScriptArgs(
 }
 
 /**
+ * Canales en los que puede publicar un script `ota:publish`: si lleva fijada la rama (p. ej.
+ * `bash scripts/publish-update.sh prod`), solo ese; si no, todos los de `channels`. Misma regla que otaScriptArgs, así
+ * la app no ofrece (ni da por desplegada en) un canal que el runner rechazaría al publicar.
+ */
+export function scriptChannels(script: string, channels: readonly string[]): string[] {
+  return channels.filter((ch) => !("error" in otaScriptArgs(script, "npm", ch, "x")));
+}
+
+/**
  * «Promocionar a producción»: publica en production el MISMO commit que está ahora en preview (con las variables de
  * production: el bundle de preview lleva grabadas las de preview y no se puede reutilizar tal cual). Sin build de
  * tienda. Solo vale el último commit publicado bien en preview y si production no lo tiene ya.
