@@ -357,6 +357,23 @@ does one fixed thing. The supervisor publishes `control: { paused, projects: [{ 
 stopped, crashed, retrying or paused) on the computer's document: metadata only. The rules only let the owner create these
 requests, with closed fields and, for a project, one of that computer's `projectIds`. In the app: Profile › My computers.
 
+### Direct Claude Code session (runner ≥ 1.5.36)
+`openProjectSession` (with a connected `projectId` and an optional `prompt`, 1–4000 characters, no control characters) opens
+a **new** Claude Code session with Remote Control in the project's **real folder** (`BACKCODE_REPO_PATH`, not a worktree):
+`claude --remote-control <project name> [-- <prompt>]` in a simulated terminal (`script`, the same code as the tasks' Remote
+Control). It runs with **your normal Claude Code permissions and settings, outside the runner sandbox**, and can clash with
+unfinished work in that folder (the app warns before opening it). The command is fixed: the only text from the app is the
+first message, passed as a single argument through environment variables (the `sh -c` line never contains it). Before
+launching, the supervisor makes sure the Backcode plugin is active in that folder (it installs it with `--scope user` if
+missing). One per project: if one is already open, the same link is returned (`result.reused`, the new prompt isn't sent).
+`closeProjectSession` closes it; they also close when the supervisor exits. The state is published in
+`control.sessions: [{ projectId, state: opening|open|failed, url?, code?, error? }]` (no paths or prompts) and the request
+ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `timeout`, `failed`). Only the computer's owner
+can request it (the rules and the app: the button only shows on your own computers). In the app: the project's Overview, and
+«Open them in your Claude Code session» in a task's «After merging» steps, which proposes a first message with those steps
+(task, PR/branch, each step and its command in order, stop on failure, ask before anything destructive or that publishes)
+that you can review and edit before opening.
+
 ## The panel
 
 Open the Mac app, run `backcode` or `npx backcode`; it opens at `http://127.0.0.1:47474`:

@@ -23,25 +23,41 @@ const clean = (s: string) =>
     .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z~]/g, " ")
     .replace(/\x1b[78]/g, "");
 
-const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+const ARG_VAR = "BC_RC_ARG_";
 
 /** Variables que no deben pasar a la sesión: las del propio runner y las que marcarían a Claude como sesión hija. */
 function sessionEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("BACKCODE_") || k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_CHILD")) continue;
+    if (v === undefined || k.startsWith("BACKCODE_") || k.startsWith(ARG_VAR) || k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_CHILD")) continue;
     env[k] = v;
   }
   env.TERM = "xterm-256color";
   return env;
 }
 
-export function startRemoteControl(opts: { bin: string; cwd: string; sessionId: string; name: string; timeoutMs?: number }): Promise<RemoteSession> {
-  const args = [opts.bin, "--resume", opts.sessionId, "--remote-control", opts.name];
-  // `cat |`: script necesita que su entrada sea una tubería de verdad (con la de Node, un socket, falla en macOS).
-  const cmd =
-    process.platform === "darwin" ? `cat | script -q /dev/null ${args.map(quote).join(" ")}` : `cat | script -qfc ${quote(args.map(quote).join(" "))} /dev/null`;
-  const child = spawn("sh", ["-c", cmd], { cwd: opts.cwd, env: sessionEnv(), stdio: ["pipe", "pipe", "pipe"], detached: true });
+/** Argumentos de Claude Code: retomar la sesión de una tarea o una sesión nueva (con un primer mensaje opcional). */
+export function remoteArgs(opts: { bin: string; name: string; sessionId?: string; prompt?: string }): string[] {
+  const args = [opts.bin, ...(opts.sessionId ? ["--resume", opts.sessionId] : []), "--remote-control", opts.name];
+  // `--`: un prompt que empiece por «-» nunca se lee como una opción.
+  return opts.prompt ? [...args, "--", opts.prompt] : args;
+}
+
+/**
+ * La orden de `sh -c` es siempre fija: cada argumento va en una variable de entorno y se usa como "$BC_RC_ARG_n" (el
+ * shell no vuelve a interpretar lo expandido), así que ningún texto (el nombre, el prompt de la app) entra en la orden.
+ * `cat |`: script necesita que su entrada sea una tubería de verdad (con la de Node, un socket, falla en macOS).
+ * En Linux, `script -c` pasa su orden (fija, entre comillas simples) a otro shell, que expande las mismas variables.
+ */
+export function remoteCommand(args: string[], platform: NodeJS.Platform = process.platform): { cmd: string; env: Record<string, string> } {
+  const refs = args.map((_, i) => `"$${ARG_VAR}${i}"`).join(" ");
+  const env = Object.fromEntries(args.map((a, i) => [`${ARG_VAR}${i}`, a]));
+  return { cmd: platform === "darwin" ? `cat | script -q /dev/null ${refs}` : `cat | script -qfc '${refs}' /dev/null`, env };
+}
+
+export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?: string; prompt?: string; name: string; timeoutMs?: number }): Promise<RemoteSession> {
+  const { cmd, env } = remoteCommand(remoteArgs(opts));
+  const child = spawn("sh", ["-c", cmd], { cwd: opts.cwd, env: { ...sessionEnv(), ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
   const stop = () => {
     try {
       if (child.pid) process.kill(-child.pid, "SIGTERM");
