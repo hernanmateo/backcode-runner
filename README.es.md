@@ -984,7 +984,7 @@ Cada tarea sigue en su propio worktree y rama, pero un proyecto puede ejecutar v
 
 - **Límite por proyecto (personal)**: cuántas tareas de ese proyecto ejecuta *tu* ordenador a la vez. Se elige en los ajustes del proyecto en la app (`projects/{pid}/runnerSettings/{uid}`). Por defecto **1**, como antes.
 - **Límite por ordenador**: máximo de tareas a la vez en ese ordenador, sumando todos sus proyectos. Se elige en Perfil › Mis ordenadores (`users/{uid}/machineSettings/{machineId}`). Por defecto, sin tope. Los runners del mismo ordenador comparten los huecos en `~/.backcode/slots` (un fichero por tarea en marcha; los de procesos muertos se limpian solos).
-- Nunca arrancan a la vez dos tareas creadas desde la misma conversación del runner.
+- Dos tareas creadas desde la misma conversación del runner solo arrancan a la vez si el chat declaró qué rutas tocan (`touches` en `create_task`) y no se solapan (una carpeta incluye lo que hay dentro; un comodín cuenta como su carpeta), y si ninguna debe ir después de la otra (`after`). Sin rutas, esperan como antes.
 - **Freno automático**: aunque los límites lo permitan, no se arranca una tarea nueva con presión de memoria alta o con menos de 5 GB de disco libre. Espera en cola y el motivo se publica en `projects/{pid}/runners/{uid}.queue`, que la app enseña en su tarjeta. Se vuelve a mirar cada 30 s.
 - **Monitor de la máquina**: cada minuto uno de los runners del ordenador publica solo métricas agregadas (CPU, RAM, presión de memoria, RAM real por sesión de Claude Code, disco libre, tamaño de los worktrees, tareas en marcha y un número recomendado) en `users/{uid}/machines/{id}.metrics` y en `groups/{gid}/machines/{id}` para el equipo.
 

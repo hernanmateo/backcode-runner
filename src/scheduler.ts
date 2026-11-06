@@ -1,11 +1,15 @@
 // Qué tarea de la cola puede arrancar ahora en este proyecto: respeta el límite personal del proyecto (y el del
-// ordenador, si es menor) y no arranca dos tareas de la misma conversación del runner a la vez (suelen tocar los
-// mismos archivos). El hueco del ordenador y el freno por RAM/disco se miran después (slots.ts y monitor.ts).
+// ordenador, si es menor) y no arranca a la vez dos tareas de la misma conversación del runner que choquen: las que
+// no declaran qué rutas tocan (touches), las que se solapan o las que dependen de otra (after). El hueco del ordenador y el freno por RAM/disco se miran después (slots.ts y monitor.ts).
 
 export interface QueuedTask {
   id: string;
   /** Conversación del runner que la creó (chat), si viene de una. */
   chatId?: string;
+  /** Rutas o carpetas que prevé tocar (lo declara el chat al crearla); sin ellas, se trata como si tocara todo. */
+  touches?: string[];
+  /** Ids de tareas que deben terminar antes (de la misma conversación). */
+  after?: string[];
   /** Estaba en espera del límite del plan y alguien pidió «Reprèn ara» desde la app: arranca aunque dure el límite. */
   resumeNow?: boolean;
 }
@@ -39,7 +43,34 @@ export function nextTask(all: QueuedTask[], running: QueuedTask[], limit: number
   const pending = quotaBlocked ? all.filter((p) => p.resumeNow) : all;
   if (!pending.length) return { task: null, reason: "quota" };
   if (running.length >= limit) return { task: null, reason: "project" };
-  const busyChats = new Set(running.map((r) => r.chatId).filter(Boolean));
-  const task = pending.find((p) => !p.chatId || !busyChats.has(p.chatId));
+  const waiting = new Set(all.map((p) => p.id));
+  const task = pending.find((p) => !p.after?.some((id) => waiting.has(id)) && !running.some((r) => chatClash(p, r)));
   return task ? { task } : { task: null, reason: "chat" };
+}
+
+/** Una ruta declarada, normalizada para comparar: sin «./» ni «/» final; con comodín, su carpeta (por prudencia). */
+function normPath(raw: string): string {
+  const p = raw.trim().replaceAll("\\", "/").replace(/^(\.\/)+/, "");
+  const glob = p.search(/[*?[{]/);
+  const base = glob < 0 ? p : p.slice(0, p.lastIndexOf("/", glob) + 1);
+  const out = base.replace(/\/+$/, "");
+  return out === "." ? "" : out;
+}
+
+/** Si dos rutas se pisan: iguales, o una está dentro de la otra (una vacía es la raíz del repo). */
+export function pathsOverlap(a: string, b: string): boolean {
+  const x = normPath(a);
+  const y = normPath(b);
+  return !x || !y || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/**
+ * Si `p` no puede arrancar mientras `r` está en marcha por ser de la misma conversación: depende de ella, alguna de
+ * las dos no dice qué toca o sus rutas se solapan. De conversaciones distintas, nunca chocan aquí.
+ */
+export function chatClash(p: QueuedTask, r: QueuedTask): boolean {
+  if (!p.chatId || p.chatId !== r.chatId) return false;
+  if (p.after?.includes(r.id)) return true;
+  if (!p.touches?.length || !r.touches?.length) return true;
+  return p.touches.some((a) => r.touches!.some((b) => pathsOverlap(a, b)));
 }

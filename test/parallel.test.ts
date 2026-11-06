@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clampLimit, effectiveProjectLimit, nextTask } from "../src/scheduler.ts";
+import { chatClash, clampLimit, effectiveProjectLimit, nextTask, pathsOverlap } from "../src/scheduler.ts";
 import { countSlots, takeSlot } from "../src/slots.ts";
 import { brakeReason, descendantsRss, metricsDoc, parseDarwinPressure, parseFreePct, parseMeminfo, recommend } from "../src/monitor.ts";
 
@@ -26,6 +26,33 @@ test("nextTask respeta el límite del proyecto y no junta dos tareas de la misma
   assert.deepEqual(nextTask(pending, [{ id: "a", chatId: "c1" }], 3), { task: { id: "c" } });
   assert.deepEqual(nextTask([{ id: "b", chatId: "c1" }], [{ id: "a", chatId: "c1" }], 3), { task: null, reason: "chat" });
   assert.deepEqual(nextTask([], [], 3), { task: null, reason: null });
+});
+
+test("tareas de la misma conversación en paralelo si declaran rutas que no se solapan", () => {
+  const app = { id: "a", chatId: "c1", touches: ["app/src/components"] };
+  const fns = { id: "b", chatId: "c1", touches: ["./functions/src/"] };
+  assert.deepEqual(nextTask([fns], [app], 3), { task: fns });
+  // Se solapan (una dentro de otra), o una no dice qué toca: espera.
+  assert.deepEqual(nextTask([{ id: "b", chatId: "c1", touches: ["app/src/components/kanban.tsx"] }], [app], 3), { task: null, reason: "chat" });
+  assert.deepEqual(nextTask([{ id: "b", chatId: "c1" }], [app], 3), { task: null, reason: "chat" });
+  assert.deepEqual(nextTask([fns], [{ id: "a", chatId: "c1" }], 3), { task: null, reason: "chat" });
+  // after: espera a la otra aunque no se solapen, en marcha o aún en cola delante.
+  assert.deepEqual(nextTask([{ ...fns, after: ["a"] }], [app], 3), { task: null, reason: "chat" });
+  const later = { id: "c", chatId: "c1", touches: ["docs"], after: ["b"] };
+  assert.deepEqual(nextTask([fns, later], [], 3), { task: fns });
+  assert.deepEqual(nextTask([later, fns], [], 3), { task: fns });
+  // De otra conversación nunca choca por esto.
+  assert.equal(chatClash({ id: "x", chatId: "c2" }, app), false);
+});
+
+test("solapamiento de rutas: carpetas, «./», comodines y raíz", () => {
+  assert.ok(pathsOverlap("app/src", "app/src/lib/x.ts"));
+  assert.ok(pathsOverlap("./app/", "app"));
+  assert.ok(!pathsOverlap("app/src", "app/srcs"));
+  assert.ok(pathsOverlap("app/src/*.tsx", "app/src/a.tsx"));
+  assert.ok(pathsOverlap("app/src/foo*.ts", "app/src/bar.ts"), "comodín: toda su carpeta, por prudencia");
+  assert.ok(pathsOverlap("**/*.ts", "functions"), "comodín en la raíz: todo");
+  assert.ok(pathsOverlap(".", "functions"));
 });
 
 test("huecos del ordenador compartidos entre proyectos, con limpieza de procesos muertos", () => {
