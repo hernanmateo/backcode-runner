@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { controlState, isControlRequest, parseControlRequest, runControlRequest, type ControlTarget } from "../src/remote-control.js";
-import type { ProjectRunner } from "../src/supervisor.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+// Sin proyectos conectados (startRemoteControl no se conecta a nada en los tests).
+process.env.BACKCODE_HOME ??= mkdtempSync(join(tmpdir(), "bc-control-"));
+const { controlState, isControlRequest, parseControlRequest, runControlRequest, startRemoteControl } = await import("../src/remote-control.js");
+import type { ControlTarget } from "../src/remote-control.js";
+import type { ProjectRunner, Supervisor } from "../src/supervisor.js";
 
 const connected = ["p1", "web-app"];
 
@@ -79,6 +85,41 @@ test("cada tipo hace lo suyo; lo que corta el proceso va después del resultado"
   assert.equal(shut, 0);
   await off.after?.();
   assert.equal(shut, 1);
+});
+
+test("sesiones directas: reiniciar o actualizar no las cierra; apagar del todo sí (y publica antes de salir)", async () => {
+  const { target } = fakeTarget();
+  const order: string[] = [];
+  const sessions = {
+    open: async () => ({ ok: true }),
+    close: () => undefined,
+    list: () => [],
+    closeAll: (reason?: string) => void order.push(`closeAll ${reason}`),
+  };
+  const hooks = { sessions, shutdown: () => void order.push("shutdown"), flush: async () => void order.push("flush"), restartAll: () => void order.push("restartAll"), updatePlugin: async () => null };
+  await (await runControlRequest(target, hooks, { type: "restartAll" })).after?.();
+  await (await runControlRequest(target, hooks, { type: "updateNow" })).after?.();
+  target.checkUpdateNow = async () => true;
+  await (await runControlRequest(target, hooks, { type: "updateNow" })).after?.();
+  await runControlRequest(target, hooks, { type: "updateService", service: "runner" });
+  assert.deepEqual(order, ["restartAll"]);
+  await (await runControlRequest(target, hooks, { type: "shutdown" })).after?.();
+  assert.deepEqual(order, ["restartAll", "closeAll shutdown", "flush", "shutdown"]);
+});
+
+test("el supervisor no cierra las sesiones directas al salir (reinicio, actualización): las adopta al volver", () => {
+  const before = process.listenerCount("exit");
+  let adopted = 0;
+  let closed = 0;
+  const { target } = fakeTarget();
+  startRemoteControl(target as unknown as Supervisor, {
+    shutdown: () => undefined,
+    sessions: { open: async () => ({ ok: true }), close: () => undefined, list: () => [], closeAll: () => void closed++, adopt: () => void adopted++ },
+  }, () => undefined);
+  assert.equal(process.listenerCount("exit"), before);
+  process.emit("exit", 0);
+  assert.equal(closed, 0);
+  assert.equal(adopted, 1);
 });
 
 test("actualizar ahora: con versión nueva no repite los reinicios y avisa si el plugin falla", async () => {

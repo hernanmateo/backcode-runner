@@ -366,9 +366,16 @@ unfinished work in that folder (the app warns before opening it). The command is
 first message, passed as a single argument through environment variables (the `sh -c` line never contains it). Before
 launching, the supervisor makes sure the Backcode plugin is active in that folder (it installs it with `--scope user` if
 missing). One per project: if one is already open, the same link is returned (`result.reused`, the new prompt isn't sent).
-`closeProjectSession` closes it; they also close when the supervisor exits. The state is published in
-`control.sessions: [{ projectId, state: opening|open|failed, phase?, url?, code?, error? }]` (no paths or prompts; `phase`,
-since 1.5.37, only while `opening`: `preparing` while checking Claude Code and the plugin, `starting` until the link) and the request
+`closeProjectSession` closes it. **Since 1.5.37 it survives restarts and updates of the supervisor/runner**: it runs in
+its own process group with pipes that don't depend on the runner (and, under the systemd service, in its own
+`systemd-run --user --scope`), its pid, link and project are saved in `~/.backcode/sessions.json` (0600, no paths or
+prompts), and the next supervisor adopts it (checking the pid is still that session) and keeps publishing it as open with
+its link. Automatic updates and «Restart everything» therefore don't cut it (nor the commands it has running). It only
+closes when you ask from the app, when Claude exits, or with «Shut down completely». The state is published in
+`control.sessions: [{ projectId, state: opening|open|failed|closed, phase?, url?, code?, error?, closedReason? }]` (no paths or
+prompts; `phase`, since 1.5.37, only while `opening`: `preparing` while checking Claude Code and the plugin, `starting`
+until the link; `closedReason`: `user`, `exited`, `restart` —it didn't survive while the runner was stopped or a reboot—,
+`shutdown` or `error`, shown in the app until you open another one) and the request
 ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `timeout`, `failed`). Only the computer's owner
 can request it (the rules and the app: the button only shows on your own computers). In the app: the project's Overview, and
 «Open them in your Claude Code session» in a task's «After merging» steps, which proposes a first message with those steps

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,6 +11,8 @@ import { dirname, join } from "node:path";
 export interface RemoteSession {
   /** Enlace de la sesión (https://claude.ai/code/session_…): abre la app de Claude si está instalada. */
   url: string;
+  /** Proceso del shell que la lleva (líder de su grupo, `detached`): para adoptarla tras un reinicio del runner. */
+  pid: number;
   /** Se resuelve cuando el proceso termina (la persona sale de la sesión o se para). */
   exited: Promise<void>;
   stop(): void;
@@ -43,27 +45,93 @@ export function remoteArgs(opts: { bin: string; name: string; sessionId?: string
   return opts.prompt ? [...args, "--", opts.prompt] : args;
 }
 
+/** Marca de la orden: así se reconoce una sesión nuestra al adoptarla (y no otro proceso con el mismo pid). */
+export const SESSION_MARK = "sleep 2147483647";
+
 /**
  * La orden de `sh -c` es siempre fija: cada argumento va en una variable de entorno y se usa como "$BC_RC_ARG_n" (el
  * shell no vuelve a interpretar lo expandido), así que ningún texto (el nombre, el prompt de la app) entra en la orden.
- * `cat |`: script necesita que su entrada sea una tubería de verdad (con la de Node, un socket, falla en macOS).
  * En Linux, `script -c` pasa su orden (fija, entre comillas simples) a otro shell, que expande las mismas variables.
+ * `cat |`: script necesita que su entrada sea una tubería de verdad (con la de Node, un socket, falla en macOS).
+ * `persistent` (la sesión directa de un proyecto): con las tuberías de keepAlive, para que sobreviva al runner. La de
+ * una tarea, no: si el runner muere, se cierra con él (como siempre).
  */
-export function remoteCommand(args: string[], platform: NodeJS.Platform = process.platform): { cmd: string; env: Record<string, string> } {
+export function remoteCommand(args: string[], platform: NodeJS.Platform = process.platform, persistent = false): { cmd: string; env: Record<string, string> } {
   const refs = args.map((_, i) => `"$${ARG_VAR}${i}"`).join(" ");
   const env = Object.fromEntries(args.map((a, i) => [`${ARG_VAR}${i}`, a]));
-  return { cmd: platform === "darwin" ? `cat | script -q /dev/null ${refs}` : `cat | script -qfc '${refs}' /dev/null`, env };
+  const inner = platform === "darwin" ? `script -q /dev/null ${refs}` : `script -qfc '${refs}' /dev/null`;
+  return { cmd: persistent ? keepAlive(inner) : `cat | ${inner}`, env };
 }
 
-export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?: string; prompt?: string; name: string; timeoutMs?: number }): Promise<RemoteSession> {
-  const { cmd, env } = remoteCommand(remoteArgs(opts));
-  const child = spawn("sh", ["-c", cmd], { cwd: opts.cwd, env: { ...sessionEnv(), ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+/**
+ * Tuberías que no dependen del runner, para que la sesión sobreviva a un reinicio o una actualización (que las cierran):
+ * - Entrada: una tubería de verdad (con un FIFO, `script` también falla en macOS: allí van sobre sockets). `cat` le
+ *   pasa lo que mande el runner (aceptar «trust this folder») y, si el runner desaparece, `sleep` deja la tubería
+ *   abierta: `script` nunca ve el fin de la entrada.
+ * - Salida: el primer `cat` se la pasa al runner; si este ya no está, muere al escribir y el segundo la tira, así Claude
+ *   no se bloquea con la tubería llena. Cuando `script` termina (Claude sale), `kill 0` cierra el grupo entero (el
+ *   `sleep` incluido) y el shell termina.
+ */
+export const keepAlive = (inner: string) => `{ cat; exec ${SESSION_MARK}; } | ${inner} 2>&1 | { cat; cat >/dev/null; kill 0; }`;
+
+/**
+ * Bajo systemd (el servicio en Linux), `systemctl restart` mata todo el grupo de control aunque el proceso vaya aparte:
+ * la sesión directa se lanza en su propio scope (orden fija). Sin systemd-run, como siempre.
+ */
+export function launcher(cmd: string, persistent: boolean, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): [string, string[]] {
+  if (persistent && platform === "linux" && env.INVOCATION_ID && hasBin("systemd-run", env)) return ["systemd-run", ["--user", "--scope", "--collect", "--quiet", "sh", "-c", cmd]];
+  return ["sh", ["-c", cmd]];
+}
+
+const hasBin = (bin: string, env: NodeJS.ProcessEnv) => (env.PATH ?? "").split(":").some((d) => d && existsSync(join(d, bin)));
+
+/**
+ * ¿Sigue viva la sesión con ese pid y es nuestra? Líder de su grupo de procesos y con la orden de remoteCommand (tras
+ * reiniciar el ordenador, el pid puede ser de otro proceso). `false` si no se puede saber.
+ */
+export function isRemoteSession(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    const out = execFileSync("ps", ["-o", "pgid=,command=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 }).trim();
+    const [pgid, ...command] = out.split(/\s+/);
+    return Number(pgid) === pid && command.join(" ").includes(SESSION_MARK);
+  } catch {
+    return false;
+  }
+}
+
+/** ¿Sigue vivo el proceso? (señal 0: solo comprueba). */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    // ESRCH, o EPERM: existe pero es de otro usuario (el pid ya no es el nuestro).
+    return false;
+  }
+}
+
+/** Cierra la sesión: todo su grupo de procesos (script y, con él, Claude Code y lo que tenga en marcha). */
+export function stopGroup(pid: number): void {
+  try {
+    if (pid > 1) process.kill(-pid, "SIGTERM");
+  } catch {
+    // ya había terminado
+  }
+}
+
+/**
+ * `persistent`: la sesión directa de un proyecto (project-session.ts), que debe sobrevivir a un reinicio del servicio.
+ * Todas van en su propio grupo de procesos (`detached`) y sin depender de las tuberías del runner (keepAlive).
+ */
+export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?: string; prompt?: string; name: string; timeoutMs?: number; persistent?: boolean }): Promise<RemoteSession> {
+  const { cmd, env } = remoteCommand(remoteArgs(opts), process.platform, !!opts.persistent);
+  const [bin, args] = launcher(cmd, !!opts.persistent);
+  const child = spawn(bin, args, { cwd: opts.cwd, env: { ...sessionEnv(), ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  // Escribir cuando la sesión ya ha terminado (EPIPE) no debe tumbar el runner.
+  child.stdin.on("error", () => undefined);
   const stop = () => {
-    try {
-      if (child.pid) process.kill(-child.pid, "SIGTERM");
-    } catch {
-      // ya había terminado
-    }
+    if (child.pid) stopGroup(child.pid);
   };
   const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
 
@@ -94,7 +162,7 @@ export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?:
       if (url) {
         found = true;
         clearTimeout(timer);
-        resolve({ url, exited, stop });
+        resolve({ url, pid: child.pid ?? 0, exited, stop });
       }
     });
     child.stderr.on("data", (d: Buffer) => (out = (out + d.toString()).slice(-20_000)));
