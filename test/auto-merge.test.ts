@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoMerge, clampRetries, localAutoMergeCandidate, type AutoMergeDeps, type AutoMergeState } from "../src/auto-merge.ts";
+import { autoMerge, clampRetries, localAutoMergeCandidate, resumableAutoMerge, type AutoMergeDeps, type AutoMergeState } from "../src/auto-merge.ts";
 import type { MergeBlock } from "../src/actions.ts";
 
 type MergeOutcome = { ok: boolean; result: { error?: string; checks?: string[] }; blocked?: MergeBlock };
@@ -126,4 +126,19 @@ test("localAutoMergeCandidate: las tareas del terminal de este usuario con PR li
   assert.equal(localAutoMergeCandidate({ ...base, status: "running" }, "u1"), false);
   assert.equal(localAutoMergeCandidate({ ...base, merged: { sha: "x" } }, "u1"), false);
   assert.equal(localAutoMergeCandidate({ ...base, kind: "ci" }, "u1"), false);
+});
+
+test("resumableAutoMerge: al arrancar se retoman las tareas de este runner que quedaron esperando la CI o arreglándose", () => {
+  const base = { status: "done", result: { prUrl: "https://github.com/o/r/pull/86" }, autoMerge: { state: "waiting" } };
+  assert.equal(resumableAutoMerge(base, true), true);
+  assert.equal(resumableAutoMerge({ ...base, autoMerge: { state: "fixing" } }, true), true);
+  // De otro runner, ya terminadas por el modo auto, sin estado, mergeadas, de CI, archivadas, sin PR o no hechas.
+  assert.equal(resumableAutoMerge(base, false), false);
+  for (const state of ["merged", "gaveUp", "stopped"]) assert.equal(resumableAutoMerge({ ...base, autoMerge: { state } }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, autoMerge: undefined }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, merged: { sha: "x" } }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, kind: "ci" }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, archivedAt: 1 }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, result: {} }, true), false);
+  assert.equal(resumableAutoMerge({ ...base, status: "running" }, true), false);
 });

@@ -56,6 +56,7 @@ import { readState, updateState } from "./paths.js";
 import { isShareOpen, type ShareScope } from "./runner-share.js";
 import { firestoreSource, LiveQuery } from "./live-query.js";
 import { quotaWaitsOf } from "./quota-waits.js";
+import { resumableAutoMerge } from "./auto-merge.js";
 import { CHAT_TEXT_MAX, EVENT_TEXT_MAX, LEGACY_EVENT_TEXT_MAX, splitText } from "./text-limits.js";
 
 /**
@@ -1213,6 +1214,12 @@ export class Store {
       tx.update(ref, { status: "execute", autoRetry: { ...rest, state: "retrying", at: serverTimestamp() } });
       return true;
     });
+  }
+
+  /** Tareas que este runner dejó a medias en el modo auto (waiting/fixing) antes de reiniciarse: se vuelven a encolar. */
+  async pendingAutoMerges(): Promise<string[]> {
+    const snap = await getDocs(query(this.features(), where("autoMerge.state", "in", ["waiting", "fixing"])));
+    return snap.docs.filter((d) => resumableAutoMerge(d.data() as Feature, this.executes(d.data() as Feature))).map((d) => d.id);
   }
 
   /** Mis tareas fallidas con un reintento automático programado (para no perderlo si el runner se reinicia). */
