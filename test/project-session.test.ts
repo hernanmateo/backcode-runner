@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ProjectSessions, type SessionDeps } from "../src/project-session.js";
-import { remoteArgs, remoteCommand, type RemoteSession } from "../src/remote.js";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadSessions, ProjectSessions, saveSessions, type SavedSession, type SessionDeps } from "../src/project-session.js";
+import { keepAlive, launcher, remoteArgs, remoteCommand, SESSION_MARK, type RemoteSession } from "../src/remote.js";
 
-function fake(overrides: Partial<SessionDeps> = {}) {
+function fake(overrides: Partial<SessionDeps> = {}, disk: SavedSession[] = []) {
   const launched: Parameters<SessionDeps["launch"]>[0][] = [];
   let exit: () => void = () => undefined;
   let stopped = 0;
+  const killed: number[] = [];
+  const store = { list: disk };
   const deps: Partial<SessionDeps> = {
     claude: () => "/bin/claude",
     platform: "darwin",
@@ -15,41 +21,107 @@ function fake(overrides: Partial<SessionDeps> = {}) {
     launch: async (opts) => {
       launched.push(opts);
       const exited = new Promise<void>((r) => (exit = r));
-      const session: RemoteSession = { url: `https://claude.ai/code/session_${launched.length}`, exited, stop: () => void (stopped++, exit()) };
+      const session: RemoteSession = { url: `https://claude.ai/code/session_${launched.length}`, pid: 1000 + launched.length, exited, stop: () => void (stopped++, exit()) };
       return session;
     },
+    load: () => store.list,
+    save: (list) => void (store.list = list),
+    isSession: () => false,
+    alive: () => true,
+    kill: (pid) => void killed.push(pid),
+    watchMs: 5,
     ...overrides,
   };
   let changes = 0;
   const sessions = new ProjectSessions(() => void changes++, deps);
-  return { sessions, launched, exit: () => exit(), stopped: () => stopped, changes: () => changes };
+  return { sessions, launched, store, killed, exit: () => exit(), stopped: () => stopped, changes: () => changes };
 }
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 test("abre una sesión nueva en la carpeta del proyecto (sin --resume) y la reutiliza si ya está abierta", async () => {
   const f = fake();
   const r = await f.sessions.open("p1", { name: "Web", repoPath: "/repos/web" }, "Haz esto");
   assert.deepEqual(r, { ok: true, url: "https://claude.ai/code/session_1" });
-  assert.deepEqual(f.launched, [{ bin: "/bin/claude", cwd: "/repos/web", name: "Web", prompt: "Haz esto" }]);
+  assert.deepEqual(f.launched, [{ bin: "/bin/claude", cwd: "/repos/web", name: "Web", persistent: true, prompt: "Haz esto" }]);
   assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_1" }]);
+  // Se guarda para adoptarla tras un reinicio (sin ruta ni prompt).
+  assert.deepEqual(f.store.list.map(({ startedAt: _, ...s }) => s), [{ projectId: "p1", pid: 1001, url: "https://claude.ai/code/session_1" }]);
   // Otra petición: la misma sesión, sin lanzar otra ni mandar el prompt nuevo.
   assert.deepEqual(await f.sessions.open("p1", { repoPath: "/repos/web" }, "Otra cosa"), { ok: true, url: "https://claude.ai/code/session_1", reused: true });
   assert.equal(f.launched.length, 1);
-  // Al salir de la sesión, desaparece.
+  // Al salir Claude de la sesión: cerrada, con el motivo, y fuera del disco.
   f.exit();
-  await new Promise((r) => setImmediate(r));
-  assert.deepEqual(f.sessions.list(), []);
+  await tick();
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "closed", closedReason: "exited" }]);
+  assert.deepEqual(f.store.list, []);
   assert.ok(f.changes() >= 3);
+  // Cerrar lo que ya está cerrado borra el aviso.
+  f.sessions.close("p1");
+  assert.deepEqual(f.sessions.list(), []);
 });
 
-test("cerrar para la sesión; closeAll las cierra todas", async () => {
+test("cerrar desde la app para la sesión (motivo «user»); closeAll, al apagar, las cierra todas («shutdown»)", async () => {
   const f = fake();
   await f.sessions.open("p1", { repoPath: "/r" });
   f.sessions.close("p1");
   assert.equal(f.stopped(), 1);
-  assert.deepEqual(f.sessions.list(), []);
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "closed", closedReason: "user" }]);
+  await tick();
+  // El `exited` que llega después no cambia el motivo.
+  assert.equal(f.sessions.list()[0].closedReason, "user");
   await f.sessions.open("p2", { repoPath: "/r" });
   f.sessions.closeAll();
   assert.equal(f.stopped(), 2);
+  assert.deepEqual(f.sessions.list().find((s) => s.projectId === "p2"), { projectId: "p2", state: "closed", closedReason: "shutdown" });
+  assert.deepEqual(f.store.list, []);
+});
+
+test("tras un reinicio del runner adopta las sesiones que siguen vivas (con su enlace) y marca las que no", async () => {
+  const disk: SavedSession[] = [
+    { projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_live", startedAt: 1 },
+    { projectId: "p2", pid: 4343, url: "https://claude.ai/code/session_gone", startedAt: 2 },
+  ];
+  let alive = true;
+  const f = fake({ isSession: (pid) => pid === 4242, alive: () => alive }, disk);
+  f.sessions.adopt();
+  assert.deepEqual(f.sessions.list(), [
+    { projectId: "p1", state: "open", url: "https://claude.ai/code/session_live" },
+    { projectId: "p2", state: "closed", closedReason: "restart" },
+  ]);
+  assert.deepEqual(f.store.list.map((s) => s.projectId), ["p1"]);
+  // Abrir otra vez la reutiliza, sin lanzar nada.
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }), { ok: true, url: "https://claude.ai/code/session_live", reused: true });
+  assert.equal(f.launched.length, 0);
+  // Cuando termina (Claude sale), se ve cerrada.
+  alive = false;
+  await tick(30);
+  assert.deepEqual(f.sessions.list()[0], { projectId: "p1", state: "closed", closedReason: "exited" });
+  assert.deepEqual(f.store.list, []);
+});
+
+test("cerrar una sesión adoptada mata su grupo de procesos", () => {
+  const f = fake({ isSession: () => true }, [{ projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_x", startedAt: 1 }]);
+  f.sessions.adopt();
+  f.sessions.close("p1");
+  assert.deepEqual(f.killed, [4242]);
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "closed", closedReason: "user" }]);
+});
+
+test("el fichero de sesiones: solo entradas con buena forma y permisos 600", () => {
+  const dir = mkdtempSync(join(tmpdir(), "bc-sessions-"));
+  const file = join(dir, "sessions.json");
+  writeFileSync(file, JSON.stringify([
+    { projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_ok", startedAt: 1, prompt: "secreto" },
+    { projectId: "../x", pid: 1, url: "https://claude.ai/code/session_ok" },
+    { projectId: "p2", pid: 1, url: "https://claude.ai/code/session_ok" },
+    { projectId: "p3", pid: 99, url: "https://evil.example/session" },
+  ]));
+  assert.deepEqual(loadSessions(file), [{ projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_ok", startedAt: 1 }]);
+  saveSessions(loadSessions(file), file);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(loadSessions(join(dir, "nope.json")).length, 0);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("fallos con código: sin claude, sin carpeta, plugin y fallo al lanzar", async () => {
@@ -80,12 +152,70 @@ test("orden de Remote Control: el prompt va como argumento tras «--» y nunca d
   assert.deepEqual(args, ["/bin/claude", "--remote-control", "Web", "--", nasty]);
   assert.deepEqual(remoteArgs({ bin: "claude", name: "T", sessionId: "s1" }), ["claude", "--resume", "s1", "--remote-control", "T"]);
   for (const platform of ["darwin", "linux"] as const) {
-    const built = remoteCommand(args, platform);
-    assert.ok(!built.cmd.includes("rm -rf") && !built.cmd.includes("Web") && !built.cmd.includes("claude"), built.cmd);
-    assert.match(built.cmd, /^cat \| script /);
-    assert.equal(built.env.BC_RC_ARG_4, nasty);
-    assert.equal(built.env.BC_RC_ARG_0, "/bin/claude");
+    for (const persistent of [false, true]) {
+      const built = remoteCommand(args, platform, persistent);
+      assert.ok(!built.cmd.includes("rm -rf") && !built.cmd.includes("Web") && !built.cmd.includes("claude"), built.cmd);
+      assert.match(built.cmd, persistent ? /^\{ cat; exec sleep 2147483647; \} \| script / : /^cat \| script /);
+      assert.equal(built.env.BC_RC_ARG_4, nasty);
+      assert.equal(built.env.BC_RC_ARG_0, "/bin/claude");
+    }
   }
   assert.equal(remoteCommand(["a", "b"], "darwin").cmd, 'cat | script -q /dev/null "$BC_RC_ARG_0" "$BC_RC_ARG_1"');
   assert.equal(remoteCommand(["a", "b"], "linux").cmd, `cat | script -qfc '"$BC_RC_ARG_0" "$BC_RC_ARG_1"' /dev/null`);
+  assert.equal(
+    remoteCommand(["a", "b"], "darwin", true).cmd,
+    '{ cat; exec sleep 2147483647; } | script -q /dev/null "$BC_RC_ARG_0" "$BC_RC_ARG_1" 2>&1 | { cat; cat >/dev/null; kill 0; }',
+  );
+});
+
+test("bajo systemd, la sesión directa va en su propio scope (orden fija); si no, sh -c", () => {
+  const dir = mkdtempSync(join(tmpdir(), "bc-bin-"));
+  writeFileSync(join(dir, "systemd-run"), "");
+  const env = { PATH: dir, INVOCATION_ID: "x" };
+  assert.deepEqual(launcher("CMD", true, "linux", env), ["systemd-run", ["--user", "--scope", "--collect", "--quiet", "sh", "-c", "CMD"]]);
+  assert.deepEqual(launcher("CMD", false, "linux", env), ["sh", ["-c", "CMD"]]);
+  assert.deepEqual(launcher("CMD", true, "linux", { PATH: dir }), ["sh", ["-c", "CMD"]]);
+  assert.deepEqual(launcher("CMD", true, "darwin", env), ["sh", ["-c", "CMD"]]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("la sesión sobrevive a que muera el proceso que la lanzó, y al terminar se cierra su grupo entero", async () => {
+  // `script` necesita un terminal (no siempre hay en los tests): en su lugar, un shell que lee una línea y sigue escribiendo.
+  const dir = mkdtempSync(join(tmpdir(), "bc-keep-"));
+  const out = join(dir, "out.txt");
+  const inner = 'sh -c "$BC_RC_ARG_0"';
+  const body = 'read x; echo "got:$x" >> "$BC_OUT"; i=0; while [ $i -lt 8 ]; do echo tick; i=$((i+1)); sleep 0.2; done; echo DONE >> "$BC_OUT"';
+  // El padre lanza la sesión aparte, le manda una línea y sale enseguida (como un reinicio del runner).
+  const parent = `
+    const { spawn } = require("node:child_process");
+    const c = spawn("sh", ["-c", process.env.BC_CMD], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    c.stdout.on("data", () => undefined);
+    c.stdin.write("hola\\n");
+    console.log(c.pid);
+    setTimeout(() => process.exit(0), 300);`;
+  const p = spawn(process.execPath, ["-e", parent], { env: { ...process.env, BC_CMD: keepAlive(inner), BC_RC_ARG_0: body, BC_OUT: out }, stdio: ["ignore", "pipe", "inherit"] });
+  let pid = "";
+  p.stdout.on("data", (d: Buffer) => (pid += d.toString()));
+  await new Promise((r) => p.on("exit", r));
+  await tick(2500);
+  assert.equal(readFileSync(out, "utf8"), "got:hola\nDONE\n");
+  // Al terminar, `kill 0` cierra el grupo (también el `sleep` que mantenía la entrada abierta).
+  assert.throws(() => process.kill(-Number(pid.trim()), 0));
+  assert.ok(keepAlive(inner).includes(SESSION_MARK));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("mientras se abre publica la fase: preparando (plugin) y arrancando (Claude Code, hasta el enlace)", async () => {
+  const seen: (string | undefined)[] = [];
+  let f: ReturnType<typeof fake>;
+  f = fake({
+    ensurePlugin: async () => (seen.push(f.sessions.list()[0]?.phase), null),
+    launch: async () => {
+      seen.push(f.sessions.list()[0]?.phase);
+      return { url: "https://claude.ai/code/session_x", exited: new Promise<void>(() => undefined), stop: () => undefined };
+    },
+  });
+  await f.sessions.open("p1", { repoPath: "/repos/web" });
+  assert.deepEqual(seen, ["preparing", "starting"]);
+  assert.equal(f.sessions.list()[0]?.phase, undefined);
 });

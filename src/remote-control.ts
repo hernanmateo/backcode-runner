@@ -97,7 +97,9 @@ export interface ControlHooks {
   /** Actualizar Claude Code o EAS CLI (por defecto, SERVICE_UPDATE_CMDS). Devuelve el error, si lo hay. */
   updateTool?: (service: "claude" | "eas") => Promise<string | null>;
   /** Sesiones directas en Claude Code (project-session.ts). Sin ellas, openProjectSession falla. */
-  sessions?: Pick<ProjectSessions, "open" | "close" | "list" | "closeAll">;
+  sessions?: Pick<ProjectSessions, "open" | "close" | "list" | "closeAll"> & Partial<Pick<ProjectSessions, "adopt">>;
+  /** Publicar ya el estado del ordenador (antes de apagar: que la app vea las sesiones cerradas y por qué). */
+  flush?: () => Promise<void>;
 }
 
 export interface ControlOutcome {
@@ -188,7 +190,16 @@ export async function runControlRequest(target: ControlTarget, hooks: ControlHoo
       hooks.onPower?.(true);
       return { status: "done", result: {} };
     case "shutdown":
-      return { status: "done", result: {}, after: hooks.shutdown };
+      // Apagar del todo sí cierra las sesiones directas (con aviso en la app); reiniciar o actualizar, no.
+      return {
+        status: "done",
+        result: {},
+        after: async () => {
+          hooks.sessions?.closeAll("shutdown");
+          await hooks.flush?.().catch(() => undefined);
+          await hooks.shutdown();
+        },
+      };
     case "openProjectSession": {
       const project = target.projects.get(req.projectId);
       if (!project) return { status: "failed", result: { error: t("control.notConnected", { id: req.projectId }) } };
@@ -258,10 +269,12 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
   let attempt = 0;
   // Sesiones directas en Claude Code: al abrirse, cerrarse o fallar se vuelve a publicar el estado del ordenador.
   let republish: () => void = () => undefined;
+  let flush: () => Promise<void> = async () => undefined;
   const sessions = hooks.sessions ?? new ProjectSessions(() => republish());
-  hooks = { ...hooks, sessions };
-  // Al salir el supervisor (reinicio, apagado) no quedan sesiones directas sueltas.
-  process.once("exit", () => sessions.closeAll());
+  hooks = { ...hooks, sessions, flush: () => flush() };
+  // Las sesiones directas sobreviven a los reinicios y actualizaciones del supervisor (no se cierran al salir): se
+  // adoptan las que dejó abiertas el anterior. Solo «Apagar del todo» las cierra (runControlRequest, shutdown).
+  sessions.adopt?.();
 
   const listen = (db: Firestore, uid: string) => {
     const machineRef = doc(db, "users", uid, "machines", mid);
@@ -320,6 +333,7 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
       await setDoc(machineRef, { ...(await machineStatus()), control, ...(services ? { services } : {}), lastSeen: serverTimestamp() }, { merge: true }).catch((err) => log((err as Error).message));
     };
     republish = () => void publish(true);
+    flush = () => publish(true);
     void publish(true);
     const timer = setInterval(() => void publish(), STATE_EVERY_MS);
     timer.unref();
