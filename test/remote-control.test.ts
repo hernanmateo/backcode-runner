@@ -109,3 +109,53 @@ test("actualizar un servicio: solo los de la lista cerrada, nunca comandos", asy
   assert.match(eas.result.error ?? "", /EACCES/);
   assert.deepEqual(tools, ["claude", "eas"]);
 });
+
+test("sesión directa: tipos cerrados, proyecto conectado y prompt validado (solo en openProjectSession)", () => {
+  assert.deepEqual(parseControlRequest({ type: "openProjectSession", projectId: "p1", status: "pending" }, connected), { type: "openProjectSession", projectId: "p1" });
+  assert.deepEqual(parseControlRequest({ type: "closeProjectSession", projectId: "p1" }, connected), { type: "closeProjectSession", projectId: "p1" });
+  assert.deepEqual(parseControlRequest({ type: "openProjectSession", projectId: "p1", prompt: "  Despliega las reglas\n\tpaso a paso  " }, connected), {
+    type: "openProjectSession",
+    projectId: "p1",
+    prompt: "Despliega las reglas\n\tpaso a paso",
+  });
+  // Un prompt que parece una orden de shell es solo texto: se acepta (va como argumento, nunca dentro de la orden).
+  assert.equal((parseControlRequest({ type: "openProjectSession", projectId: "p1", prompt: '"; rm -rf ~' }, connected) as { prompt: string }).prompt, '"; rm -rf ~');
+  assert.ok("error" in parseControlRequest({ type: "openProjectSession" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "openProjectSession", projectId: "../x" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "openProjectSession", projectId: "otro" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "openProjectSession", projectId: "p1", service: "claude" }, connected));
+  for (const prompt of ["", "   ", 3, null, ["x"], "x".repeat(4001), "hola\x00", "hola\x1b[2J", "a\rb"]) {
+    assert.ok("error" in parseControlRequest({ type: "openProjectSession", projectId: "p1", prompt }, connected), JSON.stringify(prompt));
+  }
+  assert.ok(!("error" in parseControlRequest({ type: "openProjectSession", projectId: "p1", prompt: "x".repeat(4000) }, connected)));
+  // Los demás tipos no llevan prompt.
+  assert.ok("error" in parseControlRequest({ type: "closeProjectSession", projectId: "p1", prompt: "x" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "stopProject", projectId: "p1", prompt: "x" }, connected));
+  assert.ok("error" in parseControlRequest({ type: "shutdown", prompt: "x" }, connected));
+});
+
+test("sesión directa: abre con la carpeta del proyecto, devuelve el enlace y cierra", async () => {
+  const { target } = fakeTarget();
+  target.projects.get("p1")!.repoPath = "/repos/web";
+  const opened: unknown[] = [];
+  const closed: string[] = [];
+  const sessions = {
+    open: async (id: string, project: { name?: string; repoPath?: string }, prompt?: string) => (
+      opened.push([id, project, prompt]), id === "p1" ? { ok: true, url: "https://claude.ai/code/session_abc" } : { ok: false, code: "noRepo" as const, error: "x" }
+    ),
+    close: (id: string) => void closed.push(id),
+    list: () => [],
+    closeAll: () => undefined,
+  };
+  const hooks = { shutdown: () => undefined, sessions };
+  assert.deepEqual(await runControlRequest(target, hooks, { type: "openProjectSession", projectId: "p1", prompt: "hola" }), { status: "done", result: { url: "https://claude.ai/code/session_abc" } });
+  assert.deepEqual(opened, [["p1", { name: "Web", repoPath: "/repos/web" }, "hola"]]);
+  assert.deepEqual(await runControlRequest(target, hooks, { type: "openProjectSession", projectId: "p2" }), { status: "failed", result: { code: "noRepo", error: "x" } });
+  assert.equal((await runControlRequest(target, hooks, { type: "openProjectSession", projectId: "nope" })).status, "failed");
+  assert.equal((await runControlRequest(target, hooks, { type: "closeProjectSession", projectId: "p1" })).status, "done");
+  assert.deepEqual(closed, ["p1"]);
+  // El estado publicado lleva las sesiones (sin rutas ni prompts).
+  assert.deepEqual(controlState(target, [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_abc" }, { projectId: "../x", state: "opening" }]).sessions, [
+    { projectId: "p1", state: "open", url: "https://claude.ai/code/session_abc" },
+  ]);
+});

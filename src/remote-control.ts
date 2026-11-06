@@ -6,6 +6,7 @@ import { parseEnv } from "./config.js";
 import { t } from "./i18n.js";
 import { MACHINE_BEAT_MS, machineId, machineStatus } from "./machines.js";
 import { projectFiles } from "./paths.js";
+import { PROMPT_MAX, ProjectSessions, type ProjectSessionState, type SessionErrorCode } from "./project-session.js";
 import { PLUGIN_UPDATE_CMDS, backcodeMarketplace, installOrUpdatePlugin } from "./plugin.js";
 import { installedClaude } from "./preflight.js";
 import { invalidateServices, currentServices, isUpdatableService, type UpdatableService } from "./services.js";
@@ -23,9 +24,10 @@ import type { Supervisor } from "./supervisor.js";
 
 const run = promisify(execFile);
 
-export const CONTROL_TYPES = ["stopProject", "startProject", "restartProject", "restartAll", "updateNow", "pauseAll", "resumeAll", "shutdown", "updateService"] as const;
+export const CONTROL_TYPES = ["stopProject", "startProject", "restartProject", "restartAll", "updateNow", "pauseAll", "resumeAll", "shutdown", "updateService", "openProjectSession", "closeProjectSession"] as const;
 export type ControlType = (typeof CONTROL_TYPES)[number];
-const PROJECT_TYPES: readonly ControlType[] = ["stopProject", "startProject", "restartProject"];
+type ProjectType = "stopProject" | "startProject" | "restartProject" | "openProjectSession" | "closeProjectSession";
+const PROJECT_TYPES: readonly ControlType[] = ["stopProject", "startProject", "restartProject", "openProjectSession", "closeProjectSession"];
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** Cada cuánto se mira si ha cambiado el estado de los proyectos (solo se escribe si cambia o toca latido). */
@@ -34,8 +36,9 @@ const STATE_EVERY_MS = 5_000;
 const RETRY_MS = 60_000;
 
 export type ControlRequest =
-  | { type: Exclude<ControlType, "stopProject" | "startProject" | "restartProject" | "updateService"> }
-  | { type: "stopProject" | "startProject" | "restartProject"; projectId: string }
+  | { type: Exclude<ControlType, ProjectType | "updateService"> }
+  | { type: Exclude<ProjectType, "openProjectSession">; projectId: string }
+  | { type: "openProjectSession"; projectId: string; prompt?: string }
   | { type: "updateService"; service: UpdatableService };
 
 /** ¿Es una petición de control (y no una de «Conectar en <host>», que atiende el runner de un proyecto)? */
@@ -53,14 +56,30 @@ export function parseControlRequest(raw: Record<string, unknown>, connected: Ite
     return { type, service: raw.service };
   }
   if (raw.service !== undefined) return { error: t("scaffold.bad", { field: "service" }) };
+  // El primer mensaje de una sesión directa: solo en openProjectSession.
+  if (raw.prompt !== undefined && type !== "openProjectSession") return { error: t("scaffold.bad", { field: "prompt" }) };
   if (!PROJECT_TYPES.includes(type as ControlType)) {
     if (raw.projectId !== undefined) return { error: t("scaffold.bad", { field: "projectId" }) };
-    return { type: type as Exclude<ControlType, "stopProject" | "startProject" | "restartProject" | "updateService"> };
+    return { type: type as Exclude<ControlType, ProjectType | "updateService"> };
   }
   const projectId = raw.projectId;
   if (typeof projectId !== "string" || !ID_RE.test(projectId)) return { error: t("scaffold.bad", { field: "projectId" }) };
   if (![...connected].includes(projectId)) return { error: t("control.notConnected", { id: projectId }) };
-  return { type: type as "stopProject" | "startProject" | "restartProject", projectId };
+  if (type === "openProjectSession") {
+    if (raw.prompt === undefined) return { type, projectId };
+    const prompt = parsePrompt(raw.prompt);
+    return prompt === null ? { error: t("scaffold.bad", { field: "prompt" }) } : { type, projectId, prompt };
+  }
+  return { type: type as Exclude<ProjectType, "openProjectSession">, projectId };
+}
+
+/** Texto del primer mensaje: 1–PROMPT_MAX caracteres (sin contar los espacios de los extremos), sin caracteres de control salvo \n y \t. */
+export function parsePrompt(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > PROMPT_MAX) return null;
+  const prompt = raw.trim();
+  // eslint-disable-next-line no-control-regex
+  if (!prompt || /[\x00-\x08\x0b-\x1f\x7f]/.test(prompt)) return null;
+  return prompt;
 }
 
 /** Lo que el control remoto usa del supervisor (en los tests, uno de mentira). */
@@ -77,11 +96,13 @@ export interface ControlHooks {
   updatePlugin?: () => Promise<string | null>;
   /** Actualizar Claude Code o EAS CLI (por defecto, SERVICE_UPDATE_CMDS). Devuelve el error, si lo hay. */
   updateTool?: (service: "claude" | "eas") => Promise<string | null>;
+  /** Sesiones directas en Claude Code (project-session.ts). Sin ellas, openProjectSession falla. */
+  sessions?: Pick<ProjectSessions, "open" | "close" | "list" | "closeAll">;
 }
 
 export interface ControlOutcome {
   status: "done" | "failed";
-  result: { error?: string; updated?: boolean; pluginError?: string };
+  result: { error?: string; updated?: boolean; pluginError?: string; url?: string; reused?: boolean; code?: SessionErrorCode };
   /** Lo que corta este proceso (reiniciar, apagar) va después de dejar el resultado en la petición. */
   after?: () => void | Promise<void>;
 }
@@ -168,16 +189,32 @@ export async function runControlRequest(target: ControlTarget, hooks: ControlHoo
       return { status: "done", result: {} };
     case "shutdown":
       return { status: "done", result: {}, after: hooks.shutdown };
+    case "openProjectSession": {
+      const project = target.projects.get(req.projectId);
+      if (!project) return { status: "failed", result: { error: t("control.notConnected", { id: req.projectId }) } };
+      if (!hooks.sessions) return { status: "failed", result: { code: "unavailable", error: t("remote.unavailable") } };
+      const r = await hooks.sessions.open(req.projectId, { name: project.name, repoPath: project.repoPath }, req.prompt);
+      return r.ok
+        ? { status: "done", result: { url: r.url, ...(r.reused ? { reused: true } : {}) } }
+        : { status: "failed", result: { ...(r.code ? { code: r.code } : {}), ...(r.error ? { error: r.error } : {}) } };
+    }
+    case "closeProjectSession":
+      hooks.sessions?.close(req.projectId);
+      return { status: "done", result: {} };
   }
 }
 
 export type PublishedState = "running" | "stopping" | "stopped" | "crashed" | "retrying" | "paused";
 
 /** Estado para la app (`control` en users/{uid}/machines/{id}): sin rutas ni tokens. */
-export function controlState(target: Pick<Supervisor, "projects" | "off">): { paused: boolean; projects: { id: string; name: string | null; state: PublishedState }[] } {
+export function controlState(
+  target: Pick<Supervisor, "projects" | "off">,
+  sessions?: ProjectSessionState[],
+): { paused: boolean; projects: { id: string; name: string | null; state: PublishedState }[]; sessions?: ProjectSessionState[] } {
   const paused = target.off;
   return {
     paused,
+    ...(sessions ? { sessions: sessions.filter((s) => ID_RE.test(s.projectId)).slice(0, 200) } : {}),
     projects: [...target.projects.values()]
       .filter((p) => ID_RE.test(p.id))
       .slice(0, 200)
@@ -219,6 +256,12 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
   const mid = machineId();
   const handle = { connected: false };
   let attempt = 0;
+  // Sesiones directas en Claude Code: al abrirse, cerrarse o fallar se vuelve a publicar el estado del ordenador.
+  let republish: () => void = () => undefined;
+  const sessions = hooks.sessions ?? new ProjectSessions(() => republish());
+  hooks = { ...hooks, sessions };
+  // Al salir el supervisor (reinicio, apagado) no quedan sesiones directas sueltas.
+  process.once("exit", () => sessions.closeAll());
 
   const listen = (db: Firestore, uid: string) => {
     const machineRef = doc(db, "users", uid, "machines", mid);
@@ -249,7 +292,7 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
             await finish(id, { status: "failed", result: { error: req.error } });
             continue;
           }
-          log(t("control.request", { type: "projectId" in req ? `${req.type} ${req.projectId}` : "service" in req ? `${req.type} ${req.service}` : req.type }));
+          log(t("control.request", { type: "prompt" in req && req.prompt ? `${req.type} ${req.projectId} (${t("session.prompt", { count: req.prompt.length })})` : "projectId" in req ? `${req.type} ${req.projectId}` : "service" in req ? `${req.type} ${req.service}` : req.type }));
           const outcome = await runControlRequest(supervisor, hooks, req).catch((err): ControlOutcome => ({ status: "failed", result: { error: String((err as Error).message ?? err).slice(0, 1500) } }));
           await finish(id, outcome);
           if (req.type === "updateService" || req.type === "updateNow") invalidateServices();
@@ -267,7 +310,7 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
     let last = "";
     let lastAt = 0;
     const publish = async (force = false) => {
-      const control = controlState(supervisor);
+      const control = controlState(supervisor, hooks.sessions?.list());
       const services = currentServices();
       const key = JSON.stringify([control, services]);
       if (!force && key === last && Date.now() - lastAt < MACHINE_BEAT_MS) return;
@@ -276,6 +319,7 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
       // Con todo en pausa no queda ningún runner que dé el latido: lo da el supervisor (así la app deja reanudar).
       await setDoc(machineRef, { ...(await machineStatus()), control, ...(services ? { services } : {}), lastSeen: serverTimestamp() }, { merge: true }).catch((err) => log((err as Error).message));
     };
+    republish = () => void publish(true);
     void publish(true);
     const timer = setInterval(() => void publish(), STATE_EVERY_MS);
     timer.unref();
