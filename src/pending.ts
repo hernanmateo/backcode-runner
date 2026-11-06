@@ -149,6 +149,12 @@ export async function computePlan(cfg: RunnerConfig, store: Store, deploys: Depl
   const base = fetched ?? (await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch));
   const [lastTimed, merged] = await Promise.all([store.lastDeploysTimed(), store.mergedFeatures()]);
   const last = new Map([...lastTimed].map(([id, v]) => [id, v.sha]));
+  // Un apunte del registro posterior pero con un commit anterior al último despliegue hecho desde la app (p. ej. lo que
+  // Claude Code desplegó hace horas y se apunta ahora) no tapa ese despliegue: si no, el paso recién desplegado seguiría
+  // con «N archivos sin desplegar».
+  for (const [id, v] of lastTimed) {
+    if (v.action && v.action.sha !== v.sha && (await isAncestor(cfg.repoPath, v.sha, v.action.sha))) last.set(id, v.action.sha);
+  }
   // Un OTA publicado desde la terminal también cuenta (el script deja el commit en <app>/.expo): el más reciente gana.
   const cli = app ? lastCliPublish(cfg.repoPath, app.appDir, cfg.baseBranch).production : undefined;
   const fromApp = last.get("ota:production");

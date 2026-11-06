@@ -988,8 +988,12 @@ export class Store {
     return new Map([...(await this.lastDeploysTimed())].map(([id, v]) => [id, v.sha]));
   }
 
-  /** Como lastDeploys, con cuándo se hizo cada uno (ms, requestedAt; 0 si no se sabe). */
-  async lastDeploysTimed(): Promise<Map<string, { sha: string; at: number }>> {
+  /**
+   * Como lastDeploys, con cuándo se hizo cada uno (ms, requestedAt; 0 si no se sabe). Si gana un apunte del registro
+   * (deployLog, con la hora en que se apuntó, no la del despliegue: p. ej. el hook de Claude Code al vaciar su cola),
+   * `action` es el último despliegue hecho desde la app de ese paso, para que el plan no lo tape con un commit anterior.
+   */
+  async lastDeploysTimed(): Promise<Map<string, { sha: string; at: number; action?: { sha: string; at: number } }>> {
     const [actions, log] = await Promise.all([this.doneActions.get(), this.deployLog.get().catch(() => null)]);
     const best = new Map<string, { at: number; sha: string }>();
     const note = (id: string, at: number, sha: unknown) => {
@@ -1009,9 +1013,15 @@ export class Store {
       }
       else if (type === "deployAll") for (const step of (d.get("result.steps") ?? []) as { id?: string; ok?: boolean; sha?: string }[]) if (step.ok && step.id) note(step.id, at, step.sha);
     }
+    const fromActions = new Map(best);
     // Los hechos fuera de la app (Claude Code, a mano, reglas comprobadas): deploy-log.ts.
     for (const d of log ?? []) note(String(d.get("step")), (d.get("at") as Timestamp | undefined)?.toMillis() ?? 0, d.get("sha"));
-    return best;
+    const out = new Map<string, { sha: string; at: number; action?: { sha: string; at: number } }>();
+    for (const [id, v] of best) {
+      const action = fromActions.get(id);
+      out.set(id, action && action !== v ? { ...v, action } : v);
+    }
+    return out;
   }
 
   /** «Reverteix»: estado del revert de una tarea (reverts/{id}; la Function mirrorRevert lo copia a la tarea). */
