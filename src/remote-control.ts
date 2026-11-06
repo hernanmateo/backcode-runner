@@ -206,7 +206,7 @@ export async function runControlRequest(target: ControlTarget, hooks: ControlHoo
       if (!hooks.sessions) return { status: "failed", result: { code: "unavailable", error: t("remote.unavailable") } };
       const r = await hooks.sessions.open(req.projectId, { name: project.name, repoPath: project.repoPath }, req.prompt);
       return r.ok
-        ? { status: "done", result: { url: r.url, ...(r.reused ? { reused: true } : {}) } }
+        ? { status: "done", result: { ...(r.url ? { url: r.url } : { linkless: true }), ...(r.reused ? { reused: true } : {}) } }
         : { status: "failed", result: { ...(r.code ? { code: r.code } : {}), ...(r.error ? { error: r.error } : {}) } };
     }
     case "closeProjectSession":

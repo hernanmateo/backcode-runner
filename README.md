@@ -376,7 +376,14 @@ closes when you ask from the app, when Claude exits, or with «Shut down complet
 prompts; `phase`, since 1.5.37, only while `opening`: `preparing` while checking Claude Code and the plugin, `starting`
 until the link; `closedReason`: `user`, `exited`, `restart` —it didn't survive while the runner was stopped or a reboot—,
 `shutdown` or `error`, shown in the app until you open another one) and the request
-ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `timeout`, `failed`). Only the computer's owner
+ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `timeout`, `failed`). **Since 1.5.38** the link
+is looked for in every new chunk of the TUI output with some overlap (also inside OSC 8 hyperlinks, split by escape
+sequences or wrapped over two lines), so it's found even when Claude starts working right away on the first message. If
+it hasn't arrived after 90 s but the session is alive and producing output, it is **not killed**: it's published as `open`
+without `url` (`result.linkless`), the app offers «Open the Claude app» (it's in its session list) and «Close session», and
+a link that arrives later is added. It only fails when it really didn't start (it exited, isn't logged in, or printed
+nothing), and the error carries only diagnostic lines, never the conversation text. The same applies to the tasks' Remote
+Control. Only the computer's owner
 can request it (the rules and the app: the button only shows on your own computers). In the app: the project's Overview, and
 «Open them in your Claude Code session» in a task's «After merging» steps, which proposes a first message with those steps
 (task, PR/branch, each step and its command in order, stop on failure, ask before anything destructive or that publishes)

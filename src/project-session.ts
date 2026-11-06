@@ -37,6 +37,7 @@ export interface ProjectSessionState {
   state: "opening" | "open" | "failed" | "closed";
   /** Fase mientras se abre (lista cerrada, para que la app lo cuente): plugin o Claude Code arrancando hasta el enlace. */
   phase?: SessionPhase;
+  /** Sin él estando `open`: viva pero Claude Code no ha dado el enlace (sale en la lista de sesiones de la app de Claude). */
   url?: string;
   code?: SessionErrorCode;
   error?: string;
@@ -48,6 +49,8 @@ export type SessionPhase = "preparing" | "starting";
 export interface OpenResult {
   ok: boolean;
   url?: string;
+  /** Abierta y trabajando, pero sin enlace (Claude Code no lo dio a tiempo). */
+  linkless?: boolean;
   reused?: boolean;
   code?: SessionErrorCode;
   error?: string;
@@ -57,7 +60,8 @@ export interface OpenResult {
 export interface SavedSession {
   projectId: string;
   pid: number;
-  url: string;
+  /** Sin él: abierta sin enlace. */
+  url?: string;
   startedAt: number;
 }
 
@@ -97,6 +101,7 @@ export async function ensurePlugin(claude: string, dir: string): Promise<string 
 
 export const SESSIONS_FILE = join(HOME_DIR, "sessions.json");
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const URL_RE = /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+$/;
 
 /** Las sesiones guardadas, solo las que tienen buena forma (el fichero podría estar a medias o tocado a mano). */
 export function loadSessions(file = SESSIONS_FILE): SavedSession[] {
@@ -104,8 +109,8 @@ export function loadSessions(file = SESSIONS_FILE): SavedSession[] {
     const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
     if (!Array.isArray(raw)) return [];
     return raw
-      .filter((s): s is SavedSession => !!s && typeof s === "object" && ID_RE.test(String(s.projectId)) && Number.isInteger(s.pid) && s.pid > 1 && typeof s.url === "string" && /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+$/.test(s.url))
-      .map((s) => ({ projectId: s.projectId, pid: s.pid, url: s.url, startedAt: Number(s.startedAt) || 0 }))
+      .filter((s): s is SavedSession => !!s && typeof s === "object" && ID_RE.test(String(s.projectId)) && Number.isInteger(s.pid) && s.pid > 1 && (s.url === undefined || (typeof s.url === "string" && URL_RE.test(s.url))))
+      .map((s) => ({ projectId: s.projectId, pid: s.pid, ...(s.url ? { url: s.url } : {}), startedAt: Number(s.startedAt) || 0 }))
       .slice(0, 200);
   } catch {
     return [];
@@ -140,7 +145,7 @@ const defaults: SessionDeps = {
 /** Una sesión abierta: lanzada por este proceso o adoptada de uno anterior. */
 interface Live {
   pid: number;
-  url: string;
+  url?: string;
   startedAt: number;
   stop: () => void;
   /** Adoptada: no somos su padre, se mira cada `watchMs` si sigue viva. */
@@ -173,7 +178,7 @@ export class ProjectSessions {
   }
 
   private persist() {
-    this.deps.save([...this.lives].map(([projectId, l]) => ({ projectId, pid: l.pid, url: l.url, startedAt: l.startedAt })));
+    this.deps.save([...this.lives].map(([projectId, l]) => ({ projectId, pid: l.pid, ...(l.url ? { url: l.url } : {}), startedAt: l.startedAt })));
   }
 
   private fail(projectId: string, code: SessionErrorCode, error: string): OpenResult {
@@ -203,7 +208,7 @@ export class ProjectSessions {
         continue;
       }
       this.lives.set(s.projectId, { pid: s.pid, url: s.url, startedAt: s.startedAt, adopted: true, stop: () => this.deps.kill(s.pid) });
-      this.states.set(s.projectId, { projectId: s.projectId, state: "open", url: s.url });
+      this.states.set(s.projectId, { projectId: s.projectId, state: "open", ...(s.url ? { url: s.url } : {}) });
     }
     if (!changed) return;
     this.persist();
@@ -234,7 +239,7 @@ export class ProjectSessions {
 
   async open(projectId: string, project: { name?: string; repoPath?: string }, prompt?: string): Promise<OpenResult> {
     const current = this.states.get(projectId);
-    if (current?.state === "open" && current.url) return { ok: true, url: current.url, reused: true };
+    if (current?.state === "open") return { ok: true, ...(current.url ? { url: current.url } : { linkless: true }), reused: true };
     if (current?.state === "opening") return { ok: false, code: "failed", error: t("session.busy") };
     const claude = this.deps.claude();
     if (!claude || !REMOTE_PLATFORMS.includes(this.deps.platform)) return this.fail(projectId, "unavailable", t("remote.unavailable"));
@@ -251,15 +256,23 @@ export class ProjectSessions {
       const message = String((err as Error).message ?? err);
       return this.fail(projectId, message.startsWith("timeout") ? "timeout" : "failed", t("remote.failed", { error: message.slice(0, 400) }));
     }
-    const live: Live = { pid: session.pid, url: session.url, startedAt: Date.now(), adopted: false, stop: () => session.stop() };
+    const live: Live = { pid: session.pid, ...(session.url ? { url: session.url } : {}), startedAt: Date.now(), adopted: false, stop: () => session.stop() };
     this.lives.set(projectId, live);
     this.persist();
-    this.set(projectId, { state: "open", url: session.url });
+    this.set(projectId, { state: "open", ...(session.url ? { url: session.url } : {}) });
     void session.exited.then(
       () => this.ended(projectId, live, "exited"),
       () => this.ended(projectId, live, "error"),
     );
-    return { ok: true, url: session.url };
+    // Abierta sin enlace: si Claude Code lo da más tarde, se publica y se guarda.
+    if (!session.url)
+      session.onUrl?.((url) => {
+        if (this.lives.get(projectId) !== live || live.url) return;
+        live.url = url;
+        this.persist();
+        this.set(projectId, { state: "open", url });
+      });
+    return session.url ? { ok: true, url: session.url } : { ok: true, linkless: true };
   }
 
   /** Cierra la sesión (motivo `reason`) o, si ya no hay ninguna, borra lo que se mostraba (un fallo o un cierre). */

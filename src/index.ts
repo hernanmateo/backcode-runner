@@ -767,7 +767,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const session = remoteSession;
     const onAbort = () => session.stop();
     abort.signal.addEventListener("abort", onAbort);
-    await store.setRemote(id, { state: "open", url: session.url });
+    // Sin enlace (viva y trabajando, pero Claude Code no lo dio a tiempo): abierta igual; si llega luego, se añade.
+    await store.setRemote(id, { state: "open", ...(session.url ? { url: session.url } : {}) });
+    if (!session.url)
+      session.onUrl?.((url) => {
+        if (remoteSession === session && !released) void store.setRemote(id, { state: "open", url }).catch(() => undefined);
+      });
     await store.event(id, "start", t("remote.open"));
     // Lo que hace Claude allí también se ve en la actividad de la tarea.
     const unfollow = followTranscript(wt.path, sessionId, (entry) => {

@@ -108,6 +108,31 @@ test("cerrar una sesión adoptada mata su grupo de procesos", () => {
   assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "closed", closedReason: "user" }]);
 });
 
+test("viva pero sin enlace a tiempo: abierta sin enlace (no fallida); el enlace que llega luego se publica y se guarda", async () => {
+  let giveUrl: (url: string) => void = () => undefined;
+  let stopped = 0;
+  const f = fake({
+    launch: async () => ({ pid: 777, exited: new Promise<void>(() => undefined), stop: () => void stopped++, onUrl: (cb) => void (giveUrl = cb) }),
+  });
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }, "Pasos de después de fusionar"), { ok: true, linkless: true });
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open" }]);
+  assert.deepEqual(f.store.list.map(({ startedAt: _, ...s }) => s), [{ projectId: "p1", pid: 777 }]);
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }), { ok: true, linkless: true, reused: true });
+  assert.equal(stopped, 0);
+  giveUrl("https://claude.ai/code/session_late");
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_late" }]);
+  assert.equal(f.store.list[0].url, "https://claude.ai/code/session_late");
+  // Se puede cerrar desde Backcode.
+  f.sessions.close("p1");
+  assert.equal(stopped, 1);
+});
+
+test("una sesión guardada sin enlace se adopta igual tras un reinicio", () => {
+  const f = fake({ isSession: () => true }, [{ projectId: "p1", pid: 4242, startedAt: 1 }]);
+  f.sessions.adopt();
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open" }]);
+});
+
 test("el fichero de sesiones: solo entradas con buena forma y permisos 600", () => {
   const dir = mkdtempSync(join(tmpdir(), "bc-sessions-"));
   const file = join(dir, "sessions.json");
@@ -116,8 +141,12 @@ test("el fichero de sesiones: solo entradas con buena forma y permisos 600", () 
     { projectId: "../x", pid: 1, url: "https://claude.ai/code/session_ok" },
     { projectId: "p2", pid: 1, url: "https://claude.ai/code/session_ok" },
     { projectId: "p3", pid: 99, url: "https://evil.example/session" },
+    { projectId: "p4", pid: 98, startedAt: 3 },
   ]));
-  assert.deepEqual(loadSessions(file), [{ projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_ok", startedAt: 1 }]);
+  assert.deepEqual(loadSessions(file), [
+    { projectId: "p1", pid: 4242, url: "https://claude.ai/code/session_ok", startedAt: 1 },
+    { projectId: "p4", pid: 98, startedAt: 3 },
+  ]);
   saveSessions(loadSessions(file), file);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.equal(loadSessions(join(dir, "nope.json")).length, 0);
