@@ -1,4 +1,5 @@
 import { withRemoteRetry } from "./remote-retry.js";
+import { scriptChannels } from "./ota.js";
 import { execFile } from "node:child_process";
 import { readDeployConfig } from "./deploy-config.js";
 
@@ -281,7 +282,9 @@ export async function findExpoApp(repoPath: string, commit: string): Promise<Exp
       otaServer = undefined;
     }
     const otaProvider = !ota ? undefined : otaServer?.includes("u.expo.dev") || ota === "eas" ? "eas" : /xprem/i.test(`${scriptText}\n${config}\n${scripts["ota:publish"]}`) ? "xprem" : "custom";
-    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : ["preview", "production"], ota, otaScript: scripts["ota:publish"], pm, buildProfiles, ...(otaServer ? { otaServer } : {}), ...(otaProvider ? { otaProvider } : {}) };
+    // Sin canales en eas.json: los dos, salvo que el script de publicar lleve fijada la rama (solo esa).
+    const fallback = ota === "script" ? scriptChannels(scripts["ota:publish"] ?? "", ["preview", "production"]) : ["preview", "production"];
+    return { appDir: dir.replace(/\/$/, ""), channels: known.length ? known : fallback, ota, otaScript: scripts["ota:publish"], pm, buildProfiles, ...(otaServer ? { otaServer } : {}), ...(otaProvider ? { otaProvider } : {}) };
   }
   return null;
 }
