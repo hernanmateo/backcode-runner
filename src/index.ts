@@ -109,6 +109,8 @@ const DENY_READ = [
 
 /** Tareas en marcha en este proceso (varias a la vez según los límites; scheduler.ts) y cómo cancelarlas. */
 const running = new Map<string, QueuedTask>();
+/** Una lista de textos de Firestore (touches, after de las tareas del chat), o undefined si no lo es o está vacía. */
+const strings = (v: unknown): string[] | undefined => (Array.isArray(v) && v.length && v.every((x) => typeof x === "string") ? (v as string[]) : undefined);
 const aborts = new Map<string, AbortController>();
 /** Límite personal de este proyecto y total de este ordenador (users/{uid}/machineSettings); null = sin tope. */
 const limits = { project: null as number | null, machine: null as number | null };
@@ -1658,9 +1660,9 @@ async function main(): Promise<void> {
     pending = [...queued.mine, ...queued.shared]
       // Las archivadas se quedan en la cola sin ejecutarse: al desarchivarlas, el snapshot cambia y vuelven aquí.
       .filter((d) => store.executes(d.data() as Feature) && d.get("archivedAt") == null)
-      .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, resumeNow: d.get("waitingQuota") != null, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
+      .map((d) => ({ id: d.id, chatId: typeof d.get("chatId") === "string" ? (d.get("chatId") as string) : undefined, touches: strings(d.get("touches")), after: strings(d.get("after")), resumeNow: d.get("waitingQuota") != null, priority: (d.get("priority") as number) ?? 0, at: d.get("acceptedAt")?.toMillis?.() ?? 0 }))
       .sort((a, b) => a.priority - b.priority || a.at - b.at)
-      .map((d) => ({ id: d.id, chatId: d.chatId, ...(d.resumeNow ? { resumeNow: true } : {}) }));
+      .map((d) => ({ id: d.id, chatId: d.chatId, ...(d.touches ? { touches: d.touches } : {}), ...(d.after ? { after: d.after } : {}), ...(d.resumeNow ? { resumeNow: true } : {}) }));
     // Las que volvieron a la cola sin marca y ya no están (liberadas o descartadas) dejan de retenerla.
     if (queued.loaded.mine && queued.loaded.shared) quotaWaits.syncQueued(new Set([...pending.map((p) => p.id), ...running.keys()]));
     if (pending.length) console.log(`[queue] ${t("main.queue", { n: pending.length })}`);

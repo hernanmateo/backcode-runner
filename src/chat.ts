@@ -180,6 +180,10 @@ export interface ChatTaskInput {
   planFirst?: boolean;
   /** El modelo más barato que la hará bien, como en el refinado; createChatTask lo combina con la preferencia del perfil. */
   suggestedModel?: SuggestedModel;
+  /** Rutas o carpetas que prevé tocar: con ellas, tareas de la conversación que no se solapan van en paralelo. */
+  touches?: string[];
+  /** Ids de tareas de esta conversación que deben terminar antes. */
+  after?: string[];
 }
 
 /** Los modelos que puede recomendar Claude (los mismos que valida createChatTask). */
@@ -197,13 +201,23 @@ export interface ChatTask {
 }
 
 /** Recorta y valida la entrada de create_task: null si falta título o encargo. */
-export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCriteria?: string[]; planFirst?: boolean; suggestedModel?: string }): ChatTaskInput | null {
+export function chatTaskInput(raw: { title: string; prompt: string; acceptanceCriteria?: string[]; planFirst?: boolean; suggestedModel?: string; touches?: string[]; after?: string[] }): ChatTaskInput | null {
   const title = raw.title.replaceAll(/\s+/g, " ").trim().slice(0, 200);
   const prompt = raw.prompt.trim().slice(0, 8000);
   if (!title || !prompt) return null;
   const acceptanceCriteria = (raw.acceptanceCriteria ?? []).map((c) => c.trim().slice(0, 500)).filter(Boolean).slice(0, 20);
   const suggestedModel = SUGGESTED_MODELS.find((m) => m === raw.suggestedModel);
-  return { title, prompt, acceptanceCriteria, ...(raw.planFirst ? { planFirst: true } : {}), ...(suggestedModel ? { suggestedModel } : {}) };
+  const touches = (raw.touches ?? []).map((p) => p.trim().slice(0, 200)).filter(Boolean).slice(0, 20);
+  const after = (raw.after ?? []).map((id) => id.trim()).filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id)).slice(0, 5);
+  return {
+    title,
+    prompt,
+    acceptanceCriteria,
+    ...(raw.planFirst ? { planFirst: true } : {}),
+    ...(suggestedModel ? { suggestedModel } : {}),
+    ...(touches.length ? { touches } : {}),
+    ...(after.length ? { after } : {}),
+  };
 }
 
 /** Lo que pide Claude con message_task, ya limpio (quién, estado y límites los decide messageChatTask). */
@@ -333,13 +347,15 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       ),
       tool(
         "create_task",
-        `Create a real Backcode task for this member and queue it on this runner: it appears on the project board assigned to them and runs like any other task, in its own branch backcode/<handle>/<id> from ${remote}/${baseBranch}, ending with a draft pull request. Use it when they ask you to build or change something (not for questions). It returns at once and the task runs in the background, so you can create several. The prompt must be self-contained: the task does not see this conversation. Set suggestedModel to the cheapest Claude model that will do it well (see the instructions).`,
+        `Create a real Backcode task for this member and queue it on this runner: it appears on the project board assigned to them and runs like any other task, in its own branch backcode/<handle>/<id> from ${remote}/${baseBranch}, ending with a draft pull request. Use it when they ask you to build or change something (not for questions). It returns at once and the task runs in the background, so you can create several. The prompt must be self-contained: the task does not see this conversation. Set suggestedModel to the cheapest Claude model that will do it well (see the instructions). Set touches to the repo paths or folders it will likely change (e.g. "app/src/components", "functions/src/index.ts"): tasks of this conversation whose paths don't overlap run at the same time; without touches it waits for the others. Set after to the ids of tasks it must wait for.`,
         {
           title: z.string().min(1).max(200),
           prompt: z.string().min(1).max(8000),
           acceptanceCriteria: z.array(z.string().max(500)).max(20).optional(),
           planFirst: z.boolean().optional(),
           suggestedModel: z.enum(SUGGESTED_MODELS).optional(),
+          touches: z.array(z.string().max(200)).max(20).optional(),
+          after: z.array(z.string().max(64)).max(5).optional(),
         },
         async (raw) => {
           const input = chatTaskInput(raw);
