@@ -41,6 +41,20 @@ export function localAutoMergeCandidate(f: LocalPrTask, uid: string): boolean {
   return !state || state === "waiting" || state === "fixing";
 }
 
+/**
+ * ¿Hay que reanudar el modo auto de esta tarea al arrancar el runner? La espera a la CI vive en memoria: si el runner se
+ * reinicia a medias (una actualización, un cierre), la tarea se queda en «waiting»/«fixing» sin nadie que la siga. Se
+ * retoman las que ejecuta este runner (`executes`), con PR abierto y sin mergear, que no sean de CI ni estén archivadas.
+ * Volver a empezar es seguro: el merge vuelve a mirar checks y conflictos, y los intentos ya hechos no se cuentan dos veces
+ * porque se lee el PR tal como está.
+ */
+export function resumableAutoMerge(f: LocalPrTask & { archivedAt?: unknown }, executes: boolean): boolean {
+  if (!executes || f.status !== "done" || f.merged || f.kind === "ci" || f.archivedAt != null) return false;
+  if (!f.result?.prUrl?.startsWith("https://")) return false;
+  const state = f.autoMerge?.state;
+  return state === "waiting" || state === "fixing";
+}
+
 /** Reintentos por defecto (el proyecto puede fijar otro entre 1 y 10: autoMergeRetries). */
 export const DEFAULT_RETRIES = 3;
 export const clampRetries = (n: unknown) => (typeof n === "number" && Number.isInteger(n) ? Math.min(10, Math.max(1, n)) : DEFAULT_RETRIES);

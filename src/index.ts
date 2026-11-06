@@ -1516,7 +1516,14 @@ async function main(): Promise<void> {
     const turnedOn = on && !autoMergeSettings.on;
     autoMergeSettings.on = on;
     autoMergeSettings.retries = clampRetries(retries);
-    if (turnedOn) queueLocalPrs();
+    if (turnedOn) {
+      queueLocalPrs();
+      // Las que se quedaron esperando la CI (o arreglándose) cuando el runner se reinició: si no, nadie las sigue.
+      void store
+        .pendingAutoMerges()
+        .then((ids) => ids.forEach(queueAutoMerge))
+        .catch((err) => console.warn(`[auto] ${(err as Error).message}`));
+    }
   });
   const stopAutoRetry = store.watchAutoRetry(({ on, max, maxCostUsd }) => {
     autoRetrySettings.on = on;
