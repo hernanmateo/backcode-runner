@@ -367,7 +367,8 @@ first message, passed as a single argument through environment variables (the `s
 launching, the supervisor makes sure the Backcode plugin is active in that folder (it installs it with `--scope user` if
 missing). One per project: if one is already open, the same link is returned (`result.reused`, the new prompt isn't sent).
 `closeProjectSession` closes it; they also close when the supervisor exits. The state is published in
-`control.sessions: [{ projectId, state: opening|open|failed, url?, code?, error? }]` (no paths or prompts) and the request
+`control.sessions: [{ projectId, state: opening|open|failed, phase?, url?, code?, error? }]` (no paths or prompts; `phase`,
+since 1.5.37, only while `opening`: `preparing` while checking Claude Code and the plugin, `starting` until the link) and the request
 ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `timeout`, `failed`). Only the computer's owner
 can request it (the rules and the app: the button only shows on your own computers). In the app: the project's Overview, and
 «Open them in your Claude Code session» in a task's «After merging» steps, which proposes a first message with those steps

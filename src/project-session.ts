@@ -22,10 +22,14 @@ export type SessionErrorCode = "unavailable" | "noRepo" | "plugin" | "timeout" |
 export interface ProjectSessionState {
   projectId: string;
   state: "opening" | "open" | "failed";
+  /** Fase mientras se abre (lista cerrada, para que la app lo cuente): plugin o Claude Code arrancando hasta el enlace. */
+  phase?: SessionPhase;
   url?: string;
   code?: SessionErrorCode;
   error?: string;
 }
+
+export type SessionPhase = "preparing" | "starting";
 
 export interface OpenResult {
   ok: boolean;
@@ -104,9 +108,10 @@ export class ProjectSessions {
     if (!claude || !REMOTE_PLATFORMS.includes(this.deps.platform)) return this.fail(projectId, "unavailable", t("remote.unavailable"));
     const dir = project.repoPath?.replace(/^~(?=\/|$)/, homedir());
     if (!dir || !this.deps.exists(dir)) return this.fail(projectId, "noRepo", t("session.noRepo"));
-    this.set(projectId, { state: "opening" });
+    this.set(projectId, { state: "opening", phase: "preparing" });
     const pluginError = await this.deps.ensurePlugin(claude, dir).catch((err: Error) => err.message || "plugin");
     if (pluginError) return this.fail(projectId, "plugin", t("session.plugin", { error: pluginError.slice(0, 300) }));
+    this.set(projectId, { state: "opening", phase: "starting" });
     let session: RemoteSession;
     try {
       session = await this.deps.launch({ bin: claude, cwd: dir, name: (project.name ?? projectId).slice(0, 80), ...(prompt ? { prompt } : {}) });

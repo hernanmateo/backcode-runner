@@ -89,3 +89,18 @@ test("orden de Remote Control: el prompt va como argumento tras «--» y nunca d
   assert.equal(remoteCommand(["a", "b"], "darwin").cmd, 'cat | script -q /dev/null "$BC_RC_ARG_0" "$BC_RC_ARG_1"');
   assert.equal(remoteCommand(["a", "b"], "linux").cmd, `cat | script -qfc '"$BC_RC_ARG_0" "$BC_RC_ARG_1"' /dev/null`);
 });
+
+test("mientras se abre publica la fase: preparando (plugin) y arrancando (Claude Code, hasta el enlace)", async () => {
+  const seen: (string | undefined)[] = [];
+  let f: ReturnType<typeof fake>;
+  f = fake({
+    ensurePlugin: async () => (seen.push(f.sessions.list()[0]?.phase), null),
+    launch: async () => {
+      seen.push(f.sessions.list()[0]?.phase);
+      return { url: "https://claude.ai/code/session_x", exited: new Promise<void>(() => undefined), stop: () => undefined };
+    },
+  });
+  await f.sessions.open("p1", { repoPath: "/repos/web" });
+  assert.deepEqual(seen, ["preparing", "starting"]);
+  assert.equal(f.sessions.list()[0]?.phase, undefined);
+});
