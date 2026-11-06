@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { deployHint, failureOutput, gradleFailure, installCommand, installDirFor, missingModulesHint, storageNotSetUpHint, stripNpmUsage } from "../src/actions.js";
+import { deployHint, exec, execOutput, failureOutput, gradleFailure, installCommand, installDirFor, missingModulesHint, storageNotSetUpHint, stripNpmUsage } from "../src/actions.js";
 import { classify } from "../src/diagnostics.js";
 import { setLangOverride } from "../src/i18n.js";
 
@@ -182,4 +182,19 @@ test("deploy con Storage sin activar: pista en es/en/ca con los dos caminos y el
   setLangOverride("es");
   assert.equal(deployHint(modules, ["functions"]), missingModulesHint(modules, ["functions"]));
   assert.equal(deployHint(out, ["."]), storageNotSetUpHint(out));
+});
+
+test("exec: si el comando falla, el error lleva la salida entera para guardarla (el mensaje, solo el final)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bc-exec-"));
+  try {
+    const err = await exec(["sh", "-c", "echo primera; printf 'x%.0s' $(seq 1 4000); echo; echo ultima; exit 3"], dir).then(() => null, (e: unknown) => e);
+    assert.ok(err instanceof Error);
+    const full = execOutput(err);
+    assert.match(full, /^primera\n/);
+    assert.match(full, /ultima\n$/);
+    assert.doesNotMatch(err.message, /primera\n/);
+    assert.equal(execOutput(new Error("sin salida")), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

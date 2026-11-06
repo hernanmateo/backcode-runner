@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "no
 import { failingLog } from "./check-logs.js";
 import { MISSING_MODULES } from "./diagnostics.js";
 import { type RunnerConfig } from "./config.js";
-import { smokeCliPath } from "./paths.js";
+import { LOGS_DIR, smokeCliPath } from "./paths.js";
 import { countBetween, createDetachedWorktree, DEPLOY_PREFIX, git as gitIn, type ExpoApp, fetchBranches, findConflicts, findDeployTargets, findExpoApp, holdWorktree, isAncestor, mergedCommit, releaseWorktree, remoteHead, remoteSha, removeWorktree, scanStagedForSecrets, syncLocalBase } from "./git.js";
 import { type Checks, isMergeConflictError, type MergeOptions, type PrHost } from "./hosts.js";
 import { branchForChannel, branchForTarget, previewBranch, promotionPr, protectedBranch, syncMode, taskBase } from "./environments.js";
@@ -18,7 +18,7 @@ import { ciConfigAt } from "./ci.js";
 import type { GithubActions } from "./github-actions.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { shouldVerifyAfterTask, verifiedChecksPlan, VERIFY_SUMMARY_MAX, VERIFY_TIMEOUT_MS } from "./checks-verify.js";
-import { type ChecksMode, LOCAL_CHECK_PREFIX, type LocalRun, isBranchProtectionError, killTree, localChecksAt, mergeChecksPlan, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks } from "./local-checks.js";
+import { type ChecksMode, LOCAL_CHECK_PREFIX, type LocalRun, isBranchProtectionError, killTree, localChecksAt, mergeChecksPlan, onlyNotStarted, onlyNotStartedIn, rememberPrLog, runLocalChecks, saveFailedLog } from "./local-checks.js";
 import { pointOfNoReturn, stopSignal, StoppedError } from "./stop.js";
 import { adbPath, androidSdk, listDevices, prepareIosDevice, type DevicePlatform } from "./devices.js";
 import { adbReverse, devPort, devServe, devServerRunning, devStop, recordDevInstall, stopDevServer } from "./dev-server.js";
@@ -1113,10 +1113,14 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
       } catch (err) {
         const before = done.length ? t("build.alreadySent", { list: done.join(", ") }) : "";
         const message = String((err as Error).message);
+        // El error solo lleva el final de la salida: la entera queda en un fichero, y su ruta va delante para no recortarse.
+        const output = execOutput(err);
+        const saved = output ? saveFailedLog(`build-${platform}`, commit, output, BUILD_LOGS_DIR) : "";
+        const full = saved ? t("build.fullLog", { path: saved }) + "\n" : "";
         // El aviso va delante: el error se recorta por el final y no debe perderse.
         const hint = buildNumberHint(platform, message, app.appDir);
         // Si ya se envió alguna plataforma, no se reintenta sola: se volvería a compilar y enviar la que salió bien.
-        return { ok: false, noRetry: done.length > 0 || !!hint, result: { url, sha: commit, error: `${hint}${before}${platform}: ${message}`.slice(0, hint.length + before.length + 3000) } };
+        return { ok: false, noRetry: done.length > 0 || !!hint, result: { url, sha: commit, error: `${hint}${before}${full}${platform}: ${message}`.slice(0, hint.length + before.length + full.length + 3000) } };
       }
     }
     const buildNumber = buildNumberFrom(log);
@@ -1128,6 +1132,9 @@ async function publishBuild(cfg: RunnerConfig, host: PrHost | undefined, action:
     rmSync(wt, { recursive: true, force: true });
   }
 }
+
+/** Salidas completas de las builds de testers que fallaron (las últimas, como los checks en logs/checks). */
+export const BUILD_LOGS_DIR = join(LOGS_DIR, "builds");
 
 const INSTALL_TIMEOUT_MS = 60 * 60_000;
 const STEP_RE = /^(ota:(production|preview)|deploy:[A-Za-z0-9._/@-]{0,200}#[a-z0-9][a-z0-9-]{0,39})$/;
@@ -1682,6 +1689,12 @@ function copyLastPublish(fromAppDir: string, toAppDir: string): void {
  * `doneWhen`: el comando no acaba solo (p. ej. `expo run:ios` en Debug se queda con su servidor de desarrollo abierto):
  * en cuanto su salida lo cumple, se da por terminado bien y se cierra (con sus hijos).
  */
+/** La salida entera (hasta 200 000 letras) de un comando de `exec` que falló; el mensaje del error solo lleva el final. */
+export function execOutput(err: unknown): string {
+  const output = (err as { output?: unknown } | null)?.output;
+  return typeof output === "string" ? output : "";
+}
+
 export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record<string, string>; timeoutMs?: number; doneWhen?: RegExp; settleWhen?: RegExp; settleMs?: number } = {}): Promise<string> {
   // «Parar» la acción (stop.ts): se mata el árbol entero del comando (killTree) y se rechaza con StoppedError.
   const abort = stopSignal();
@@ -1738,7 +1751,7 @@ export function exec([cmd, ...args]: string[], cwd: string, opts: { env?: Record
       abort?.removeEventListener("abort", onAbort);
       if (finished) return;
       if (code === 0) resolve(out);
-      else reject(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: failureOutput(out) })));
+      else reject(Object.assign(new Error(t("act.execFailed", { cmd: `${cmd} ${args.slice(0, 2).join(" ")}`, code: String(code), out: failureOutput(out) })), { output: out }));
     });
   });
 }

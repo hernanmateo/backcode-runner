@@ -1811,7 +1811,8 @@ async function main(): Promise<void> {
         if (!ok && !stoppedByHand) void report(store, diagnosticFor(action as unknown as Action, result, thrown));
         void refreshPlan();
         if (action.type === "closePr" || action.type === "mergePr" || action.type === "merge") void refreshPrs();
-        console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${result.url ?? result.error ?? ""}`);
+        // Si falla, el error va primero: la URL puede ser de lo que sí salió bien (p. ej. la submission de iOS antes de que fallara Android).
+        console.log(`[action] ${t(ok ? "main.actionDone" : "main.actionFailed")}: ${ok ? (result.url ?? "") : [result.error, result.url].filter(Boolean).join("\n")}`);
       }
     } finally {
       actionsBusy = false;
