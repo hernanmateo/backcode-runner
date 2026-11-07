@@ -186,11 +186,31 @@ function sessionEnv(): Record<string, string> {
   return env;
 }
 
-/** Argumentos de Claude Code: retomar la sesión de una tarea o una sesión nueva (con un primer mensaje opcional). */
-export function remoteArgs(opts: { bin: string; name: string; sessionId?: string; prompt?: string }): string[] {
-  const args = [opts.bin, ...(opts.sessionId ? ["--resume", opts.sessionId] : []), "--remote-control", opts.name];
+/**
+ * Argumentos de Claude Code: retomar la sesión de una tarea o una sesión nueva (con un primer mensaje opcional).
+ * `newSessionId`: sesión nueva con ese id (una tarea que arranca directamente en Remote Control: el runner la sigue y
+ * la retoma después con el mismo id). `model` y `planMode`: el modelo y el modo plan elegidos para la tarea.
+ */
+export function remoteArgs(opts: { bin: string; name: string; sessionId?: string; newSessionId?: string; prompt?: string; model?: string; planMode?: boolean }): string[] {
+  const args = [
+    opts.bin,
+    ...(opts.sessionId ? ["--resume", opts.sessionId] : opts.newSessionId ? ["--session-id", opts.newSessionId] : []),
+    ...(opts.model ? ["--model", opts.model] : []),
+    ...(opts.planMode ? ["--permission-mode", "plan"] : []),
+    "--remote-control",
+    opts.name,
+  ];
   // `--`: un prompt que empiece por «-» nunca se lee como una opción.
   return opts.prompt ? [...args, "--", opts.prompt] : args;
+}
+
+/**
+ * «Abrir en mi Claude Code»: Remote Control ya pedido al reclamar una tarea que aún no tiene sesión (recién aceptada).
+ * Arranca directamente allí, sin una primera fase en modo normal. No en un relevo (sigue el trabajo de otro runner) ni
+ * en la tarea de CI (encargo fijo del runner).
+ */
+export function startsInRemote(o: { requested: boolean; sessionId?: string; handoff: boolean; ci: boolean }): boolean {
+  return o.requested && !o.sessionId && !o.handoff && !o.ci;
 }
 
 /** Marca de la orden: así se reconoce una sesión nuestra al adoptarla (y no otro proceso con el mismo pid). */
@@ -272,7 +292,7 @@ export function stopGroup(pid: number): void {
  * `persistent`: la sesión directa de un proyecto (project-session.ts), que debe sobrevivir a un reinicio del servicio.
  * Todas van en su propio grupo de procesos (`detached`) y sin depender de las tuberías del runner (keepAlive).
  */
-export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?: string; prompt?: string; name: string; timeoutMs?: number; persistent?: boolean }): Promise<RemoteSession> {
+export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?: string; newSessionId?: string; prompt?: string; model?: string; planMode?: boolean; name: string; timeoutMs?: number; persistent?: boolean }): Promise<RemoteSession> {
   const { cmd, env } = remoteCommand(remoteArgs(opts), process.platform, !!opts.persistent);
   const [bin, args] = launcher(cmd, !!opts.persistent);
   const child = spawn(bin, args, { cwd: opts.cwd, env: { ...sessionEnv(), ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });

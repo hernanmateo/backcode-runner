@@ -22,7 +22,7 @@ import { lang, LANGUAGE_NAME, t } from "./i18n.js";
 import { previewBranch, setPreviewBranch, taskBase, validPreviewBranch } from "./environments.js";
 import { checkMachine, CLAUDE_SETTINGS, claudeExecutable, installedClaude } from "./preflight.js";
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
-import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
+import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, startsInRemote, type RemoteSession } from "./remote.js";
 import { startWorktreeCleanup } from "./worktree-cleanup.js";
 import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, snapshotCommit, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
@@ -70,7 +70,7 @@ import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
 import { DECLARE_PENDING_PROMPT, FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, markAfterMergeFollowUps, mentionsPendingWork, mergeFollowUps, normalizeFollowUps, PLAN_LOCAL_DESCRIPTION, PLAN_LOCAL_INPUT, PLAN_LOCAL_MAX, planLocalFollowUps, planLocalMarkdown } from "./follow-ups.js";
-import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
+import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildRemoteStartPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { dropProgress, restoreProgress, saveProgress } from "./handoff.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
 import { connect, FEATURE_LEASE_MS, Store, type Feature, type FeatureResult, type LiveControl, type RunnerChat, type ThreadMessage } from "./store.js";
@@ -854,11 +854,15 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       live.endPhase(spent);
     }
   }
-  /** Remote Control: Claude Code interactivo sobre la misma sesión, hasta que la persona sale o vuelve a Backcode. */
-  async function runRemote(): Promise<boolean> {
+  /**
+   * Remote Control: Claude Code interactivo sobre la misma sesión, hasta que la persona sale o vuelve a Backcode.
+   * `start`: «Abrir en mi Claude Code» con la tarea recién aceptada (sin sesión): una sesión nueva, con este encargo y un
+   * id que pone el runner (para seguirla y retomarla después), con el modelo y el modo plan de la tarea.
+   */
+  async function runRemote(start?: string): Promise<boolean> {
     remoteWanted = false;
     const bin = installedClaude();
-    if (!bin || !sessionId || !REMOTE_PLATFORMS.includes(process.platform)) {
+    if (!bin || (!start && !sessionId) || !REMOTE_PLATFORMS.includes(process.platform)) {
       await store.setRemote(id, { state: "failed", error: t("remote.unavailable") }).catch(() => undefined);
       await store.event(id, "error", t("remote.unavailable"));
       return false;
@@ -871,11 +875,17 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       await publishSession(id, sessionId);
       return false;
     };
-    if (!adoptTranscript(wt.path, sessionId)) return sessionGone();
+    if (!start && !adoptTranscript(wt.path, sessionId!)) return sessionGone();
     clearTimeout(timeout);
     await store.event(id, "start", t("remote.opening"));
+    const newSessionId = start ? randomUUID() : undefined;
     try {
-      remoteSession = await startRemoteControl({ bin, cwd: wt.path, sessionId, name: `${project.name} · ${feature.title}`.slice(0, 80) });
+      remoteSession = await startRemoteControl({
+        bin,
+        cwd: wt.path,
+        ...(newSessionId ? { newSessionId, prompt: start, ...(model ? { model } : {}), planMode: planning } : { sessionId }),
+        name: `${project.name} · ${feature.title}`.slice(0, 80),
+      });
     } catch (err) {
       remoteSession = null;
       if (isSessionGoneError((err as Error).message)) {
@@ -889,6 +899,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       return false;
     }
     const session = remoteSession;
+    // Sesión nueva: es la de la tarea desde ya (la app la ve y, al volver a Backcode, el runner la retoma con este id).
+    if (newSessionId) {
+      sessionId = newSessionId;
+      await store.setSession(id, newSessionId).catch((err: Error) => console.warn(`[remote] ${err.message.slice(0, 300)}`));
+    }
+    const remoteId = sessionId!;
     const onAbort = () => session.stop();
     abort.signal.addEventListener("abort", onAbort);
     // Sin enlace (viva y trabajando, pero Claude Code no lo dio a tiempo): abierta igual; si llega luego, se añade.
@@ -901,7 +917,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       });
     await store.event(id, "start", t("remote.open"));
     // Lo que hace Claude allí también se ve en la actividad de la tarea.
-    const unfollow = followTranscript(wt.path, sessionId, (entry) => {
+    const unfollow = followTranscript(wt.path, remoteId, (entry) => {
       const message = entry.message as { role?: string; content?: unknown } | undefined;
       if (entry.type !== "assistant" || !Array.isArray(message?.content)) return;
       for (const block of message.content as { type: string; text?: string; name?: string; input?: Record<string, unknown> }[]) {
@@ -1058,6 +1074,13 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     // Pedida desde la app con la tarea parada: primero Remote Control, y al volver sigue el runner.
     if (remoteWanted && resuming && (await runRemote())) {
       if (!stopRequested) await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!previousPr }));
+    } else if (
+      // «Abrir en mi Claude Code» (recién aceptada con Remote Control pedido): directamente en la app de Claude, y al
+      // volver sigue el runner con la misma sesión. Si no se puede abrir (queda «failed» en la app), en modo normal.
+      startsInRemote({ requested: remoteWanted, sessionId, handoff, ci: !!ciHost }) &&
+      (await runRemote(buildRemoteStartPrompt(id, feature, { planning, branch: wt.branch, base: `${cfg.remote}/${taskBase(cfg.baseBranch)}`, attachments })))
+    ) {
+      if (!stopRequested && !released) await runPhase(buildAfterRemotePrompt({ planning, hasPr: false }));
     } else {
       if (planning) await store.event(id, "start", t(resuming || handoff ? "run.replanning" : "run.planning"));
       else if (justApproved) await store.event(id, "start", t("run.planApproved"));
@@ -1457,6 +1480,8 @@ async function main(): Promise<void> {
     quotaResume: true,
     live: true,
     remoteControl: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
+    // «Abrir en mi Claude Code»: una tarea recién aceptada arranca directamente en Remote Control (startsInRemote).
+    remoteStart: REMOTE_PLATFORMS.includes(process.platform) && !!installedClaude(),
   };
   if (expoApp && !expoApp.ota) console.warn(`\x1b[33m⚠ ${t("main.otaOff", { reason: otaMissing() })}\x1b[0m`);
   for (const w of repo.warnings) console.warn(`\x1b[33m⚠ ${describeWarning(w)}\x1b[0m`);
