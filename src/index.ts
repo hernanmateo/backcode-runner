@@ -51,7 +51,7 @@ import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, t
 import { computePlan } from "./pending.js";
 import { capChangedFiles, changedDeployScriptFiles, deployCapabilitiesWithRun } from "./pr-files.js";
 import { afterMergeHint, checkRunText, checksHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, withoutInstallSteps, type CheckCommand } from "./after-merge.js";
-import { depCache } from "./dep-cache.js";
+import { depCache, startDepCacheCleanup, touchDepCache } from "./dep-cache.js";
 import { missingLockfiles } from "./lockfile-check.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
@@ -580,6 +580,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let onReleased = () => {};
   const releasedNow = new Promise<void>((r) => (onReleased = r));
   const lease = setInterval(() => {
+    // Una tarea larga sigue usando la caché de paquetes: que la limpieza (de este u otro runner) no la toque.
+    touchDepCache(cfg.projectId);
     store.extendLease(id).catch(async () => {
       if (released || (await store.featureStatus(id).catch(() => "running")) === "running") return;
       released = true;
@@ -1983,6 +1985,10 @@ async function main(): Promise<void> {
       chatBusy = false;
     }
   };
+  // Caché de paquetes (dep-cache.ts): al arrancar y cada 24 h se vacían las de proyectos desconectados, sin usar en 30
+  // días o por encima del tope; nunca la de este proyecto con una tarea, conversación o acción en marcha. Aquí, después de
+  // declarar chatBusy y actionsBusy (la primera pasada es inmediata).
+  const stopDepCacheCleanup = startDepCacheCleanup({ projectId: cfg.projectId, maxGb: cfg.depCacheMaxGb, isBusy: () => running.size > 0 || chatBusy || actionsBusy });
   // Las mías (sin runnerUid o con el mío) y las de compañeros dirigidas a mi runner. Sus mensajes siguen siendo datos no
   // fiables: el chat tiene los mismos límites para todos (prompt.ts, guard, sandbox).
   const chatDocs = { mine: [] as QueryDocumentSnapshot[], shared: [] as QueryDocumentSnapshot[] };
@@ -2211,6 +2217,7 @@ async function main(): Promise<void> {
     clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
     stopCleanup();
+    stopDepCacheCleanup();
     stopQuotaRequests();
     knowledgeAbort.abort();
     for (const abort of aborts.values()) abort.abort();
@@ -2273,6 +2280,7 @@ async function main(): Promise<void> {
     clearInterval(mergedTimer);
     clearInterval(sessionsTimer);
     stopCleanup();
+    stopDepCacheCleanup();
     clearInterval(updateTimer);
     stopQuotaRequests();
     knowledgeAbort.abort();

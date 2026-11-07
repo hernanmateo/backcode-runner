@@ -49,6 +49,8 @@ const Env = z.object({
   BACKCODE_PROTECTED_PATHS: z.string().default(""),
   // Que el ordenador no se duerma: off · working (solo con trabajo en marcha) · always (mientras el runner esté abierto).
   BACKCODE_KEEP_AWAKE: z.enum(["off", "working", "always"]).default("working"),
+  // Tope de la caché de paquetes de cada proyecto (~/.backcode/dep-cache/<proyecto>, dep-cache.ts), en GB: si lo pasa, se vacía.
+  BACKCODE_DEP_CACHE_MAX_GB: num.default(2),
   // Idioma del runner (por defecto, el de tu perfil en la app).
   BACKCODE_LANG: z.enum(["es", "en", "ca"]).optional(),
 });
@@ -79,6 +81,8 @@ export interface RunnerConfig {
   allowedDomains: string[];
   protectedPaths: string[];
   keepAwake: "off" | "working" | "always";
+  /** Tope de la caché de paquetes de este proyecto, en GB (dep-cache.ts). */
+  depCacheMaxGb: number;
   worktreesDir: string;
   runnerId: string;
   envFile: string;
@@ -144,6 +148,7 @@ export function loadConfig(): RunnerConfig {
     allowedDomains: list(env.BACKCODE_ALLOWED_DOMAINS),
     protectedPaths: list(env.BACKCODE_PROTECTED_PATHS),
     keepAwake: env.BACKCODE_KEEP_AWAKE,
+    depCacheMaxGb: env.BACKCODE_DEP_CACHE_MAX_GB,
     worktreesDir: join(homedir(), ".backcode", "worktrees", env.BACKCODE_PROJECT_ID),
     runnerId: `${hostname()}:${process.pid}`,
     envFile,
