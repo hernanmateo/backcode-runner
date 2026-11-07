@@ -137,6 +137,13 @@ For every task you accept, the runner:
    (read-only) that you refine and approve; parts that can only run outside the sandbox (SSH keys, creating servers, credentials,
    a login…) are marked in the plan as “In your Claude Code” and become required next tasks you continue on your computer
    with `backcode task follow-up`. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
+   **Checks that can't run in the sandbox** (tests that open ports or start emulators): if the main branch's `backcode.toml`
+   declares `[check.*]`, Claude gets a `run_checks` tool (runner ≥ 1.5.43). The runner snapshots the work in progress into a
+   loose commit (the branch isn't touched, nothing is pushed) and runs those checks **outside the sandbox**, exactly as before
+   merging (main branch commands, clean copy, no secrets in the environment), returning what passes and the end of the log of
+   what fails. At most 3 times per run. It opens no new door: it's the same code the runner already runs on that work before
+   merging; only the timing changes. And a test or check is never an “After merging” step: Claude sees the project's checks
+   in `open_pull_request` and, if it lists one anyway (e.g. `cd tests && npm run test:rules`), the runner drops it.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 

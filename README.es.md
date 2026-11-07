@@ -406,6 +406,15 @@ cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En 
    `runsLocally`: sale en el plan como «En tu Claude Code», Claude escribe el código igualmente y, al quedar el PR listo,
    esa parte es una siguiente tarea necesaria con «Seguir en tu Claude Code» (`backcode task follow-up`), en vez de
    descubrirlo al ejecutar y fallar.
+   **Checks que no corren en el sandbox** (tests que abren puertos o levantan emuladores): si el `backcode.toml` de la rama
+   principal declara `[check.*]`, Claude tiene la herramienta `run_checks` (runner ≥ 1.5.43). El runner hace un commit
+   suelto con el trabajo en curso (sin tocar la rama ni subir nada) y le pasa esos checks **fuera del sandbox**, igual que
+   antes de mergear ([Checks en local](#checks-en-local-sin-la-ci-del-host): comandos de la rama principal, copia limpia,
+   entorno sin secretos), y le devuelve qué pasa y el final del log de lo que falla. Como mucho 3 veces por vuelta. No abre
+   ninguna puerta nueva: es el mismo código que el runner ya ejecuta sobre ese trabajo antes de mergearlo; solo cambia el
+   momento. Y un test o check nunca es un paso de «Después de mergear»: Claude ve los checks del proyecto en
+   `open_pull_request` y, si aun así pone uno (p. ej. `cd tests && npm run test:rules`), el runner lo quita: los pasa
+   antes de mergear.
 4. Revisa el resultado (rechaza cambios en rutas protegidas y diffs con secretos), hace commit y push y abre el **PR en borrador**.
 5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó, pidió un permiso, propuso un plan o paró sin PR pero con cambios hechos, para que le contestes en el hilo) o `failed` (con el motivo). La app muestra la actividad
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.

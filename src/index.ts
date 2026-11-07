@@ -23,11 +23,11 @@ import { checkMachine, CLAUDE_SETTINGS, claudeExecutable, installedClaude } from
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
 import { startWorktreeCleanup } from "./worktree-cleanup.js";
-import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, snapshotCommit, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
-import { localChecksAt } from "./local-checks.js";
+import { localChecksAt, RUN_CHECKS_MAX, runChecksReport, runLocalChecks } from "./local-checks.js";
 import { githubActions } from "./github-actions.js";
 import { installIfNeeded, logLocalSync, merge as mergeTask, otaMissing, runAction, setChecksMode, setDeployRetry, setGithubActions, setRequireChecks, verifyTaskChecks, type Action, type ActionResult } from "./actions.js";
 import { isStoppedError, type StopScope, withStopScope } from "./stop.js";
@@ -50,7 +50,7 @@ import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
 import { capChangedFiles, changedDeployScriptFiles, deployCapabilitiesWithRun } from "./pr-files.js";
-import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge } from "./after-merge.js";
+import { afterMergeHint, checkRunText, checksHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, type CheckCommand } from "./after-merge.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
@@ -373,6 +373,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const expoApp = await findExpoApp(wt.path, "HEAD").catch(() => null);
   const backcodeOta = !!expoApp?.ota;
   const backcodeBuild = !!expoApp?.buildProfiles.includes("production");
+  // Checks del proyecto, del backcode.toml de la rama base (como antes de mergear: un PR no puede cambiar lo que se
+  // ejecuta). Claude los ve en open_pull_request, nunca salen como paso tras mergear y los puede pedir con run_checks.
+  // Tarea de CI: ninguno (no ejecuta comandos).
+  const projectChecks = ciHost ? [] : await localChecksAt(cfg.repoPath, `${cfg.remote}/${taskBase(cfg.baseBranch)}`).catch(() => []);
+  const checkCommands: CheckCommand[] = projectChecks.map((c) => ({ name: c.name, dir: c.dir, run: checkRunText(c.cmd) }));
+  let checkRuns = 0; // veces que Claude pidió run_checks en esta vuelta (RUN_CHECKS_MAX)
   let question: string | undefined; // pregunta de Claude (ask_user)
   let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
@@ -404,7 +410,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ),
       tool(
         "open_pull_request",
-        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${afterMergeHint(deployNames, backcodeOta, backcodeBuild)}`,
+        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${afterMergeHint(deployNames, backcodeOta, backcodeBuild)}${checksHint(checkCommands, checkCommands.length > 0)}`,
         {
           title: z.string().min(5).max(120),
           body: z.string().min(20).max(20_000),
@@ -466,7 +472,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           // Los destinos que añade este mismo PR (backcode.toml o package.json de la rama) también valen: quedan pendientes
           // del merge y la app ofrece el botón cuando el runner los ve en la rama principal (refreshPlan › saveDeploys).
           const prNames = ciHost || !steps?.some((s) => s.deployTarget) ? [] : (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name);
-          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild);
+          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild, checkCommands);
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.
@@ -476,6 +482,35 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
       ),
+      // run_checks: los checks del proyecto sobre el trabajo en curso, fuera del sandbox (p. ej. tests que abren puertos o
+      // levantan emuladores, que el sandbox no deja). No abre ninguna puerta nueva: es el mismo código (local-checks.ts),
+      // con los comandos de la rama base, el mismo entorno sin secretos y una copia limpia, que el runner ya ejecuta sobre
+      // este trabajo antes de mergearlo; solo cambia el momento. Con tope de llamadas, porque cada pasada tarda minutos.
+      ...(projectChecks.length
+        ? [
+            tool(
+              "run_checks",
+              `Run this project's checks (${projectChecks.map((c) => c.name).join(", ")}) on your current work, outside the sandbox, exactly as the runner runs them before merging. Use it when a test or check can't run in your sandbox (it needs local ports, emulators…), before open_pull_request. It snapshots the worktree (nothing is committed or pushed), runs the checks in a clean copy with the dependencies installed from the lockfile and returns pass/fail with the end of the log of those that fail. At most ${RUN_CHECKS_MAX} calls per run and each one can take minutes: fix everything you can first. names: only those checks (default: all).`,
+              { names: z.array(z.string().max(40)).max(20).optional() },
+              async ({ names }) => {
+                const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+                if (planning) return fail(t("rc.planning"));
+                if (checkRuns >= RUN_CHECKS_MAX) return fail(t("rc.limit", { n: RUN_CHECKS_MAX }));
+                const unknown = (names ?? []).filter((n) => !projectChecks.some((c) => c.name === n));
+                if (unknown.length) return fail(t("rc.unknown", { list: unknown.join(", "), available: projectChecks.map((c) => c.name).join(", ") }));
+                const chosen = names?.length ? projectChecks.filter((c) => names.includes(c.name)) : projectChecks;
+                checkRuns++;
+                try {
+                  const sha = await snapshotCommit(wt.path);
+                  const run = await runLocalChecks({ repoPath: cfg.repoPath, worktreesDir: cfg.worktreesDir, host: undefined, sha, checks: chosen, signal: abort.signal });
+                  return { content: [{ type: "text" as const, text: runChecksReport(chosen.map((c) => c.name), run) }] };
+                } catch (err) {
+                  return fail(t("rc.failed", { error: String(err).slice(0, 500) }));
+                }
+              },
+            ),
+          ]
+        : []),
       tool(
         "request_permission",
         "Ask the person running this task for an extra permission you truly need and don't have yet: read-only network access to specific domains (hostnames), the curl/wget commands, or reading another of their Backcode projects for examples of their own code (only the ids listed as available in your instructions). Give a short, concrete reason. They decide in the app (only this task, always, continue in their own Claude Code, or deny) and this same session continues with their decision. Don't try a blocked action first. After calling it, end your turn without further changes.",
@@ -649,7 +684,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
           : ciHost
             ? [...CI_TOOLS, "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
-            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch],
+            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...(projectChecks.length ? ["mcp__backcode__run_checks"] : []), ...webFetch],
         // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
         disallowedTools: ciHost ? [...(session.disallowedTools ?? []), "Bash", "NotebookEdit"] : session.disallowedTools,
         hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, taskProtected, guardExtras)] }] },

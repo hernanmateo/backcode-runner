@@ -14,6 +14,7 @@ import { detectDeploys, providerOfCommand, type DeployProvider } from "./deploy-
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { basename, dirname, join, normalize, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { type DeployEnvContext, type FirebaseDeployEnv, firebaseDeployEnv } from "./firebase-env.js";
 import type { PrHost } from "./hosts.js";
@@ -672,4 +673,31 @@ export async function commitPushAndOpenPr(opts: {
   if (!opts.host) return `${opts.remote}/${opts.branch}`;
   // En una conversación el PR ya existe: el push de arriba lo actualiza.
   return opts.host.openOrUpdatePr({ cwd: opts.worktree, branch: opts.branch, base: opts.baseBranch, title: opts.title, body: opts.body });
+}
+
+/**
+ * Un commit suelto con todo lo que hay ahora en el worktree (lo confirmado, lo modificado y lo nuevo que git no ignora),
+ * sin tocar su rama, su índice ni su HEAD: se hace con un índice temporal y `commit-tree`. Para pasar los checks del
+ * proyecto sobre el trabajo en curso de una tarea (run_checks) en una copia aparte, como antes de mergear. El commit no
+ * lo apunta ninguna rama: git lo recoge solo al cabo de un tiempo.
+ */
+export async function snapshotCommit(worktree: string): Promise<string> {
+  const index = join(tmpdir(), `backcode-snapshot-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: index,
+    GIT_AUTHOR_NAME: "Backcode",
+    GIT_AUTHOR_EMAIL: "runner@backcode.local",
+    GIT_COMMITTER_NAME: "Backcode",
+    GIT_COMMITTER_EMAIL: "runner@backcode.local",
+  };
+  const g = async (args: string[]) => (await run("git", [...NO_HOOKS, ...args], { cwd: worktree, env, maxBuffer: 50 * 1024 * 1024 })).stdout.trim();
+  try {
+    await g(["read-tree", "HEAD"]);
+    await g(["add", "-A"]);
+    const tree = await g(["write-tree"]);
+    return await g(["commit-tree", tree, "-p", "HEAD", "-m", "backcode: run_checks snapshot"]);
+  } finally {
+    await rm(index, { force: true }).catch(() => undefined);
+  }
 }

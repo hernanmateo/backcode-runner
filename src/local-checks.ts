@@ -534,3 +534,14 @@ export async function onlyNotStartedIn(read: (() => Promise<string[]>) | undefin
   const notStarted = new Set(await read().catch(() => [] as string[]));
   return failing.length > 0 && failing.every((n) => notStarted.has(n) || n.startsWith(LOCAL_CHECK_PREFIX));
 }
+
+/** Veces que Claude puede pedir los checks (run_checks) en cada vuelta de una tarea: cada pasada puede tardar minutos. */
+export const RUN_CHECKS_MAX = 3;
+
+/** Lo que recibe Claude de run_checks: qué pasa, qué falla y el final del log de lo que falla (ya limpio de secretos). */
+export function runChecksReport(names: readonly string[], run: LocalRun): string {
+  const failing = new Set(run.checks.pending.map((p) => p.replace(LOCAL_CHECK_PREFIX, "").replace(/:\s*\w+$/, "")));
+  const lines = names.map((n) => `- ${n}: ${failing.has(n) ? "FAIL" : "ok"}`);
+  const head = run.checks.state === "green" || run.checks.state === "none" ? "All checks pass." : "Some checks fail.";
+  return [head, ...lines, ...(run.log ? ["", run.log] : [])].join("\n");
+}

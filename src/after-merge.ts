@@ -56,11 +56,75 @@ export function normalizeAfterMerge(
   backcodeOta: boolean,
   prNames: readonly string[] = [],
   backcodeBuild = false,
+  checks: readonly CheckCommand[] = [],
 ): AfterMergeStep[] | undefined {
-  return steps?.map((s) => {
+  // Un check del proyecto no es un paso tras mergear: el runner lo pasa antes de mergear (red de seguridad del prompt).
+  return steps?.filter((s) => s.deployTarget || !s.command || !isCheckStep(s.command, checks)).map((s) => {
     const inBase =
       s.deployTarget === OTA_AFTER_MERGE_TARGET ? backcodeOta : s.deployTarget === BUILD_AFTER_MERGE_TARGET ? backcodeBuild : !!s.deployTarget && deployNames.includes(s.deployTarget);
     const inPr = !inBase && !!s.deployTarget && !RESERVED.has(s.deployTarget) && prNames.includes(s.deployTarget);
     return { why: s.why, ...(s.command ? { command: s.command } : {}), ...(inBase || inPr ? { deployTarget: s.deployTarget } : {}), ...(inPr ? { pendingMerge: true } : {}) };
+  });
+}
+
+/** Un `[check.<nombre>]` del backcode.toml de la rama base, tal como se le cuenta a Claude: carpeta y comando. */
+export interface CheckCommand {
+  name: string;
+  /** Carpeta relativa al repo ("" = raíz). */
+  dir: string;
+  run: string;
+}
+
+/** El comando de un check como texto (local-checks.ts guarda `sh -c "<run>"` o la lista sin shell). */
+export function checkRunText(cmd: readonly string[]): string {
+  return cmd[0] === "sh" && cmd[1] === "-c" && cmd.length === 3 ? cmd[2] : cmd.join(" ");
+}
+
+/**
+ * Lo que se añade a open_pull_request: los checks que el runner pasa antes de mergear y que, por tanto, nunca son un paso
+ * tras mergear (los que no se pudieron ejecutar en el sandbox se cuentan en el PR o se piden con run_checks).
+ */
+export function checksHint(checks: readonly CheckCommand[], runChecks: boolean): string {
+  if (!checks.length) return "";
+  const list = checks.map((c) => `${c.name} (${c.dir || "."}: ${c.run})`).join("; ");
+  const how = runChecks ? " If you couldn't run one of them in the sandbox, call run_checks before this tool and fix what fails; if you still couldn't verify something, say it" : " If you couldn't run one of them in the sandbox, say it";
+  return ` The runner runs this project's checks itself before merging: ${list}. Never list running tests or these checks as an afterMerge step.${how} in the body's "How it was tested" section.`;
+}
+
+const norm = (cmd: string) => cmd.trim().replace(/\s+/g, " ");
+const normDir = (dir: string) => dir.trim().replace(/^\.\//, "").replace(/\/+$/, "").replace(/^\.$/, "");
+/** Partes de un comando separadas por &&, ; o saltos de línea (sin entrar en comillas: ante la duda, no coincide). */
+const segments = (cmd: string) =>
+  cmd
+    .split(/&&|;|\n/)
+    .map((p) => norm(p).replace(/^\(+|\)+$/g, "").trim())
+    .filter(Boolean)
+    // `npm test` y `npm run test` son lo mismo (y con pnpm o yarn).
+    .map((p) => p.replace(/^(npm|pnpm|yarn) test\b/, "$1 run test"));
+/** Instalar dependencias antes del test: los checks ya lo hacen, no cambia lo que se comprueba. */
+const INSTALL = /^(npm (ci|install|i)|pnpm (install|i)|yarn( install)?|bun (install|i))( --?[\w-]+(=\S+)?)*$/;
+
+/**
+ * ¿Este paso tras mergear solo ejecuta checks del proyecto? Conservador: cada parte del comando (salvo instalar
+ * dependencias) tiene que ser una parte del comando de algún check de la misma carpeta (`cd <carpeta> && …` o la raíz).
+ * Así «cd tests && npm run test:rules» cae si [check.tests] (dir = "tests") ejecuta «npm run test:unit && npm run
+ * test:rules», pero «npm run test:e2e», que ningún check ejecuta, se queda como paso.
+ */
+export function isCheckStep(command: string, checks: readonly CheckCommand[]): boolean {
+  if (!checks.length) return false;
+  let rest = norm(command).replace(/^\((.*)\)$/, "$1").trim();
+  let dir = "";
+  const cd = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*(.+)$/.exec(rest);
+  if (cd) {
+    dir = normDir(cd[1].replace(/^["']|["']$/g, ""));
+    rest = cd[2];
+  }
+  if (/[|`$<>]/.test(rest) || /\bcd\b/.test(rest)) return false;
+  const parts = segments(rest).filter((p) => !INSTALL.test(p));
+  if (!parts.length) return false;
+  return checks.some((c) => {
+    if (normDir(c.dir) !== dir) return false;
+    const own = new Set(segments(c.run));
+    return parts.every((p) => own.has(p));
   });
 }
