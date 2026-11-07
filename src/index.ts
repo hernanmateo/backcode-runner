@@ -69,7 +69,7 @@ import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
-import { FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, mergeFollowUps, PLAN_LOCAL_DESCRIPTION, PLAN_LOCAL_INPUT, PLAN_LOCAL_MAX, planLocalFollowUps, planLocalMarkdown } from "./follow-ups.js";
+import { DECLARE_PENDING_PROMPT, FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, markAfterMergeFollowUps, mentionsPendingWork, mergeFollowUps, normalizeFollowUps, PLAN_LOCAL_DESCRIPTION, PLAN_LOCAL_INPUT, PLAN_LOCAL_MAX, planLocalFollowUps, planLocalMarkdown } from "./follow-ups.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { dropProgress, restoreProgress, saveProgress } from "./handoff.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
@@ -390,6 +390,17 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
   const webFetch = session.allowedTools;
+  const afterMergeInput = z
+    .array(
+      z.object({
+        why: z.string().min(3).max(300),
+        command: z.string().min(1).max(500).optional(),
+        deployTarget: z.string().regex(DEPLOY_TARGET_INPUT).optional(),
+      }),
+    )
+    .max(10)
+    .optional();
+  let pendingDeclared = false; // en esta vuelta declaró trabajo pendiente (afterMerge o followUps)
   const prServer = createSdkMcpServer({
     name: "backcode",
     version: "1.0.0",
@@ -421,16 +432,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         {
           title: z.string().min(5).max(120),
           body: z.string().min(20).max(20_000),
-          afterMerge: z
-            .array(
-              z.object({
-                why: z.string().min(3).max(300),
-                command: z.string().min(1).max(500).optional(),
-                deployTarget: z.string().regex(DEPLOY_TARGET_INPUT).optional(),
-              }),
-            )
-            .max(10)
-            .optional(),
+          afterMerge: afterMergeInput,
           followUps: z.array(FOLLOW_UP_INPUT).max(10).optional(),
         },
         async ({ title, body, afterMerge: steps, followUps: proposed }) => {
@@ -502,12 +504,41 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.
-          const next = ciHost ? undefined : mergeFollowUps(result.followUps, proposed);
+          // Las que solo repiten los pasos de afterMerge quedan marcadas (stage "afterMerge"): la app las integra allí.
+          const next = ciHost ? undefined : markAfterMergeFollowUps(mergeFollowUps(result.followUps, proposed), afterMerge);
           if (next) result = { ...result, followUps: next };
+          if (afterMerge?.length || proposed?.length) pendingDeclared = true;
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };
         },
       ),
+      // declare_pending_work: lo pendiente que Claude solo había escrito en el resumen, ya con el PR abierto (sin commit ni
+      // push). Lo pide el runner (DECLARE_PENDING_PROMPT) y se guarda con la misma normalización que open_pull_request.
+      ...(ciHost
+        ? []
+        : [
+            tool(
+              "declare_pending_work",
+              `Declare pending work of this task's existing pull request without committing or pushing anything: afterMerge (manual steps after merging: why and the exact command) and followUps. Use it only when the pull request is already open and you left pending work that is not declared yet. ${FOLLOW_UPS_DESCRIPTION}`,
+              { afterMerge: afterMergeInput, followUps: z.array(FOLLOW_UP_INPUT).max(10).optional() },
+              async ({ afterMerge: steps, followUps: proposed }) => {
+                const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+                if (planning) return fail(t("pending.planning"));
+                // Solo tras open_pull_request en esta vuelta (es cuando el runner guarda afterMerge con el resultado).
+                if (!prUrl) return fail(t("pending.noPr"));
+                if (!steps?.length && !proposed?.length) return fail(t("pending.empty"));
+                if (steps?.length) {
+                  const prNames = steps.some((s) => s.deployTarget) ? (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name) : [];
+                  const added = withoutInstallSteps(normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild, checkCommands)) ?? [];
+                  afterMerge = [...(afterMerge ?? []), ...added].slice(0, 10);
+                }
+                const next = markAfterMergeFollowUps(proposed?.length ? normalizeFollowUps([...(result.followUps ?? []), ...proposed]) : result.followUps, afterMerge);
+                if (next) result = { ...result, followUps: next };
+                pendingDeclared = true;
+                return { content: [{ type: "text" as const, text: t("pending.saved") }] };
+              },
+            ),
+          ]),
       // run_checks: los checks del proyecto sobre el trabajo en curso, fuera del sandbox (p. ej. tests que abren puertos o
       // levantan emuladores, que el sandbox no deja). No abre ninguna puerta nueva: es el mismo código (local-checks.ts),
       // con los comandos de la rama base, el mismo entorno sin secretos y una copia limpia, que el runner ya ejecuta sobre
@@ -714,7 +745,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           ? ["Read", "Glob", "Grep", "TodoWrite", "mcp__backcode__propose_plan", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
           : ciHost
             ? [...CI_TOOLS, "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...webFetch]
-            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...(projectChecks.length ? ["mcp__backcode__run_checks"] : []), ...webFetch],
+            : ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "TodoWrite", "mcp__backcode__open_pull_request", "mcp__backcode__declare_pending_work", "mcp__backcode__ask_user", "mcp__backcode__request_permission", ...(projectChecks.length ? ["mcp__backcode__run_checks"] : []), ...webFetch],
         // WebFetch solo con dominios concedidos, y solo a esos (allowedTools con su regla de dominio).
         disallowedTools: ciHost ? [...(session.disallowedTools ?? []), "Bash", "NotebookEdit"] : session.disallowedTools,
         hooks: { PreToolUse: [{ hooks: [createGuardHook(wt.path, taskProtected, guardExtras)] }] },
@@ -1037,6 +1068,16 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       if (!(await runRemote())) break;
       if (stopRequested) break;
       await runPhase(buildAfterRemotePrompt({ planning, hasPr: !!(prUrl ?? previousPr) }));
+    }
+    // Trabajo pendiente solo en prosa: abrió el PR en esta vuelta, el resumen habla de algo pendiente y no declaró nada
+    // (ni afterMerge ni followUps). Una fase más en la misma sesión para que lo declare (declare_pending_work) o diga que
+    // no hay nada. El resumen de la tarea sigue siendo el de su trabajo; la respuesta va a la actividad.
+    if (!ciHost && prUrl && !planning && !pendingDeclared && !question && !permissionAsked && !stopRequested && !remoteWanted && !released && !abort.signal.aborted && mentionsPendingWork(result.summary)) {
+      const summary = result.summary;
+      await store.event(id, "start", t("pending.asking"));
+      await runPhase(DECLARE_PENDING_PROMPT);
+      if (result.summary && result.summary !== summary) await store.event(id, "say", result.summary);
+      result = { ...result, summary, error: undefined };
     }
     // Code review automático (ajuste del proyecto): solo si esta vuelta abrió o actualizó el PR y terminó sin más pendiente.
     if (project.codeReview && prUrl && !planning && !stopRequested && !remoteWanted && !question && !permissionAsked && !released && !abort.signal.aborted) {

@@ -103,6 +103,8 @@ async function followUp(args: string[], json: boolean): Promise<void> {
   const parent = await getDoc(doc(db, "projects", pid, "features", fid));
   const proposed = parseFollowUp((parent.get("result") as { followUps?: unknown[] } | undefined)?.followUps?.[index]);
   if (!proposed) fail(t("task.noFollowUp", { n: String(index) }));
+  // Trabajo del mismo PR (antes o después de fusionar): no es una tarea nueva con su rama; se sigue desde la tarea.
+  if (proposed.stage) fail(t("task.followUpStaged", { n: String(index) }));
   const state = doc(db, "projects", pid, "features", fid, "followUps", String(index));
   const taken = await getDoc(state).catch(() => null);
   if (taken?.get("state") === "created") fail(t("task.followUpTaken", { id: String(taken.get("taskId")) }));

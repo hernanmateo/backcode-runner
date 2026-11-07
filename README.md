@@ -323,7 +323,13 @@ For the work itself, **`/backcode:feature`**, or by hand:
   the PR of `<task>` (`result.followUps[n]`) that needs something the runner never has (a key, an interactive login…).
   Like `task start` (worktree, branch and task In progress), links it in the original task's “Next tasks” and opens your
   Claude Code there (terminal, or the desktop app with `--desktop`) with the task, the origin and the rule to never paste
-  secret values into the chat. The app shows the exact command. Finish with `backcode task pr`.
+  secret values into the chat. The app shows the exact command. Finish with `backcode task pr`. It doesn't take work of
+  the same PR (`stage` "beforeMerge" or "afterMerge"): continue that one from the task in the app, on its branch.
+- Pending work is always structured: what's left after merging goes in `afterMerge`, what's still missing in this same PR
+  in `followUps` with `stage: "beforeMerge"`, and new work in `followUps` without `stage`. A next task that only repeats
+  the `afterMerge` commands is marked `stage: "afterMerge"` by the runner and the app folds it into “After merging”. If the
+  final summary mentions pending work and Claude declared none, the runner asks it in the same session to declare it with
+  the `declare_pending_work` tool (no commit or push) or to say there's nothing.
 - `backcode task import <PR url> [--deployed production]` (admins): history, an already merged GitHub PR as a Merged (and
   Deployed) task, once per PR.
 
