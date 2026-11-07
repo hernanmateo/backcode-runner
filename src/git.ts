@@ -322,11 +322,13 @@ export interface DeployTarget {
   source?: "script" | "config" | "detected";
   /** `description` de backcode.toml/json: frase corta que la app enseña bajo el nombre. */
   description?: string;
+  /** Script `backcode:deploy:*`: su texto en package.json (la app lo enseña al confirmar «Ejecutar»; pr-files.ts). */
+  script?: string;
 }
 
 export const DEPLOY_PREFIX = "backcode:deploy:";
 
-/** Lo que la app ve de cada destino (un botón por destino): sin comandos, solo de dónde sale y a qué apunta. */
+/** Lo que la app ve de cada destino (un botón por destino): de dónde sale y a qué apunta. El comando lo añade pr-files.ts. */
 export function deployCapabilities(targets: DeployTarget[]) {
   return targets.map(({ id, name, dir, env, provider, source, description }) => ({ id, name, dir, ...(env ? { env } : {}), ...(provider ? { provider } : {}), ...(description ? { description } : {}),...(source === "detected" ? { detected: true } : source === "config" ? { config: true } : {}) }));
 }
@@ -361,7 +363,7 @@ export async function findDeployTargets(repoPath: string, commit: string): Promi
       if (!DEPLOY_NAME_RE.test(name)) continue;
       const env = await firebaseDeployEnv(strScripts[key], ctx).catch(() => null);
       const provider = providerOfCommand(strScripts[key]);
-      out.push({ id: `${dir}#${name}`, name, dir, pm, source: "script", ...(env ? { env } : {}), ...(provider ? { provider } : {}) });
+      out.push({ id: `${dir}#${name}`, name, dir, pm, source: "script", script: strScripts[key], ...(env ? { env } : {}), ...(provider ? { provider } : {}) });
     }
   }
   // backcode.toml / backcode.json: sin Node. Un nombre que también esté en un package.json de la misma carpeta, gana este.

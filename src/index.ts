@@ -23,7 +23,7 @@ import { checkMachine, CLAUDE_SETTINGS, claudeExecutable, installedClaude } from
 import { reportUpdates, UPDATE_NOTICE_EVERY_MS } from "./update-notice.js";
 import { adoptTranscript, followTranscript, hasTranscript, isSessionGoneError, retentionDays, startRemoteControl, type RemoteSession } from "./remote.js";
 import { startWorktreeCleanup } from "./worktree-cleanup.js";
-import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, deployCapabilities, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, stageAll } from "./git.js";
+import { checkRepo, commitPushAndOpenPr, publicRepoUrl, describeWarning, fetchBranches, findConflicts, findDeployTargets, findExpoApp, mergeBaseIntoBranch, git, pushBranch, remoteHead, remoteSha, syncLocalBase, commitsAhead, createWorktree, scanStagedForSecrets, stageAll } from "./git.js";
 import { createGuardHook, protectedMatcher } from "./guard.js";
 import { asWorkflow, writeGuard } from "./workflow-guard.js";
 import { stopWaitingForChecks } from "./wait-checks.js";
@@ -49,6 +49,7 @@ import { appliesTo, checkPermissionRequest, isEmpty, loadPermissionContext, REQU
 import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
+import { capChangedFiles, changedDeployScriptFiles, deployCapabilitiesWithRun } from "./pr-files.js";
 import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge } from "./after-merge.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
@@ -442,11 +443,20 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           await store.event(id, "pr", prUrl);
           // Un punto de guardado de antes ya no hace falta: lo hecho está en la rama.
           void dropProgress({ worktree: wt.path, remote: cfg.remote, featureId: id });
-          // Tarea de CI: los ficheros que cambia el PR respecto a la base, para enseñarlos al confirmar su merge en la app.
+          // Los ficheros que cambia el PR respecto a la base. Tarea de CI: para enseñarlos al confirmar su merge en la app.
+          // Las demás (pr-files.ts): para avisar si el PR cambia lo que ejecuta el runner (backcode.toml, scripts
+          // backcode:deploy:* de package.json).
+          const baseRef = `${cfg.remote}/${taskBase(cfg.baseBranch)}`;
+          const changed = await git(wt.path, ["diff", "--name-only", `${baseRef}...HEAD`]).catch(() => "");
+          const list = changed.split("\n").filter(Boolean);
           if (ciHost) {
-            const changed = await git(wt.path, ["diff", "--name-only", `${cfg.remote}/${taskBase(cfg.baseBranch)}...HEAD`]).catch(() => "");
-            const list = changed.split("\n").filter(Boolean);
             result = { ...result, ciFiles: (list.length ? list : files).slice(0, 50) };
+          } else {
+            const all = list.length ? list : files;
+            const mergeBase = await git(wt.path, ["merge-base", baseRef, "HEAD"]).catch(() => baseRef);
+            const show = (rev: "base" | "head", path: string) => git(wt.path, ["show", `${rev === "base" ? mergeBase.trim() || baseRef : "HEAD"}:${path}`]).catch(() => null);
+            const scripts = await changedDeployScriptFiles(all, show).catch(() => []);
+            result = { ...result, changedFiles: capChangedFiles(all), deployScriptFiles: scripts.length ? scripts : undefined };
           }
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
@@ -517,7 +527,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     });
   }, FEATURE_LEASE_MS / 3);
 
-  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}), ...(feature.result?.followUps ? { followUps: feature.result.followUps } : {}) };
+  let result: FeatureResult = { branch: wt.branch, prUrl: previousPr, ...(feature.result?.ciFiles ? { ciFiles: feature.result.ciFiles } : {}), ...(feature.result?.changedFiles ? { changedFiles: feature.result.changedFiles } : {}), ...(feature.result?.deployScriptFiles ? { deployScriptFiles: feature.result.deployScriptFiles } : {}), ...(feature.result?.followUps ? { followUps: feature.result.followUps } : {}) };
   let sessionId = feature.sessionId;
   const model = modelFor(feature, cfg.model);
   // Límite del plan de Claude Code: el último rate_limit_event rechazado y, si la vuelta acaba en error por él, el motivo.
@@ -1300,7 +1310,7 @@ async function main(): Promise<void> {
   const head = await remoteHead(cfg.repoPath, cfg.remote, cfg.baseBranch);
   const expoApp = await findExpoApp(cfg.repoPath, head).catch(() => null);
   // Despliegues que el repo declara (scripts backcode:deploy:*): web, api, scripts… cada uno con su botón en la app.
-  const deploys = deployCapabilities(await findDeployTargets(cfg.repoPath, head).catch(() => []));
+  const deploys = deployCapabilitiesWithRun(await findDeployTargets(cfg.repoPath, head).catch(() => []));
   store.capabilities = {
     pr: prHost?.kind ?? null,
     expo: !!expoApp,
@@ -1363,7 +1373,7 @@ async function main(): Promise<void> {
       }
       const [found, app] = await Promise.all([findDeployTargets(cfg.repoPath, base).catch(() => null), findExpoApp(cfg.repoPath, base).catch(() => null)]);
       // Un destino añadido (o quitado) en la rama principal sale en la app sin reiniciar el runner.
-      if (found) await store.saveDeploys(deployCapabilities(found));
+      if (found) await store.saveDeploys(deployCapabilitiesWithRun(found));
       const targets = found ?? [];
       if (!targets.length && !app?.ota && !app?.buildProfiles.includes("production")) return;
       // Lo que Claude Code desplegó (el hook del plugin lo deja en ~/.backcode/deploylog): ya en la rama principal, se apunta.

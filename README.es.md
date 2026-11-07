@@ -763,6 +763,9 @@ Si un nombre está también en un `package.json` de la misma carpeta, gana `back
 Un comando que solo se lanza a demanda (refrescar datos, un job contra un servidor…) va con `paths = []`. Si una tarea lo
 añade en su propio PR y lo cita en «Después de mergear», el paso espera al merge («Disponible al fusionar») y el botón sale
 en cuanto el runner lo lee en la rama principal (≥ 1.5.40).
+Desde 1.5.41 el runner publica el comando de cada despliegue (el `run =`, el script o el comando detectado; nunca si
+parece un secreto), que la app enseña al confirmar «Ejecutar», y guarda en cada tarea los ficheros que cambia su PR: si
+toca `backcode.toml` o los scripts `backcode:deploy:*`, la app avisa antes de mergear.
 Si el fichero tiene algún error, el registro del runner dice qué línea o qué despliegue falla.
 
 **Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:

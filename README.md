@@ -516,6 +516,10 @@ step's <code>deployTarget</code> at it. The runner keeps it with <code>pendingMe
 «Available once merged» and isn't a manual step; once merged, as soon as the runner reads the main branch (every 3 minutes
 and after each action) the app shows the button to run it. If no runner offers it 15 minutes after the merge (for example,
 it was dropped from the PR), it's a manual step again.
+<br><br>
+Since 1.5.41 the runner also publishes each deploy's command (the <code>run =</code>, the script or the detected command;
+never if it looks like a secret), which the app shows when you confirm «Run», and stores the files each task's PR changes:
+if it touches <code>backcode.toml</code> or <code>backcode:deploy:*</code> scripts, the app warns before merging.
 </details>
 
 <details>
