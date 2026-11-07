@@ -496,6 +496,15 @@ to **Retry**, **Open log**, **Open Login Items** and **Start without service**. 
 ## FAQ
 
 <details>
+<summary><strong>Why doesn't Claude list "publish the OTA" as an after-merge step?</strong></summary>
+<br>
+Since 1.5.39, if the repo publishes OTA updates from Backcode (EAS Update or its own <code>ota:publish</code>), the runner
+tells Claude not to add the OTA or the native builds as <code>afterMerge</code> steps: the app already has «Publish OTA» and
+«Build». If it does mention it, it uses the reserved <code>deployTarget: "backcode:ota"</code>, which the app shows with a
+«Publish OTA» button instead of a manual step. Repos without OTA in Backcode keep it as a normal manual step.
+</details>
+
+<details>
 <summary><strong>Does it cost extra?</strong></summary>
 <br>
 No. The runner uses your own Claude Code, so with a Pro or Max plan tasks come out of your plan's usage. With an API key, you

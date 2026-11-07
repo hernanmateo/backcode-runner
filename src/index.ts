@@ -49,6 +49,7 @@ import { appliesTo, checkPermissionRequest, isEmpty, loadPermissionContext, REQU
 import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
+import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge } from "./after-merge.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
@@ -365,6 +366,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let afterMerge: FeatureResult["afterMerge"]; // pasos tras mergear que declara Claude al abrir el PR
   // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
   const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
+  // El repo publica OTA desde Backcode (EAS Update o su ota:publish): la OTA (y las builds nativas) no son pasos manuales;
+  // si Claude la quiere mencionar, usa el destino reservado (after-merge.ts; la app ofrece «Publicar OTA»).
+  const backcodeOta = !!(await findExpoApp(wt.path, "HEAD").catch(() => null))?.ota;
   let question: string | undefined; // pregunta de Claude (ask_user)
   let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
@@ -389,7 +393,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ),
       tool(
         "open_pull_request",
-        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${deployNames.length ? ` This repo can run these deploy targets from the app (set deployTarget to the matching one instead of, or as well as, the command): ${deployNames.join(", ")}.` : ""}`,
+        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${afterMergeHint(deployNames, backcodeOta)}`,
         {
           title: z.string().min(5).max(120),
           body: z.string().min(20).max(20_000),
@@ -398,7 +402,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
               z.object({
                 why: z.string().min(3).max(300),
                 command: z.string().min(1).max(500).optional(),
-                deployTarget: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/).optional(),
+                deployTarget: z.string().regex(DEPLOY_TARGET_INPUT).optional(),
               }),
             )
             .max(10)
@@ -439,7 +443,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
-          afterMerge = ciHost ? undefined : steps?.map((s) => ({ why: s.why, ...(s.command ? { command: s.command } : {}), ...(s.deployTarget && deployNames.includes(s.deployTarget) ? { deployTarget: s.deployTarget } : {}) }));
+          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta);
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           const next = ciHost ? undefined : normalizeFollowUps(proposed);
