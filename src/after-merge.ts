@@ -45,6 +45,22 @@ export interface AfterMergeStep {
 const RESERVED = new Set([OTA_AFTER_MERGE_TARGET, BUILD_AFTER_MERGE_TARGET]);
 
 /**
+ * ¿Es el paso solo instalar dependencias (`cd functions && bun install`, `npm ci`, `yarn`)? No es un paso tras mergear:
+ * el lockfile va en el PR (Claude instala dentro del sandbox, dep-cache.ts) y cada uno instala al trabajar. Conservador:
+ * con nombres de paquete, otros comandos, tuberías o variables, no lo es.
+ */
+export function isInstallStep(s: Pick<AfterMergeStep, "command" | "deployTarget">): boolean {
+  if (s.deployTarget || !s.command) return false;
+  return /^\s*(cd\s+[\w./@-]+\s*&&\s*)?(bun\s+(install|i)|npm\s+(install|i|ci)|pnpm\s+(install|i)|yarn(\s+install)?)(\s+--?[a-z][\w-]*)*\s*$/.test(s.command);
+}
+
+/** Los pasos sin los de solo instalar dependencias (undefined si no queda ninguno). */
+export function withoutInstallSteps<T extends Pick<AfterMergeStep, "command" | "deployTarget">>(steps: T[] | undefined): T[] | undefined {
+  const kept = steps?.filter((s) => !isInstallStep(s));
+  return kept?.length ? kept : undefined;
+}
+
+/**
  * Pasos que se guardan: solo destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca), el
  * de la OTA solo si el repo la publica desde Backcode y el de la build solo si hace builds desde Backcode. `prNames`: los
  * que declara la rama del PR; los que no están en la principal (`deployNames`) se guardan con `pendingMerge` y el botón

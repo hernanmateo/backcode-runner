@@ -50,7 +50,9 @@ import { fixChecks } from "./fix-checks.js";
 import { majorOf, reviewComment, reviewFixPrompt, runReview, type ReviewLevel, type ReviewSpend, type ReviewState } from "./code-review.js";
 import { computePlan } from "./pending.js";
 import { capChangedFiles, changedDeployScriptFiles, deployCapabilitiesWithRun } from "./pr-files.js";
-import { afterMergeHint, checkRunText, checksHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, type CheckCommand } from "./after-merge.js";
+import { afterMergeHint, checkRunText, checksHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, withoutInstallSteps, type CheckCommand } from "./after-merge.js";
+import { depCache } from "./dep-cache.js";
+import { missingLockfiles } from "./lockfile-check.js";
 import { flushDeployQueue, hasQueuedDeploys } from "./deploy-log.js";
 import { gcloudToken, rulesPublished } from "./rules-check.js";
 import { readQuota } from "./quota.js";
@@ -365,6 +367,9 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   const previousPr = feature.result?.prUrl;
   let prUrl: string | undefined; // PR abierto o actualizado en esta vuelta
   let afterMerge: FeatureResult["afterMerge"]; // pasos tras mergear que declara Claude al abrir el PR
+  // Lockfile sin regenerar (lockfile-check.ts): la primera vez se le pide a Claude que lo haga; la segunda se abre el PR
+  // igualmente, con el aviso en el body.
+  let lockfileWarned = false;
   // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
   const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
   // El repo publica OTA desde Backcode (EAS Update o su ota:publish) o hace builds nativas desde Backcode (perfil
@@ -438,8 +443,27 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           if (blocked.length) return fail(t("pr.protected", { files: blocked.join(", ") }));
           const secrets = await scanStagedForSecrets(wt.path);
           if (secrets.length) return fail(t("pr.secrets", { list: secrets.join("; ") }));
+          // Dependencias nuevas sin su lockfile: la CI (frozen-lockfile / npm ci) fallaría al mergear. Se compara el índice
+          // (todo lo de la tarea, ya en stage) con la base. Tarea de CI: no toca dependencias.
+          let lockNote = "";
+          if (!ciHost) {
+            const lockBase = `${cfg.remote}/${taskBase(cfg.baseBranch)}`;
+            const mb = (await git(wt.path, ["merge-base", lockBase, "HEAD"]).catch(() => lockBase)).trim() || lockBase;
+            const staged = (await git(wt.path, ["diff", "--cached", "--name-only", mb]).catch(() => "")).split("\n").filter(Boolean);
+            const tree = (await git(wt.path, ["ls-files"]).catch(() => "")).split("\n").filter(Boolean);
+            const showLock = (rev: "base" | "head", path: string) => git(wt.path, ["show", rev === "base" ? `${mb}:${path}` : `:${path}`]).catch(() => null);
+            const missing = await missingLockfiles(staged, tree, showLock).catch(() => []);
+            if (missing.length) {
+              const list = missing.map((m) => `${m.pkg} → ${m.lock}`).join(", ");
+              if (!lockfileWarned) {
+                lockfileWarned = true;
+                return fail(t("pr.lockfile", { list }));
+              }
+              lockNote = `\n\n${t("pr.lockfileNote", { list })}`;
+            }
+          }
 
-          const footer = `\n\n---\n${t("pr.footer", { id, n: files.length, branch: wt.branch })}\n\n${t("pr.generated")}`;
+          const footer = `${lockNote}\n\n---\n${t("pr.footer", { id, n: files.length, branch: wt.branch })}\n\n${t("pr.generated")}`;
           try {
             prUrl = await commitPushAndOpenPr({ worktree: wt.path, remote: cfg.remote, baseBranch: taskBase(cfg.baseBranch), branch: wt.branch, title, body: body + footer, featureId: id, host: prHost });
             // Si la rama tenía conflictos con la base, ya están resueltos y subidos: se quita la marca (y el botón de
@@ -472,7 +496,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           // Los destinos que añade este mismo PR (backcode.toml o package.json de la rama) también valen: quedan pendientes
           // del merge y la app ofrece el botón cuando el runner los ve en la rama principal (refreshPlan › saveDeploys).
           const prNames = ciHost || !steps?.some((s) => s.deployTarget) ? [] : (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name);
-          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild, checkCommands);
+          afterMerge = ciHost ? undefined : withoutInstallSteps(normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild, checkCommands));
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.
@@ -661,6 +685,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     inputOpen = true;
     flushLive();
     let quiet: ReturnType<typeof setTimeout> | undefined;
+    const cache = depCache(cfg.projectId);
     const messages = query({
       prompt: input(prompt),
       options: {
@@ -669,7 +694,8 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
         cwd: wt.path,
         model,
         abortController: abort,
-        env: agentEnv(),
+        // Con la caché de paquetes del proyecto (dep-cache.ts): Claude instala las dependencias nuevas dentro del sandbox.
+        env: { ...agentEnv(), ...cache.env },
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
@@ -694,7 +720,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           autoAllowBashIfSandboxed: true,
           allowUnsandboxedCommands: false,
           network: { allowedDomains: session.allowedDomains, strictAllowlist: true },
-          filesystem: { denyRead: DENY_READ, allowWrite: [wt.path] },
+          filesystem: { denyRead: DENY_READ, allowWrite: [wt.path, cache.dir] },
         },
         mcpServers: { backcode: prServer },
         maxTurns: cfg.maxTurns,

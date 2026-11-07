@@ -9,6 +9,7 @@ import { createDetachedWorktree, git, gitPush, holdWorktree, mergeBaseIntoBranch
 import { createGuardHook } from "./guard.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
 import { chatAppliesTo, checkPermissionRequest, loadPermissionContext, NONE, REQUEST_PERMISSION_INPUT, sessionPermissions, type PermissionContext } from "./permissions.js";
+import { depCache } from "./dep-cache.js";
 import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import { buildChatPrompt, buildChatSystemAppend, type ChatVideo, type PromptImage, type PromptMessage } from "./prompt.js";
 import type { Attachment, ChatUserMessage, RunnerChat, Store, ThreadMessage } from "./store.js";
@@ -464,6 +465,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
       if (round > 0) permCtx = await loadPerms();
       permissionAsked = false;
       const session = sessionPermissions(permCtx, cfg.allowedDomains);
+      const cache = depCache(cfg.projectId);
       // Las imágenes de cada mensaje se descargan en su subcarpeta de .backcode-attachments (excluida de git y protegida).
       const prompt = buildChatPrompt(
         await Promise.all(
@@ -478,7 +480,7 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
           cwd: path,
           model: cfg.model,
           abortController: abort,
-          env: deps.env,
+          env: { ...deps.env, ...cache.env },
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
@@ -497,7 +499,8 @@ export async function runChat(cfg: RunnerConfig, store: Store, id: string, chat:
             autoAllowBashIfSandboxed: true,
             allowUnsandboxedCommands: false,
             network: { allowedDomains: session.allowedDomains, strictAllowlist: true },
-            filesystem: { denyRead: deps.denyRead, allowWrite: [path] },
+            // Y la caché de paquetes del proyecto, para instalar dependencias nuevas dentro del sandbox (dep-cache.ts).
+            filesystem: { denyRead: deps.denyRead, allowWrite: [path, cache.dir] },
           },
           mcpServers: { backcode: server },
           maxTurns: cfg.maxTurns,
