@@ -1,4 +1,5 @@
 import { explainRemoteError } from "./remote-retry.js";
+import { retryWrite } from "./write-retry.js";
 import { remoteTexts } from "./i18n.js";
 import { findMergedOutside, MERGED_POLL_MS } from "./merged-watch.js";
 import { homedir } from "node:os";
@@ -860,10 +861,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     const onAbort = () => session.stop();
     abort.signal.addEventListener("abort", onAbort);
     // Sin enlace (viva y trabajando, pero Claude Code no lo dio a tiempo): abierta igual; si llega luego, se añade.
-    await store.setRemote(id, { state: "open", ...(session.url ? { url: session.url } : {}) });
+    // La app espera este «open» para dejar de cargar: se reintenta y, si aun así falla, no tumba la fase (la sesión
+    // sigue viva y la persona la ve en la app de Claude); queda en el log.
+    await retryWrite(() => store.setRemote(id, { state: "open", ...(session.url ? { url: session.url } : {}) })).catch((err: Error) => console.warn(`[remote] ${err.message.slice(0, 300)}`));
     if (!session.url)
       session.onUrl?.((url) => {
-        if (remoteSession === session && !released) void store.setRemote(id, { state: "open", url }).catch(() => undefined);
+        if (remoteSession === session && !released) void retryWrite(() => store.setRemote(id, { state: "open", url })).catch(() => undefined);
       });
     await store.event(id, "start", t("remote.open"));
     // Lo que hace Claude allí también se ve en la actividad de la tarea.

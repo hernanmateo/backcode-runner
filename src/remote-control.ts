@@ -12,6 +12,7 @@ import { installedClaude } from "./preflight.js";
 import { invalidateServices, currentServices, isUpdatableService, type UpdatableService } from "./services.js";
 import { connect } from "./store.js";
 import type { Supervisor } from "./supervisor.js";
+import { retryWrite } from "./write-retry.js";
 
 // Control remoto del runner desde la app: peticiones `users/{uid}/machines/{machineId}/requests/{id}` con `type` (parar,
 // arrancar o reiniciar un proyecto, reiniciar todo, actualizar ya, pausar/reanudar y apagar del todo). Las atiende el
@@ -104,7 +105,8 @@ export interface ControlHooks {
 
 export interface ControlOutcome {
   status: "done" | "failed";
-  result: { error?: string; updated?: boolean; pluginError?: string; url?: string; reused?: boolean; code?: SessionErrorCode };
+  /** `linkless`: sesión directa abierta y viva, pero sin enlace (la app ofrece la lista de sesiones de la app de Claude). */
+  result: { error?: string; updated?: boolean; pluginError?: string; url?: string; linkless?: boolean; reused?: boolean; code?: SessionErrorCode };
   /** Lo que corta este proceso (reiniciar, apagar) va después de dejar el resultado en la petición. */
   after?: () => void | Promise<void>;
 }
@@ -282,8 +284,9 @@ export function startRemoteControl(supervisor: Supervisor, hooks: ControlHooks, 
     let busy = false;
     let pending: string[] = [];
 
+    // La app espera este resultado para dejar de cargar: un fallo suelto se reintenta (antes solo quedaba en el log).
     const finish = (id: string, outcome: Pick<ControlOutcome, "status" | "result">) =>
-      updateDoc(doc(requests, id), { status: outcome.status, result: outcome.result, updatedAt: serverTimestamp() }).catch((err) => log((err as Error).message));
+      retryWrite(() => updateDoc(doc(requests, id), { status: outcome.status, result: outcome.result, updatedAt: serverTimestamp() })).catch((err) => log((err as Error).message));
 
     const drain = async () => {
       if (busy) return;
