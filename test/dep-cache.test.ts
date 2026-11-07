@@ -77,3 +77,78 @@ test("withoutInstallSteps: quita los de instalar y deja el resto", () => {
   assert.equal(withoutInstallSteps([steps[0]]), undefined);
   assert.equal(withoutInstallSteps(undefined), undefined);
 });
+
+// --- Limpieza de la caché (cleanDepCache) ---
+
+import { mkdirSync, mkdtempSync, existsSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanDepCache, DEP_CACHE_ACTIVE_MS, DEP_CACHE_IDLE_MS, dirBytes, LAST_USED } from "../src/dep-cache.js";
+
+const NOW = Date.UTC(2026, 10, 7, 12);
+
+/** Una caché de proyecto con `bytes` de contenido, usada por última vez hace `ago` ms. */
+function cache(root: string, id: string, ago: number, bytes = 10): string {
+  const dir = join(root, id);
+  mkdirSync(join(dir, "bun"), { recursive: true });
+  writeFileSync(join(dir, "bun", "pkg.tgz"), Buffer.alloc(bytes));
+  const marker = join(dir, LAST_USED);
+  writeFileSync(marker, "x");
+  const t = (NOW - ago) / 1000;
+  utimesSync(marker, t, t);
+  return dir;
+}
+
+test("cleanDepCache: vacía la de un proyecto desconectado, la caducada y la que pasa del tope; deja las demás", () => {
+  const root = mkdtempSync(join(tmpdir(), "depcache-"));
+  const gone = cache(root, "gone", DEP_CACHE_ACTIVE_MS * 2);
+  const old = cache(root, "old", DEP_CACHE_IDLE_MS + 1000);
+  const big = cache(root, "big", DEP_CACHE_ACTIVE_MS * 2, 5000);
+  const ok = cache(root, "ok", DEP_CACHE_ACTIVE_MS * 2);
+  const r = cleanDepCache({ root, connected: new Set(["old", "big", "ok"]), maxBytes: 1000, now: NOW });
+  assert.deepEqual(
+    r.removed.map((x) => [x.id, x.reason]).sort(),
+    [["big", "tooBig"], ["gone", "disconnected"], ["old", "idle"]],
+  );
+  assert.ok(r.freedBytes >= 5000);
+  assert.ok(!existsSync(gone) && !existsSync(old) && !existsSync(big));
+  assert.ok(existsSync(ok));
+});
+
+test("cleanDepCache: nunca toca una caché en uso (este runner ocupado o usada hace menos de 2 h)", () => {
+  const root = mkdtempSync(join(tmpdir(), "depcache-"));
+  const busy = cache(root, "busy", DEP_CACHE_IDLE_MS + 1000, 5000); // caducada y enorme, pero con una tarea en marcha
+  const recent = cache(root, "recent", 60_000); // desconectada, pero usada hace un minuto (quizá por otro runner)
+  const r = cleanDepCache({ root, connected: new Set(["busy"]), busy: new Set(["busy"]), maxBytes: 1000, now: NOW });
+  assert.deepEqual(r.removed, []);
+  assert.ok(existsSync(busy) && existsSync(recent));
+});
+
+test("cleanDepCache: no sigue enlaces simbólicos ni toca nombres que no son ids", () => {
+  const root = mkdtempSync(join(tmpdir(), "depcache-"));
+  const outside = mkdtempSync(join(tmpdir(), "outside-"));
+  writeFileSync(join(outside, "keep.txt"), "importante");
+  // Un enlace en la raíz con nombre de proyecto desconectado: no es una carpeta nuestra, no se sigue.
+  symlinkSync(outside, join(root, "linked"));
+  // Dentro de una caché que sí se vacía, un enlace hacia fuera: se borra el enlace, nunca su destino.
+  const gone = cache(root, "gone", DEP_CACHE_ACTIVE_MS * 2);
+  symlinkSync(outside, join(gone, "escape"));
+  mkdirSync(join(root, "not an id"), { recursive: true });
+  const r = cleanDepCache({ root, connected: new Set(), maxBytes: 1, now: NOW });
+  assert.deepEqual(r.removed.map((x) => x.id), ["gone"]);
+  assert.ok(existsSync(join(outside, "keep.txt")));
+  assert.ok(existsSync(join(root, "linked")) && existsSync(join(root, "not an id")));
+});
+
+test("dirBytes: suma ficheros sin seguir enlaces", () => {
+  const root = mkdtempSync(join(tmpdir(), "depcache-"));
+  const outside = mkdtempSync(join(tmpdir(), "outside-"));
+  writeFileSync(join(outside, "big"), Buffer.alloc(100_000));
+  writeFileSync(join(root, "a"), Buffer.alloc(300));
+  symlinkSync(outside, join(root, "link"));
+  assert.equal(dirBytes(root), 300);
+});
+
+test("cleanDepCache: sin raíz no hace nada", () => {
+  assert.deepEqual(cleanDepCache({ root: join(tmpdir(), "no-existe-" + process.pid), connected: new Set(), maxBytes: 1, now: NOW }), { removed: [], freedBytes: 0 });
+});
