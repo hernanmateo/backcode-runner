@@ -134,7 +134,9 @@ For every task you accept, the runner:
    It installs the dependencies there first (outside the sandbox, with the repo's lockfile and package manager: `bun install --frozen-lockfile`, `npm ci`…, only where `node_modules` is git-ignored and the dependency files are still the base branch's), so Claude can run tests, type checks and lint right away.
 3. **Runs Claude Code** with the brief and its attachments, sandboxed to that worktree. If something essential is unclear, Claude
    **asks in the task thread** and the same session continues with your answer. With **plan mode**, it first proposes a plan
-   (read-only) that you refine and approve. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
+   (read-only) that you refine and approve; parts that can only run outside the sandbox (SSH keys, creating servers, credentials,
+   a login…) are marked in the plan as “In your Claude Code” and become required next tasks you continue on your computer
+   with `backcode task follow-up`. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 

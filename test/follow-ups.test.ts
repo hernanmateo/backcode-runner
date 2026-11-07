@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FOLLOW_UP_INPUT, FOLLOW_UPS_MAX, followUpPrompt, normalizeFollowUps, parseFollowUp, type FollowUpInput } from "../src/follow-ups.js";
+import { FOLLOW_UP_INPUT, FOLLOW_UPS_MAX, followUpPrompt, mergeFollowUps, normalizeFollowUps, parseFollowUp, PLAN_LOCAL_INPUT, PLAN_LOCAL_MAX, planLocalFollowUps, planLocalMarkdown, type FollowUpInput, type PlanLocalInput } from "../src/follow-ups.js";
 
 const f = (title: string, kind: FollowUpInput["kind"], extra: Partial<FollowUpInput> = {}): FollowUpInput => ({
   title,
@@ -65,4 +65,56 @@ test("followUpPrompt: de dónde sale, qué le falta, la rama y las reglas de los
   assert.match(p, /never print, log or commit their values/);
   assert.match(p, /backcode task pr/);
   assert.match(p, /<follow_up>\nCobrar con Stripe\n\nHaz Cobrar con Stripe/);
+});
+
+// --- Partes del plan para tu Claude Code (propose_plan › runsLocally) ---
+
+const local = (title: string, extra: Partial<PlanLocalInput> = {}): PlanLocalInput => ({
+  title,
+  prompt: `Ejecuta ${title} desde tu ordenador con tus claves.`,
+  why: "Necesita SSH y crear un servidor",
+  blocker: "external",
+  needs: "clave SSH y token de Hetzner",
+  ...extra,
+});
+
+test("planLocalFollowUps: siguientes tareas necesarias, del plan, con su bloqueo y como mucho el máximo", () => {
+  assert.equal(planLocalFollowUps(undefined), undefined);
+  assert.equal(planLocalFollowUps([]), undefined);
+  const out = planLocalFollowUps(Array.from({ length: 5 }, (_, i) => local(`Lanzar la extracción ${i}`)))!;
+  assert.equal(out.length, PLAN_LOCAL_MAX);
+  for (const x of out) assert.deepEqual({ kind: x.kind, blocker: x.blocker, fromPlan: x.fromPlan }, { kind: "required", blocker: "external", fromPlan: true });
+  assert.equal(out[0].needs, "clave SSH y token de Hetzner");
+});
+
+test("PLAN_LOCAL_INPUT: solo secret o external, y needs obligatorio", () => {
+  assert.equal(PLAN_LOCAL_INPUT.safeParse(local("Subir los datos a R2")).success, true);
+  assert.equal(PLAN_LOCAL_INPUT.safeParse(local("Subir los datos a R2", { blocker: "permission" as never })).success, false);
+  const { needs: _n, ...noNeeds } = local("Subir los datos a R2");
+  assert.equal(PLAN_LOCAL_INPUT.safeParse(noNeeds).success, false);
+});
+
+test("mergeFollowUps: las del plan se quedan las primeras y las nuevas sustituyen a las otras de antes", () => {
+  const planned = planLocalFollowUps([local("Lanzar la extracción")])!;
+  const before = [...planned, ...normalizeFollowUps([f("Vieja mejora", "refine")])!];
+  // Sin propuesta nueva: se queda todo lo de antes.
+  assert.deepEqual(mergeFollowUps(before, undefined), before);
+  assert.equal(mergeFollowUps(undefined, []), undefined);
+  // Con propuesta: las del plan primero (su índice no cambia) y luego las nuevas; la vieja mejora se va.
+  const out = mergeFollowUps(before, [f("Mostrar en la app", "required"), f("Lanzar la extracción", "refine")])!;
+  assert.deepEqual(out.map((x) => x.title), ["Lanzar la extracción", "Mostrar en la app"]);
+  assert.equal(out[0].fromPlan, true);
+  assert.equal("fromPlan" in out[1], false);
+});
+
+test("normalizeFollowUps: fromPlan solo si viene a true (lo que propone Claude al abrir el PR no lo trae)", () => {
+  const [x] = normalizeFollowUps([{ ...f("Mostrar en la app", "required"), fromPlan: "sí" } as unknown as FollowUpInput])!;
+  assert.equal("fromPlan" in x, false);
+});
+
+test("planLocalMarkdown: sección para la tarjeta del plan, vacía si no hay nada", () => {
+  const label = { heading: "En tu Claude Code", intro: "Esto lo ejecutas tú.", needs: "falta:" };
+  assert.equal(planLocalMarkdown(undefined, label), "");
+  const md = planLocalMarkdown(planLocalFollowUps([local("Lanzar la extracción")]), label);
+  assert.match(md, /^\n\n## En tu Claude Code\n\nEsto lo ejecutas tú\.\n\n- \*\*Lanzar la extracción\*\*: Necesita SSH y crear un servidor \(falta: clave SSH y token de Hetzner\)$/);
 });
