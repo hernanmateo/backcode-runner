@@ -64,7 +64,7 @@ import { panelCall } from "./panel-client.js";
 import { parseScaffold, runScaffold } from "./scaffold.js";
 import { KeepAwake } from "./awake.js";
 import { buildCiPrompt, ciFileFor, ciGuard, ciSystemAppend, CI_TOOLS, isCiTask } from "./ci-task.js";
-import { FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, normalizeFollowUps } from "./follow-ups.js";
+import { FOLLOW_UP_INPUT, FOLLOW_UPS_DESCRIPTION, mergeFollowUps, PLAN_LOCAL_DESCRIPTION, PLAN_LOCAL_INPUT, PLAN_LOCAL_MAX, planLocalFollowUps, planLocalMarkdown } from "./follow-ups.js";
 import { buildAfterRemotePrompt, buildApprovedPlanPrompt, buildFollowUpPrompt, buildHandoffPrompt, buildLiveContent, buildPlanFollowUpPrompt, buildPlanPrompt, buildSystemAppend, buildUserPrompt } from "./prompt.js";
 import { dropProgress, restoreProgress, saveProgress } from "./handoff.js";
 import { buildReport, notOurs, report, type DeploySource, type SanitizeContext } from "./diagnostics.js";
@@ -379,14 +379,21 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
     tools: [
       tool(
         "propose_plan",
-        "Plan mode only: send your implementation plan (Markdown) to the people steering this task (the person who accepted it, whoever manages it or a project admin). They review it in the app, ask for changes or approve it; once approved, this same session continues and implements it. Call it once per turn with the complete plan, then end your turn.",
-        { plan: z.string().min(50).max(20_000) },
-        async ({ plan }) => {
+        `Plan mode only: send your implementation plan (Markdown) to the people steering this task (the person who accepted it, whoever manages it or a project admin). They review it in the app, ask for changes or approve it; once approved, this same session continues and implements it. Call it once per turn with the complete plan, then end your turn.${ciHost ? "" : ` ${PLAN_LOCAL_DESCRIPTION}`}`,
+        { plan: z.string().min(50).max(20_000), runsLocally: z.array(PLAN_LOCAL_INPUT).max(PLAN_LOCAL_MAX).optional() },
+        async ({ plan, runsLocally }) => {
           const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
           if (!planning) return fail(t("plan.notPlanning"));
           if (planned) return fail(t("plan.already"));
           planned = true;
-          await store.postMessage(id, "plan", plan);
+          // Lo que va a tu Claude Code: siguientes tareas necesarias desde ya (la app las ofrece al quedar el PR listo).
+          // Cada plan nuevo sustituye las del anterior; las que no son del plan no se tocan. Tarea de CI: ninguna.
+          const local = ciHost ? undefined : planLocalFollowUps(runsLocally);
+          const others = (result.followUps ?? []).filter((f) => !f.fromPlan);
+          const { followUps: _previous, ...rest } = result;
+          const followUps = [...(local ?? []), ...others];
+          result = followUps.length ? { ...rest, followUps } : rest;
+          await store.postMessage(id, "plan", plan + planLocalMarkdown(local, { heading: t("plan.localHeading"), intro: t("plan.localIntro"), needs: t("plan.localNeeds") }));
           await store.event(id, "plan", plan.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 300) ?? "");
           return { content: [{ type: "text" as const, text: t("plan.sent") }] };
         },
@@ -443,10 +450,14 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
-          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta);
+          // Los destinos que añade este mismo PR (backcode.toml o package.json de la rama) también valen: quedan pendientes
+          // del merge y la app ofrece el botón cuando el runner los ve en la rama principal (refreshPlan › saveDeploys).
+          const prNames = ciHost || !steps?.some((s) => s.deployTarget) ? [] : (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name);
+          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames);
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
-          const next = ciHost ? undefined : normalizeFollowUps(proposed);
+          // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.
+          const next = ciHost ? undefined : mergeFollowUps(result.followUps, proposed);
           if (next) result = { ...result, followUps: next };
           const what = t(cfg.pullRequest === "push-only" ? "pr.pushOnly" : "pr.draft");
           return { content: [{ type: "text" as const, text: `${what}: ${prUrl}` }] };

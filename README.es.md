@@ -401,7 +401,11 @@ cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En 
    (`ask_user`) si algo esencial es ambiguo y llamar a `open_pull_request` al terminar.
    En **modo plan** (`planFirst`), hasta que se aprueba el plan Claude solo puede leer (Read, Glob, Grep: sin editar ni ejecutar
    comandos) y entrega el plan con `propose_plan`; la tarea pasa a `waiting` con `result.planReady`. Cada comentario en el hilo
-   le hace rehacerlo; al aprobarlo (`planApproved`), la misma sesión lo implementa con las herramientas de siempre.
+   le hace rehacerlo; al aprobarlo (`planApproved`), la misma sesión lo implementa con las herramientas de siempre. Si una parte
+   solo puede ejecutarse fuera del sandbox (claves SSH, crear servidores, credenciales, un login…), el plan la marca en
+   `runsLocally`: sale en el plan como «En tu Claude Code», Claude escribe el código igualmente y, al quedar el PR listo,
+   esa parte es una siguiente tarea necesaria con «Seguir en tu Claude Code» (`backcode task follow-up`), en vez de
+   descubrirlo al ejecutar y fallar.
 4. Revisa el resultado (rechaza cambios en rutas protegidas y diffs con secretos), hace commit y push y abre el **PR en borrador**.
 5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó, pidió un permiso, propuso un plan o paró sin PR pero con cambios hechos, para que le contestes en el hilo) o `failed` (con el motivo). La app muestra la actividad
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
@@ -744,6 +748,11 @@ kind = "migration"                  # migration (primero) · functions · servic
 dir = "api"                         # opcional: carpeta, relativa al fichero
 paths = ["api/"]                    # opcional: qué cambios lo dejan pendiente (por defecto, su carpeta)
 
+[deploy.refresh-data]
+run = "./scripts/refresh-data.sh"
+paths = []                          # nunca pendiente ni en «Desplegar todo»: solo cuando alguien lo lanza
+description = "Refrescar datos"
+
 [deploy.api]
 run = "make deploy"
 dir = "api"
@@ -751,6 +760,9 @@ description = "API en Fly.io"       # opcional: frase corta que la app enseña b
 ```
 
 Si un nombre está también en un `package.json` de la misma carpeta, gana `backcode.toml` (y el registro del runner lo avisa).
+Un comando que solo se lanza a demanda (refrescar datos, un job contra un servidor…) va con `paths = []`. Si una tarea lo
+añade en su propio PR y lo cita en «Después de mergear», el paso espera al merge («Disponible al fusionar») y el botón sale
+en cuanto el runner lo lee en la rama principal (≥ 1.5.40).
 Si el fichero tiene algún error, el registro del runner dice qué línea o qué despliegue falla.
 
 **Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:

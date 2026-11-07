@@ -134,7 +134,9 @@ For every task you accept, the runner:
    It installs the dependencies there first (outside the sandbox, with the repo's lockfile and package manager: `bun install --frozen-lockfile`, `npm ci`…, only where `node_modules` is git-ignored and the dependency files are still the base branch's), so Claude can run tests, type checks and lint right away.
 3. **Runs Claude Code** with the brief and its attachments, sandboxed to that worktree. If something essential is unclear, Claude
    **asks in the task thread** and the same session continues with your answer. With **plan mode**, it first proposes a plan
-   (read-only) that you refine and approve. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
+   (read-only) that you refine and approve; parts that can only run outside the sandbox (SSH keys, creating servers, credentials,
+   a login…) are marked in the plan as “In your Claude Code” and become required next tasks you continue on your computer
+   with `backcode task follow-up`. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
@@ -502,6 +504,18 @@ Since 1.5.39, if the repo publishes OTA updates from Backcode (EAS Update or its
 tells Claude not to add the OTA or the native builds as <code>afterMerge</code> steps: the app already has «Publish OTA» and
 «Build». If it does mention it, it uses the reserved <code>deployTarget: "backcode:ota"</code>, which the app shows with a
 «Publish OTA» button instead of a manual step. Repos without OTA in Backcode keep it as a normal manual step.
+</details>
+
+<details>
+<summary><strong>Can a task add a new command to run after merging?</strong></summary>
+<br>
+Yes, since 1.5.40. For a privileged operation that will be run again (refreshing data, a job against a server…), Claude
+writes the script and declares it in the same PR as a <code>[deploy.&lt;name&gt;]</code> entry in <code>backcode.toml</code>
+with <code>paths = []</code> (only run on demand, never pending nor part of «Deploy everything»), and points the after-merge
+step's <code>deployTarget</code> at it. The runner keeps it with <code>pendingMerge: true</code>: before merging the step reads
+«Available once merged» and isn't a manual step; once merged, as soon as the runner reads the main branch (every 3 minutes
+and after each action) the app shows the button to run it. If no runner offers it 15 minutes after the merge (for example,
+it was dropped from the PR), it's a manual step again.
 </details>
 
 <details>
