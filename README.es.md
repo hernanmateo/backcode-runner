@@ -396,7 +396,7 @@ cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En 
    desde que la aceptaste (huella).
 2. Crea una copia aislada (worktree) en `~/.backcode/worktrees/<proyecto>/<tarea>` sobre su rama, partiendo de `<remoto>/<base>`.
    Tu carpeta de trabajo no se toca. Los adjuntos (capturas, PDFs…) se descargan en `.backcode-attachments/`, excluida de git.
-   Antes de lanzar a Claude instala ahí las dependencias, fuera del sandbox y con el lockfile y el gestor del repo (`bun install --frozen-lockfile`, `npm ci`…), solo donde `node_modules` está ignorado por git y los ficheros de dependencias siguen como en la base: así Claude puede pasar tests, typecheck y lint sin esperar una instalación que dentro del sandbox a menudo no acaba. En modo plan, al aprobarlo.
+   Antes de lanzar a Claude instala ahí las dependencias, fuera del sandbox y con el lockfile y el gestor del repo (`bun install --frozen-lockfile`, `npm ci`…), solo donde `node_modules` está ignorado por git y los ficheros de dependencias siguen como en la base: así Claude puede pasar tests, typecheck y lint sin esperar una instalación que dentro del sandbox a menudo no acaba. Si la tarea necesita una dependencia nueva, Claude la instala él dentro del sandbox (`bun add`, `npm install <pkg>`…, runner ≥ 1.5.44): los gestores escriben en una caché por proyecto en `~/.backcode/dep-cache/<proyecto>` (nunca en tu caché global), los postinstall siguen en el sandbox y el lockfile actualizado va en el PR. Si un `package.json` cambia sus dependencias y su lockfile no, `open_pull_request` le pide a Claude que lo regenere antes (la segunda vez abre el PR con un aviso en el body), y un paso tras mergear que solo instala se descarta. yarn 1 usa `registry.yarnpkg.com`: con yarn, añádelo a `BACKCODE_ALLOWED_DOMAINS`. En modo plan, al aprobarlo.
 3. Lanza Claude Code con [`instructions/AGENT.md`](instructions/AGENT.md): trabajar solo en esa rama, ejecutar los tests, preguntar
    (`ask_user`) si algo esencial es ambiguo y llamar a `open_pull_request` al terminar.
    En **modo plan** (`planFirst`), hasta que se aprueba el plan Claude solo puede leer (Read, Glob, Grep: sin editar ni ejecutar
@@ -406,6 +406,15 @@ cerrados y, si son de un proyecto, uno de los `projectIds` de ese ordenador. En 
    `runsLocally`: sale en el plan como «En tu Claude Code», Claude escribe el código igualmente y, al quedar el PR listo,
    esa parte es una siguiente tarea necesaria con «Seguir en tu Claude Code» (`backcode task follow-up`), en vez de
    descubrirlo al ejecutar y fallar.
+   **Checks que no corren en el sandbox** (tests que abren puertos o levantan emuladores): si el `backcode.toml` de la rama
+   principal declara `[check.*]`, Claude tiene la herramienta `run_checks` (runner ≥ 1.5.43). El runner hace un commit
+   suelto con el trabajo en curso (sin tocar la rama ni subir nada) y le pasa esos checks **fuera del sandbox**, igual que
+   antes de mergear ([Checks en local](#checks-en-local-sin-la-ci-del-host): comandos de la rama principal, copia limpia,
+   entorno sin secretos), y le devuelve qué pasa y el final del log de lo que falla. Como mucho 3 veces por vuelta. No abre
+   ninguna puerta nueva: es el mismo código que el runner ya ejecuta sobre ese trabajo antes de mergearlo; solo cambia el
+   momento. Y un test o check nunca es un paso de «Después de mergear»: Claude ve los checks del proyecto en
+   `open_pull_request` y, si aun así pone uno (p. ej. `cd tests && npm run test:rules`), el runner lo quita: los pasa
+   antes de mergear.
 4. Revisa el resultado (rechaza cambios en rutas protegidas y diffs con secretos), hace commit y push y abre el **PR en borrador**.
 5. Marca la tarea como `done` (con el PR), `waiting` (si Claude preguntó, pidió un permiso, propuso un plan o paró sin PR pero con cambios hechos, para que le contestes en el hilo) o `failed` (con el motivo). La app muestra la actividad
    en vivo: lo que dice Claude, los comandos, los archivos que toca y el plan.
@@ -763,6 +772,9 @@ Si un nombre está también en un `package.json` de la misma carpeta, gana `back
 Un comando que solo se lanza a demanda (refrescar datos, un job contra un servidor…) va con `paths = []`. Si una tarea lo
 añade en su propio PR y lo cita en «Después de mergear», el paso espera al merge («Disponible al fusionar») y el botón sale
 en cuanto el runner lo lee en la rama principal (≥ 1.5.40).
+Desde 1.5.41 el runner publica el comando de cada despliegue (el `run =`, el script o el comando detectado; nunca si
+parece un secreto), que la app enseña al confirmar «Ejecutar», y guarda en cada tarea los ficheros que cambia su PR: si
+toca `backcode.toml` o los scripts `backcode:deploy:*`, la app avisa antes de mergear.
 Si el fichero tiene algún error, el registro del runner dice qué línea o qué despliegue falla.
 
 **Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:

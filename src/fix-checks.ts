@@ -8,6 +8,7 @@ import { createDetachedWorktree, git, gitPush, removeWorktree, scanStagedForSecr
 import { createGuardHook } from "./guard.js";
 import type { PrHost } from "./hosts.js";
 import { LANGUAGE_NAME, lang, t } from "./i18n.js";
+import { depCache } from "./dep-cache.js";
 import { CLAUDE_SETTINGS, claudeExecutable } from "./preflight.js";
 import type { Store } from "./store.js";
 
@@ -97,6 +98,7 @@ export async function fixChecks(
     const abort = new AbortController();
     signal.addEventListener("abort", () => abort.abort(), { once: true });
     let summary = "";
+    const cache = depCache(cfg.projectId);
     for await (const msg of query({
       prompt: fixChecksPrompt(checks.pending, log, LANGUAGE_NAME[lang()], scope.ciHost),
       options: {
@@ -104,7 +106,7 @@ export async function fixChecks(
         cwd: path,
         model: cfg.model,
         abortController: abort,
-        env: agent.env,
+        env: { ...agent.env, ...cache.env },
         // Como en una tarea: editar y ejecutar comandos en el sandbox (para correr los tests), con el mismo guard (la CI
         // del repo, entre otros, está protegida). Sin abrir PR: el commit y el push los hace el runner. En un PR de una
         // tarea de CI, el alcance de esa tarea: solo su fichero de CI y docs, sin Bash ni leer secretos.
@@ -119,7 +121,8 @@ export async function fixChecks(
           autoAllowBashIfSandboxed: true,
           allowUnsandboxedCommands: false,
           network: { allowedDomains: cfg.allowedDomains, strictAllowlist: true },
-          filesystem: { denyRead: agent.denyRead, allowWrite: [path] },
+          // Y la caché de paquetes del proyecto, por si arreglar pasa por instalar una dependencia (dep-cache.ts).
+          filesystem: { denyRead: agent.denyRead, allowWrite: [path, cache.dir] },
         },
         maxTurns: cfg.maxTurns,
         maxBudgetUsd: cfg.maxBudgetUsd,

@@ -131,12 +131,19 @@ For every task you accept, the runner:
 
 1. **Claims it** and checks that it's yours, that you're still in the group and that the brief hasn't changed since you accepted it.
 2. **Creates an isolated worktree** on its own branch (`backcode/<you>/<task>`) from the latest base branch. Your working copy is never touched.
-   It installs the dependencies there first (outside the sandbox, with the repo's lockfile and package manager: `bun install --frozen-lockfile`, `npm ci`…, only where `node_modules` is git-ignored and the dependency files are still the base branch's), so Claude can run tests, type checks and lint right away.
+   It installs the dependencies there first (outside the sandbox, with the repo's lockfile and package manager: `bun install --frozen-lockfile`, `npm ci`…, only where `node_modules` is git-ignored and the dependency files are still the base branch's), so Claude can run tests, type checks and lint right away. If the task needs a new dependency, Claude installs it itself inside the sandbox (`bun add`, `npm install <pkg>`…, runner ≥ 1.5.44): its package managers write to a per-project cache in `~/.backcode/dep-cache/<project>` (never your global cache), postinstall scripts stay sandboxed, and the updated lockfile goes in the PR. If a `package.json` changes its dependencies but its lockfile doesn't, `open_pull_request` asks Claude to regenerate it first (the second time it opens the PR with a warning in the body), and an afterMerge step that only runs an install is dropped. yarn 1 uses `registry.yarnpkg.com`: with yarn, add it to `BACKCODE_ALLOWED_DOMAINS`.
 3. **Runs Claude Code** with the brief and its attachments, sandboxed to that worktree. If something essential is unclear, Claude
    **asks in the task thread** and the same session continues with your answer. With **plan mode**, it first proposes a plan
    (read-only) that you refine and approve; parts that can only run outside the sandbox (SSH keys, creating servers, credentials,
    a login…) are marked in the plan as “In your Claude Code” and become required next tasks you continue on your computer
    with `backcode task follow-up`. If it stops without a PR but with changes made (e.g. it couldn't run the checks and asks how to go on), the task waits for your reply instead of failing.
+   **Checks that can't run in the sandbox** (tests that open ports or start emulators): if the main branch's `backcode.toml`
+   declares `[check.*]`, Claude gets a `run_checks` tool (runner ≥ 1.5.43). The runner snapshots the work in progress into a
+   loose commit (the branch isn't touched, nothing is pushed) and runs those checks **outside the sandbox**, exactly as before
+   merging (main branch commands, clean copy, no secrets in the environment), returning what passes and the end of the log of
+   what fails. At most 3 times per run. It opens no new door: it's the same code the runner already runs on that work before
+   merging; only the timing changes. And a test or check is never an “After merging” step: Claude sees the project's checks
+   in `open_pull_request` and, if it lists one anyway (e.g. `cd tests && npm run test:rules`), the runner drops it.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
@@ -501,9 +508,12 @@ to **Retry**, **Open log**, **Open Login Items** and **Start without service**. 
 <summary><strong>Why doesn't Claude list "publish the OTA" as an after-merge step?</strong></summary>
 <br>
 Since 1.5.39, if the repo publishes OTA updates from Backcode (EAS Update or its own <code>ota:publish</code>), the runner
-tells Claude not to add the OTA or the native builds as <code>afterMerge</code> steps: the app already has «Publish OTA» and
-«Build». If it does mention it, it uses the reserved <code>deployTarget: "backcode:ota"</code>, which the app shows with a
-«Publish OTA» button instead of a manual step. Repos without OTA in Backcode keep it as a normal manual step.
+tells Claude not to add the OTA as an <code>afterMerge</code> step: the app already has «Publish OTA». If it does mention it,
+it uses the reserved <code>deployTarget: "backcode:ota"</code>, which the app shows with a «Publish OTA» button instead of a
+manual step. Since 1.5.42, the same goes for native builds when the repo builds from Backcode (an EAS
+<code>production</code> profile): instead of an <code>eas build</code> command, Claude uses <code>deployTarget:
+"backcode:build"</code> and the app shows its «Build» button. Repos without OTA or builds in Backcode keep them as normal
+manual steps.
 </details>
 
 <details>
@@ -516,6 +526,10 @@ step's <code>deployTarget</code> at it. The runner keeps it with <code>pendingMe
 «Available once merged» and isn't a manual step; once merged, as soon as the runner reads the main branch (every 3 minutes
 and after each action) the app shows the button to run it. If no runner offers it 15 minutes after the merge (for example,
 it was dropped from the PR), it's a manual step again.
+<br><br>
+Since 1.5.41 the runner also publishes each deploy's command (the <code>run =</code>, the script or the detected command;
+never if it looks like a secret), which the app shows when you confirm «Run», and stores the files each task's PR changes:
+if it touches <code>backcode.toml</code> or <code>backcode:deploy:*</code> scripts, the app warns before merging.
 </details>
 
 <details>

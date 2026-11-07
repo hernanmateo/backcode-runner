@@ -419,3 +419,37 @@ test("readCheckConfig: idle en minutos (por defecto 5)", () => {
   const { checks } = readCheckConfig('[check.a]\nrun = "true"\n\n[check.b]\nrun = "true"\nidle = 2\n');
   assert.deepEqual(checks.map((c) => c.idleMs), [5 * 60_000, 2 * 60_000]);
 });
+
+test("runChecksReport: qué pasa, qué falla y el log de lo que falla", async () => {
+  const { runChecksReport } = await import("../src/local-checks.js");
+  const green = runChecksReport(["app", "tests"], { checks: { state: "green", pending: [] }, log: "" });
+  assert.equal(green, "All checks pass.\n- app: ok\n- tests: ok");
+  const bad = runChecksReport(["app", "tests"], { checks: { state: "failing", pending: ["Backcode · tests: fail"] }, log: "## Backcode · tests\nboom" });
+  assert.equal(bad, "Some checks fail.\n- app: ok\n- tests: FAIL\n\n## Backcode · tests\nboom");
+});
+
+test("snapshotCommit: commit suelto con lo modificado y lo nuevo, sin tocar HEAD ni el índice", async () => {
+  const { snapshotCommit } = await import("../src/git.js");
+  const repo = mkdtempSync(join(tmpdir(), "bc-snap-"));
+  const g = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+  g("init", "-q");
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+  writeFileSync(join(repo, "a.txt"), "uno\n");
+  g("add", "-A");
+  g("commit", "-qm", "base");
+  const head = g("rev-parse", "HEAD");
+  writeFileSync(join(repo, "a.txt"), "dos\n");
+  writeFileSync(join(repo, "nuevo.txt"), "nuevo\n");
+  writeFileSync(join(repo, "ignored.txt"), "no\n");
+  const status = g("status", "--porcelain");
+
+  const sha = await snapshotCommit(repo);
+  assert.equal(g("rev-parse", "HEAD"), head);
+  assert.equal(g("status", "--porcelain"), status);
+  assert.equal(g("rev-parse", `${sha}^`), head);
+  assert.equal(g("show", `${sha}:a.txt`), "dos");
+  assert.equal(g("show", `${sha}:nuevo.txt`), "nuevo");
+  assert.throws(() => g("show", `${sha}:ignored.txt`));
+});
