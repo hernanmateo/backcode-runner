@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,21 +9,169 @@ import { dirname, join } from "node:path";
  * `script` (macOS y Linux). Corre con los permisos normales de Claude Code de la persona, fuera del sandbox del runner.
  */
 export interface RemoteSession {
-  /** Enlace de la sesión (https://claude.ai/code/session_…): abre la app de Claude si está instalada. */
-  url: string;
+  /**
+   * Enlace de la sesión (https://claude.ai/code/session_…): abre la app de Claude si está instalada. Sin él, la sesión
+   * está viva y trabajando pero Claude Code no lo ha dado a tiempo («abierta sin enlace»): sale en la lista de sesiones
+   * de la app de Claude, y si llega más tarde se avisa con `onUrl`.
+   */
+  url?: string;
   /** Proceso del shell que la lleva (líder de su grupo, `detached`): para adoptarla tras un reinicio del runner. */
   pid: number;
   /** Se resuelve cuando el proceso termina (la persona sale de la sesión o se para). */
   exited: Promise<void>;
   stop(): void;
+  /** El enlace, cuando llega (en seguida si ya lo tenía). */
+  onUrl?(cb: (url: string) => void): void;
 }
 
-// Secuencias de terminal (OSC, CSI y guardar/restaurar cursor) fuera, para buscar texto en la salida.
-const clean = (s: string) =>
-  s
-    .replace(/\x1b\][^\x07]*\x07/g, "")
-    .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z~]/g, " ")
-    .replace(/\x1b[78]/g, "");
+const LINK_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/g;
+const ID_CHAR = /[A-Za-z0-9]/;
+/** Lo que se vuelve a mirar del trozo anterior (una URL partida entre dos trozos) y lo que se guarda de texto. */
+const OVERLAP = 1024;
+const KEEP = 20_000;
+/** Una secuencia de escape sin terminar más larga que esto no se espera más: se tira. */
+const MAX_PENDING = 8192;
+/** Sin salida nueva durante esto, una URL que acababa al final de lo recibido se da por entera. */
+const QUIET_MS = 1500;
+
+/**
+ * Quita las secuencias de terminal de un trozo de salida. `compact`: para buscar la URL (los colores, SGR, se quitan sin
+ * dejar nada, así no parten la URL; los movimientos de cursor dejan un espacio). `spaced`: para buscar texto («trust this
+ * folder») y el diagnóstico (todo CSI deja un espacio). `links`: las URL de los hipervínculos OSC 8, que llevan el
+ * enlace completo aunque lo visible salga recortado o partido. `rest`: una secuencia a medias al final, para el próximo.
+ */
+export function stripTerminal(raw: string): { compact: string; spaced: string; links: string[]; rest: string } {
+  let compact = "";
+  let spaced = "";
+  const links: string[] = [];
+  let i = 0;
+  const pending = (from: number) => (raw.length - from > MAX_PENDING ? "" : raw.slice(from));
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch !== "\x1b") {
+      compact += ch;
+      spaced += ch;
+      i++;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === undefined) return { compact, spaced, links, rest: raw.slice(i) };
+    if (next === "]") {
+      // OSC: hasta BEL o ESC \.
+      const bel = raw.indexOf("\x07", i + 2);
+      const st = raw.indexOf("\x1b\\", i + 2);
+      const end = bel === -1 ? st : st === -1 ? bel : Math.min(bel, st);
+      if (end === -1) return { compact, spaced, links, rest: pending(i) };
+      const body = raw.slice(i + 2, end);
+      const link = /^8;[^;]*;(.+)$/s.exec(body)?.[1];
+      if (link) links.push(link);
+      i = end + (end === bel ? 1 : 2);
+      continue;
+    }
+    if (next === "[") {
+      const m = /^[0-9;?<>=:]*[ -/]*/.exec(raw.slice(i + 2, i + 2 + 64))![0];
+      const final = raw[i + 2 + m.length];
+      if (final === undefined) return { compact, spaced, links, rest: pending(i) };
+      if (final >= "@" && final <= "~") {
+        if (final !== "m") compact += " ";
+        spaced += " ";
+        i += 3 + m.length;
+      } else i += 2;
+      continue;
+    }
+    if (next === "(" || next === ")") {
+      if (raw[i + 2] === undefined) return { compact, spaced, links, rest: raw.slice(i) };
+      i += 3;
+      continue;
+    }
+    // ESC 7 / ESC 8 (guardar/restaurar cursor) y el resto de secuencias de dos caracteres.
+    i += 2;
+  }
+  return { compact, spaced, links, rest: "" };
+}
+
+/**
+ * La URL de la sesión en un texto ya sin secuencias, o null. Una que acaba justo al final del texto no vale aún (puede
+ * venir el resto en el próximo trozo) salvo con `final`. Si la TUI la envuelve (acaba en un salto de línea y la línea
+ * siguiente sigue con letras y números, tras espacios o bordes │), se juntan los dos trozos.
+ */
+export function findLink(text: string, final = false): string | null {
+  for (const m of text.matchAll(LINK_RE)) {
+    let url = m[0];
+    let end = m.index + url.length;
+    while (true) {
+      const wrap = /^\r*\n[\r\n]*[ \t│┃|]*/.exec(text.slice(end));
+      if (!wrap) break;
+      const cont = /^[A-Za-z0-9]+/.exec(text.slice(end + wrap[0].length))?.[0];
+      if (!cont) {
+        // El salto de línea y nada más: puede que la continuación aún no haya llegado.
+        if (end + wrap[0].length >= text.length && !final) return null;
+        break;
+      }
+      url += cont;
+      end += wrap[0].length + cont.length;
+    }
+    if (end >= text.length && !final) return null;
+    if (end < text.length && ID_CHAR.test(text[end])) continue;
+    return url;
+  }
+  return null;
+}
+
+/**
+ * Lee la salida de la TUI trozo a trozo y busca el enlace solo en lo nuevo (con solapamiento con lo anterior): da igual
+ * cuánto redibuje la TUI, y una secuencia o una URL partida entre dos trozos se junta.
+ */
+export function createLinkScanner() {
+  let rest = "";
+  let overlap = "";
+  let text = "";
+  let visible = false;
+  return {
+    /** Un trozo de salida: devuelve la URL si ya está entera. */
+    push(chunk: string): string | null {
+      const r = stripTerminal(rest + chunk);
+      rest = r.rest;
+      text = (text + r.spaced).slice(-KEEP);
+      if (!visible && /\S/.test(r.spaced)) visible = true;
+      const link = r.links.map((l) => /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+$/.exec(l)?.[0]).find(Boolean);
+      if (link) return link;
+      const window = overlap + r.compact;
+      overlap = window.slice(-OVERLAP);
+      return findLink(window);
+    },
+    /** Al acabarse la espera: una URL que acabe justo al final también vale. */
+    flush(): string | null {
+      return findLink(overlap, true);
+    },
+    /** Texto añadido que no es de la TUI (stderr): solo para el diagnóstico. */
+    note(s: string) {
+      text = (text + stripTerminal(s).spaced).slice(-KEEP);
+    },
+    /** Las últimas líneas (sin secuencias), para «trust this folder» y el diagnóstico. */
+    text: (last = KEEP) => text.slice(-last),
+    /** ¿Ha sacado algo visible? (una sesión que trabaja). */
+    visible: () => visible,
+  };
+}
+
+const DIAG_RE = /error|log ?in|logged|auth|unauthori[sz]ed|forbidden|denied|failed|unavailable|not available|not found|not permitted|no conversation|invalid|expired|exit|couldn't|cannot|can't|unable|permission/i;
+
+/**
+ * Lo que se cuenta del final de la salida al fallar: solo las líneas con pinta de diagnóstico (errores, login…) y
+ * recortado, nunca la pantalla entera (sería el texto de la conversación).
+ */
+export function diagnostic(text: string): string {
+  const lines = text
+    .split(/[\r\n]+/)
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l && DIAG_RE.test(l));
+  return [...new Set(lines)].slice(-2).join(" · ").slice(-200);
+}
+
+/** Errores que dicen que la sesión no ha arrancado de verdad aunque el proceso siga vivo (sin login, sin Remote Control). */
+const NOT_STARTED_RE = /not logged in|please (run )?\/login|must be logged in|invalid api key|unauthori[sz]ed|remote control is not (available|enabled)|remote control (is )?disabled/i;
+export const notStarted = (text: string) => NOT_STARTED_RE.test(text);
 
 const ARG_VAR = "BC_RC_ARG_";
 
@@ -128,6 +276,14 @@ export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?:
   const { cmd, env } = remoteCommand(remoteArgs(opts), process.platform, !!opts.persistent);
   const [bin, args] = launcher(cmd, !!opts.persistent);
   const child = spawn(bin, args, { cwd: opts.cwd, env: { ...sessionEnv(), ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  return watchRemoteControl(child, opts.timeoutMs);
+}
+
+/**
+ * Espera el enlace de una sesión ya lanzada (en su propio grupo de procesos). Aparte de startRemoteControl para poder
+ * probarlo con cualquier proceso, sin terminal simulado.
+ */
+export function watchRemoteControl(child: ChildProcessWithoutNullStreams, timeoutMs = 90_000): Promise<RemoteSession> {
   // Escribir cuando la sesión ya ha terminado (EPIPE) no debe tumbar el runner.
   child.stdin.on("error", () => undefined);
   const stop = () => {
@@ -135,37 +291,78 @@ export function startRemoteControl(opts: { bin: string; cwd: string; sessionId?:
   };
   const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
 
+  let alive = true;
+  child.on("exit", () => (alive = false));
+
   return new Promise((resolve, reject) => {
-    let out = "";
+    const scanner = createLinkScanner();
     let trusted = false;
-    let found = false;
-    const timer = setTimeout(() => fail("timeout"), opts.timeoutMs ?? 90_000);
+    let settled = false;
+    let quiet: NodeJS.Timeout | undefined;
+    let url: string | null = null;
+    const listeners: ((url: string) => void)[] = [];
+    const session = (link?: string): RemoteSession => ({
+      ...(link ? { url: link } : {}),
+      pid: child.pid ?? 0,
+      exited,
+      stop,
+      onUrl: (cb) => (url ? cb(url) : void listeners.push(cb)),
+    });
+    function found(link: string) {
+      if (url) return;
+      url = link;
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        resolve(session(link));
+      }
+      for (const cb of listeners.splice(0)) cb(link);
+    }
+    // Sin enlace a tiempo: si la sesión está viva y trabajando no se mata nunca (queda abierta sin enlace); solo falla
+    // si no ha sacado nada o dice que no ha arrancado (sin login…).
+    const timer = setTimeout(() => {
+      if (settled) return;
+      const late = scanner.flush();
+      if (late) return found(late);
+      if (alive && scanner.visible() && !notStarted(scanner.text())) {
+        settled = true;
+        resolve(session());
+        return;
+      }
+      fail("timeout");
+    }, timeoutMs);
     function fail(reason: string) {
-      if (found) return;
-      found = true;
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       stop();
-      const tail = clean(out).replace(/\s+/g, " ").trim().slice(-300);
-      reject(new Error(`${reason}${tail ? `: ${tail}` : ""}`));
+      const diag = diagnostic(scanner.text());
+      reject(new Error(`${reason}${diag ? `: ${diag}` : ""}`));
     }
     // La salida se sigue leyendo hasta el final: si nadie la lee, el proceso se bloquea al llenarse la tubería.
-    child.stdout.on("data", (d: Buffer) => {
-      if (found) return;
-      out = (out + d.toString()).slice(-20_000);
-      const text = clean(out);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => {
+      if (url) return;
+      const link = scanner.push(d);
       // Carpeta (worktree) en la que aún no se ha confiado: se acepta (la tarea es de la persona y ella lo ha pedido).
-      if (!trusted && /trust\s+this\s+folder/i.test(text)) {
+      if (!trusted && /trust\s+this\s+folder/i.test(scanner.text(4000))) {
         trusted = true;
         setTimeout(() => child.stdin.write("\x1b[B\r"), 400);
       }
-      const url = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/.exec(text)?.[0];
-      if (url) {
-        found = true;
-        clearTimeout(timer);
-        resolve({ url, pid: child.pid ?? 0, exited, stop });
-      }
+      if (link) return found(link);
+      // Una URL al final de lo recibido (puede seguir en la línea siguiente si la TUI la envuelve): si en un momento no
+      // llega nada más, vale tal cual.
+      clearTimeout(quiet);
+      quiet = setTimeout(() => {
+        const late = url ? null : scanner.flush();
+        if (late) found(late);
+      }, QUIET_MS);
+      quiet.unref?.();
     });
-    child.stderr.on("data", (d: Buffer) => (out = (out + d.toString()).slice(-20_000)));
+    child.stderr.on("data", (d: string) => {
+      if (!url) scanner.note(d);
+    });
     child.on("exit", (code) => fail(`exit ${code}`));
     child.on("error", (err) => fail(err.message));
   });
