@@ -367,9 +367,12 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
   let afterMerge: FeatureResult["afterMerge"]; // pasos tras mergear que declara Claude al abrir el PR
   // Destinos de despliegue del repo (scripts backcode:deploy:*): Claude los puede citar en los pasos tras mergear.
   const deployNames = [...new Set((await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name))];
-  // El repo publica OTA desde Backcode (EAS Update o su ota:publish): la OTA (y las builds nativas) no son pasos manuales;
-  // si Claude la quiere mencionar, usa el destino reservado (after-merge.ts; la app ofrece «Publicar OTA»).
-  const backcodeOta = !!(await findExpoApp(wt.path, "HEAD").catch(() => null))?.ota;
+  // El repo publica OTA desde Backcode (EAS Update o su ota:publish) o hace builds nativas desde Backcode (perfil
+  // `production`, la misma condición que capabilities.build): no son pasos manuales; si Claude los quiere mencionar, usa
+  // el destino reservado (after-merge.ts; la app ofrece «Publicar OTA» y «Build»).
+  const expoApp = await findExpoApp(wt.path, "HEAD").catch(() => null);
+  const backcodeOta = !!expoApp?.ota;
+  const backcodeBuild = !!expoApp?.buildProfiles.includes("production");
   let question: string | undefined; // pregunta de Claude (ask_user)
   let permissionAsked = false; // Claude pidió permisos (request_permission): espera, como con una pregunta
   let planned = false; // modo plan: ya propuso el plan en esta vuelta
@@ -401,7 +404,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
       ),
       tool(
         "open_pull_request",
-        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${afterMergeHint(deployNames, backcodeOta)}`,
+        `Commit all changes in the worktree to the feature branch, push it and open a draft pull request. Call exactly once when the work is complete. If someone must do something by hand after merging (deploy security rules or cloud functions, run a migration, set an env var…), list it in afterMerge: one step each, with why and the exact shell command; never run those yourself.${ciHost ? "" : ` ${FOLLOW_UPS_DESCRIPTION}`}${afterMergeHint(deployNames, backcodeOta, backcodeBuild)}`,
         {
           title: z.string().min(5).max(120),
           body: z.string().min(20).max(20_000),
@@ -463,7 +466,7 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           // Los destinos que añade este mismo PR (backcode.toml o package.json de la rama) también valen: quedan pendientes
           // del merge y la app ofrece el botón cuando el runner los ve en la rama principal (refreshPlan › saveDeploys).
           const prNames = ciHost || !steps?.some((s) => s.deployTarget) ? [] : (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name);
-          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames);
+          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames, backcodeBuild);
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.

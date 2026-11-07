@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, OTA_AFTER_MERGE_TARGET, REPEATABLE_HINT } from "../src/after-merge.js";
+import { afterMergeHint, BUILD_AFTER_MERGE_TARGET, DEPLOY_TARGET_INPUT, normalizeAfterMerge, OTA_AFTER_MERGE_TARGET, REPEATABLE_HINT } from "../src/after-merge.js";
 
 test("afterMergeHint: con OTA en Backcode pide no añadirla como paso manual", () => {
   assert.equal(afterMergeHint([], false), REPEATABLE_HINT);
@@ -49,4 +49,21 @@ test("normalizeAfterMerge: destinos que añade el propio PR, pendientes del merg
   ]);
   // Si ya está en la principal no queda pendiente aunque el PR también lo declare.
   assert.deepEqual(normalizeAfterMerge([{ why: "API", deployTarget: "api" }], ["api"], false, ["api"]), [{ why: "API", deployTarget: "api" }]);
+});
+
+test("afterMergeHint: con builds en Backcode pide el destino reservado en vez de eas build", () => {
+  assert.doesNotMatch(afterMergeHint([], true), /backcode:build/);
+  const hint = afterMergeHint([], false, true);
+  assert.ok(hint.includes(`"${BUILD_AFTER_MERGE_TARGET}"`));
+  assert.match(hint, /don't give an eas build command/);
+  assert.doesNotMatch(hint, /OTA/);
+});
+
+test("deployTarget y normalizeAfterMerge: el destino reservado de la build solo con builds en Backcode", () => {
+  assert.ok(DEPLOY_TARGET_INPUT.test("backcode:build"));
+  const steps = [{ why: "Build iOS", deployTarget: "backcode:build" }];
+  assert.deepEqual(normalizeAfterMerge(steps, [], false, [], true), [{ why: "Build iOS", deployTarget: "backcode:build" }]);
+  assert.deepEqual(normalizeAfterMerge(steps, [], true, [], false), [{ why: "Build iOS" }]);
+  // Nunca queda «pendiente del merge» aunque un PR lo nombre.
+  assert.deepEqual(normalizeAfterMerge(steps, [], false, ["backcode:build"], false), [{ why: "Build iOS" }]);
 });
