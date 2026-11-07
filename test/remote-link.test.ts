@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { createLinkScanner, diagnostic, findLink, notStarted, stripTerminal, watchRemoteControl } from "../src/remote.js";
+import { createLinkScanner, diagnostic, findLink, linkDiagnostic, notStarted, stripTerminal, watchRemoteControl } from "../src/remote.js";
 
 const URL = "https://claude.ai/code/session_01AbCdEfGhIjKlMnOpQrStUv";
 const ESC = "\x1b";
@@ -45,6 +45,24 @@ test("la URL envuelta por la TUI en dos líneas (con bordes) se junta", () => {
   assert.equal(scan(`│ https://claude.ai/code/session_01AbCdEfGhIj\r\n│ KlMnOpQrStUv │\n` + redraw(21), 5), URL);
 });
 
+test("la línea siguiente de la TUI nunca se pega al enlace (con prompt o al retomar, Claude ya trabaja)", () => {
+  for (const next of ["  Working on it…", "Thinking", "Ready to code here", "⏺ Voy a ello", "Continue in the Claude app or claude.ai"])
+    for (const size of [1, 9, 4096]) assert.equal(scan(`Remote Control active · ${URL}\r\n${ESC}[2K${next}\r\n` + redraw(3), size), URL, `${next} / ${size}`);
+  assert.equal(findLink(`${URL}\r\nWorking on it\r\n`), URL);
+  assert.equal(findLink(`${URL}\r\nWorking`), URL);
+  // Un id a medias: la línea siguiente solo se junta si es la continuación entera (y se espera a que acabe de llegar).
+  const half = "https://claude.ai/code/session_01AbCdEfGhIj";
+  assert.equal(findLink(`${half}\r\nKlMnOp`), null);
+  assert.equal(findLink(`${half}\r\nKlMnOpQrStUv\r\n`), URL);
+  assert.equal(findLink(`${half}\r\nWorking on it\r\n`), half);
+});
+
+test("un enlace recortado con «…» no vale", () => {
+  assert.equal(findLink("Open https://claude.ai/code/session_01AbCd… in the app\n", true), null);
+  assert.equal(findLink("Open https://claude.ai/code/session_01AbCd... in the app\n", true), null);
+  assert.equal(scan(`https://claude.ai/code/session_01AbCd…\r\n` + redraw(2), 7), null);
+});
+
 test("un movimiento de cursor separa la URL del texto que sigue", () => {
   assert.equal(findLink(`${URL}${ESC}[1Cnext`.replace(/\x1b\[1C/, " ")), URL);
   assert.equal(scan(`${URL}${ESC}[1Cnext line\n`, 10), URL);
@@ -54,6 +72,14 @@ test("sin URL no se inventa ninguna; una a medias espera al resto", () => {
   assert.equal(scan(redraw(25), 512), null);
   assert.equal(findLink("https://claude.ai/code/session_01Ab"), null);
   assert.equal(findLink("https://claude.ai/code/session_01Ab", true), "https://claude.ai/code/session_01Ab");
+});
+
+test("sin enlace a tiempo, el log solo apunta las líneas de Remote Control / claude.ai", () => {
+  const text = stripTerminal(redraw(3) + "/remote-control is active · claude.ai/code/session_01Ab…\r\n" + redraw(1)).spaced;
+  const d = linkDiagnostic(text);
+  assert.match(d, /remote-control is active/);
+  assert.doesNotMatch(d, /box|pas 1/);
+  assert.equal(linkDiagnostic(stripTerminal(redraw(2)).spaced), "");
 });
 
 test("el diagnóstico no lleva el texto de la conversación", () => {

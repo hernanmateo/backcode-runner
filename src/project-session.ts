@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,9 @@ import { isRemoteSession, processAlive, startRemoteControl, stopGroup, type Remo
  * conectado (no en un worktree), que pide su dueño desde la app (petición `openProjectSession`, remote-control.ts). Corre
  * con los permisos y la configuración normales de Claude Code de la persona, sin el sandbox del runner. La orden es fija
  * (`claude --remote-control <nombre> [-- <prompt>]`); de la app solo llega el texto del primer mensaje, como argumento.
- * Una por proyecto: si ya hay una abierta, se devuelve la misma.
+ * Una por proyecto: si ya hay una abierta con enlace, se devuelve la misma al abrir sin primer mensaje (o con el mismo);
+ * con un mensaje distinto, o si la abierta no tiene enlace, se sustituye: se cierra y se abre otra con ese mensaje
+ * (`replaced`). Un primer mensaje nunca se descarta en silencio.
  *
  * Sobrevive a los reinicios y las actualizaciones del runner (va aparte, remote.ts `persistent`): su pid, su enlace y el
  * proyecto se guardan en ~/.backcode/sessions.json y, al volver, se «adopta» (adopt) y se sigue publicando. Solo se
@@ -52,6 +55,8 @@ export interface OpenResult {
   /** Abierta y trabajando, pero sin enlace (Claude Code no lo dio a tiempo). */
   linkless?: boolean;
   reused?: boolean;
+  /** Había otra abierta (sin enlace, o con otro primer mensaje): se cerró y esta es la nueva. */
+  replaced?: boolean;
   code?: SessionErrorCode;
   error?: string;
 }
@@ -150,7 +155,11 @@ interface Live {
   stop: () => void;
   /** Adoptada: no somos su padre, se mira cada `watchMs` si sigue viva. */
   adopted: boolean;
+  /** Huella (sha256) del primer mensaje con el que se abrió; solo en memoria, nunca en disco. Sin ella: sin mensaje o adoptada. */
+  promptHash?: string;
 }
+
+const hashPrompt = (prompt?: string) => (prompt ? createHash("sha256").update(prompt).digest("hex") : undefined);
 
 /** Sesiones directas de este ordenador, por proyecto. `onChange`: para volver a publicar el estado en Firestore. */
 export class ProjectSessions {
@@ -239,12 +248,24 @@ export class ProjectSessions {
 
   async open(projectId: string, project: { name?: string; repoPath?: string }, prompt?: string): Promise<OpenResult> {
     const current = this.states.get(projectId);
-    if (current?.state === "open") return { ok: true, ...(current.url ? { url: current.url } : { linkless: true }), reused: true };
     if (current?.state === "opening") return { ok: false, code: "failed", error: t("session.busy") };
+    const promptHash = hashPrompt(prompt);
+    // Abierta con enlace y sin mensaje nuevo (o con el mismo, p. ej. «Reintentar»): la misma. Sin enlace nunca se
+    // reutiliza (no se podría abrir en la app de Claude) y con otro mensaje tampoco (se perdería): se sustituye.
+    const previous = current?.state === "open" ? this.lives.get(projectId) : undefined;
+    if (current?.state === "open" && current.url && (!promptHash || previous?.promptHash === promptHash)) return { ok: true, url: current.url, reused: true };
+    const replaced = current?.state === "open";
+    // Antes de tocar la abierta: si no se podría abrir otra, se queda como está.
     const claude = this.deps.claude();
-    if (!claude || !REMOTE_PLATFORMS.includes(this.deps.platform)) return this.fail(projectId, "unavailable", t("remote.unavailable"));
+    if (!claude || !REMOTE_PLATFORMS.includes(this.deps.platform)) return replaced ? { ok: false, code: "unavailable", error: t("remote.unavailable") } : this.fail(projectId, "unavailable", t("remote.unavailable"));
     const dir = project.repoPath?.replace(/^~(?=\/|$)/, homedir());
-    if (!dir || !this.deps.exists(dir)) return this.fail(projectId, "noRepo", t("session.noRepo"));
+    if (!dir || !this.deps.exists(dir)) return replaced ? { ok: false, code: "noRepo", error: t("session.noRepo") } : this.fail(projectId, "noRepo", t("session.noRepo"));
+    // Se cierra como close(), pero sin publicar «cerrada»: pasa directamente a «abriendo» (la app no parpadea).
+    if (previous) {
+      this.lives.delete(projectId);
+      this.persist();
+      previous.stop();
+    }
     this.set(projectId, { state: "opening", phase: "preparing" });
     const pluginError = await this.deps.ensurePlugin(claude, dir).catch((err: Error) => err.message || "plugin");
     if (pluginError) return this.fail(projectId, "plugin", t("session.plugin", { error: pluginError.slice(0, 300) }));
@@ -256,7 +277,7 @@ export class ProjectSessions {
       const message = String((err as Error).message ?? err);
       return this.fail(projectId, message.startsWith("timeout") ? "timeout" : "failed", t("remote.failed", { error: message.slice(0, 400) }));
     }
-    const live: Live = { pid: session.pid, ...(session.url ? { url: session.url } : {}), startedAt: Date.now(), adopted: false, stop: () => session.stop() };
+    const live: Live = { pid: session.pid, ...(session.url ? { url: session.url } : {}), startedAt: Date.now(), adopted: false, stop: () => session.stop(), ...(promptHash ? { promptHash } : {}) };
     this.lives.set(projectId, live);
     this.persist();
     this.set(projectId, { state: "open", ...(session.url ? { url: session.url } : {}) });
@@ -272,7 +293,7 @@ export class ProjectSessions {
         this.persist();
         this.set(projectId, { state: "open", url });
       });
-    return session.url ? { ok: true, url: session.url } : { ok: true, linkless: true };
+    return { ok: true, ...(session.url ? { url: session.url } : { linkless: true }), ...(replaced ? { replaced: true } : {}) };
   }
 
   /** Cierra la sesión (motivo `reason`) o, si ya no hay ninguna, borra lo que se mostraba (un fallo o un cierre). */

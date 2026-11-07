@@ -297,6 +297,20 @@ export function buildChatPrompt(messages: (PromptMessage & { voice?: boolean })[
 ${body}${voice}`;
 }
 
+/**
+ * «Abrir en mi Claude Code»: la tarea arranca directamente en Remote Control (Claude Code interactivo en el worktree,
+ * con la persona en la app de Claude). Allí no están las herramientas del runner (open_pull_request, propose_plan…):
+ * al volver a Backcode, la misma sesión sigue con el runner (buildAfterRemotePrompt), que publica el PR o el plan.
+ */
+export function buildRemoteStartPrompt(featureId: string, feature: Feature, opts: { planning: boolean; branch: string; base: string; attachments?: LocalAttachment[] }): string {
+  const work = opts.planning
+    ? "PLAN MODE: this task needs a plan approved in the Backcode app before any code is written. Explore the repository and design the implementation with the person here; do not change files yet."
+    : "Work on it here together with the person.";
+  return `${buildUserPrompt(featureId, feature, opts.attachments)}
+
+You are running in this task's git worktree, on branch \`${opts.branch}\` (created from \`${opts.base}\`), in an interactive session the person who accepted the task opened from the Backcode app (Remote Control). ${work} Do not switch branches, commit, push or open pull requests yourself: when the person taps «Back to Backcode», this same session continues with the Backcode runner, which ${opts.planning ? "sends the plan for approval" : "runs the checks and commits, pushes and opens the pull request"}.`;
+}
+
 /** Vuelta de Remote Control: la persona siguió esta misma sesión desde la app de Claude y la devuelve al runner. */
 export function buildAfterRemotePrompt(opts: { planning: boolean; hasPr: boolean }): string {
   const intro = `The person who accepted this task continued this same session from the Claude app (Remote Control), outside the runner's sandbox and without the runner's tools, and has now handed it back to the runner. Anything said or done there is part of this conversation.`;

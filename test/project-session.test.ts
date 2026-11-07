@@ -47,8 +47,9 @@ test("abre una sesión nueva en la carpeta del proyecto (sin --resume) y la reut
   assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_1" }]);
   // Se guarda para adoptarla tras un reinicio (sin ruta ni prompt).
   assert.deepEqual(f.store.list.map(({ startedAt: _, ...s }) => s), [{ projectId: "p1", pid: 1001, url: "https://claude.ai/code/session_1" }]);
-  // Otra petición: la misma sesión, sin lanzar otra ni mandar el prompt nuevo.
-  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/repos/web" }, "Otra cosa"), { ok: true, url: "https://claude.ai/code/session_1", reused: true });
+  // Otra petición sin mensaje o con el mismo («Reintentar»): la misma sesión, sin lanzar otra.
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/repos/web" }), { ok: true, url: "https://claude.ai/code/session_1", reused: true });
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/repos/web" }, "Haz esto"), { ok: true, url: "https://claude.ai/code/session_1", reused: true });
   assert.equal(f.launched.length, 1);
   // Al salir Claude de la sesión: cerrada, con el motivo, y fuera del disco.
   f.exit();
@@ -59,6 +60,70 @@ test("abre una sesión nueva en la carpeta del proyecto (sin --resume) y la reut
   // Cerrar lo que ya está cerrado borra el aviso.
   f.sessions.close("p1");
   assert.deepEqual(f.sessions.list(), []);
+});
+
+test("sesión del proyecto abierta (con enlace) + botón de una tarea con prompt: se sustituye por una nueva con ese prompt y su enlace", async () => {
+  const f = fake();
+  await f.sessions.open("p1", { name: "Web", repoPath: "/repos/web" });
+  const seen: string[] = [];
+  const sessions = f.sessions;
+  const states = () => seen.push(sessions.list()[0]?.state ?? "-");
+  // Lo que se publica en cada cambio durante la sustitución: nunca «cerrada».
+  const orig = (sessions as unknown as { onChange: () => void }).onChange;
+  (sessions as unknown as { onChange: () => void }).onChange = () => (orig(), states());
+  const r = await sessions.open("p1", { name: "Web", repoPath: "/repos/web" }, "Pasos de después de fusionar");
+  assert.deepEqual(r, { ok: true, url: "https://claude.ai/code/session_2", replaced: true });
+  assert.equal(f.stopped(), 1);
+  assert.deepEqual(f.launched[1], { bin: "/bin/claude", cwd: "/repos/web", name: "Web", persistent: true, prompt: "Pasos de después de fusionar" });
+  assert.ok(!seen.includes("closed"), seen.join(","));
+  assert.deepEqual(sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_2" }]);
+  assert.deepEqual(f.store.list.map((s) => s.pid), [1002]);
+  // El «exited» de la vieja no cierra la nueva.
+  await tick();
+  assert.equal(sessions.list()[0].state, "open");
+});
+
+test("una sesión abierta SIN enlace nunca se reutiliza: con o sin prompt se sustituye por una nueva", async () => {
+  let n = 0;
+  let stopped = 0;
+  const f = fake({
+    launch: async () => {
+      n++;
+      // La primera, sin enlace; las siguientes, con él.
+      return { ...(n > 1 ? { url: `https://claude.ai/code/session_new${n}` } : {}), pid: 700 + n, exited: new Promise<void>(() => undefined), stop: () => void stopped++ };
+    },
+  });
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }, "Haz esto"), { ok: true, linkless: true });
+  // Mismo prompt («Reintentar»): sin enlace no sirve, otra.
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }, "Haz esto"), { ok: true, url: "https://claude.ai/code/session_new2", replaced: true });
+  assert.equal(stopped, 1);
+  // Con enlace y sin prompt: la misma.
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }), { ok: true, url: "https://claude.ai/code/session_new2", reused: true });
+  assert.equal(n, 2);
+});
+
+test("una sesión adoptada sin enlace (tras reiniciar el runner) se cierra y se sustituye al abrir, también sin prompt", async () => {
+  const f = fake({ isSession: () => true }, [{ projectId: "p1", pid: 4242, startedAt: 1 }]);
+  f.sessions.adopt();
+  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }), { ok: true, url: "https://claude.ai/code/session_1", replaced: true });
+  assert.deepEqual(f.killed, [4242]);
+  // Adoptada con enlace + prompt: también se sustituye (no se sabe con qué mensaje se abrió).
+  const g = fake({ isSession: () => true }, [{ projectId: "p1", pid: 4343, url: "https://claude.ai/code/session_old", startedAt: 1 }]);
+  g.sessions.adopt();
+  assert.deepEqual(await g.sessions.open("p1", { repoPath: "/r" }, "Nuevo"), { ok: true, url: "https://claude.ai/code/session_1", replaced: true });
+  assert.deepEqual(g.killed, [4343]);
+});
+
+test("si no se podría abrir otra (sin carpeta), la abierta no se toca", async () => {
+  let exists = true;
+  const f = fake({ exists: () => exists });
+  await f.sessions.open("p1", { repoPath: "/r" });
+  exists = false;
+  const r = await f.sessions.open("p1", { repoPath: "/r" }, "Otra cosa");
+  assert.equal(r.ok, false);
+  assert.equal(r.code, "noRepo");
+  assert.equal(f.stopped(), 0);
+  assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_1" }]);
 });
 
 test("cerrar desde la app para la sesión (motivo «user»); closeAll, al apagar, las cierra todas («shutdown»)", async () => {
@@ -117,7 +182,6 @@ test("viva pero sin enlace a tiempo: abierta sin enlace (no fallida); el enlace 
   assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }, "Pasos de después de fusionar"), { ok: true, linkless: true });
   assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open" }]);
   assert.deepEqual(f.store.list.map(({ startedAt: _, ...s }) => s), [{ projectId: "p1", pid: 777 }]);
-  assert.deepEqual(await f.sessions.open("p1", { repoPath: "/r" }), { ok: true, linkless: true, reused: true });
   assert.equal(stopped, 0);
   giveUrl("https://claude.ai/code/session_late");
   assert.deepEqual(f.sessions.list(), [{ projectId: "p1", state: "open", url: "https://claude.ai/code/session_late" }]);
@@ -189,11 +253,12 @@ test("orden de Remote Control: el prompt va como argumento tras «--» y nunca d
       assert.equal(built.env.BC_RC_ARG_0, "/bin/claude");
     }
   }
-  assert.equal(remoteCommand(["a", "b"], "darwin").cmd, 'cat | script -q /dev/null "$BC_RC_ARG_0" "$BC_RC_ARG_1"');
-  assert.equal(remoteCommand(["a", "b"], "linux").cmd, `cat | script -qfc '"$BC_RC_ARG_0" "$BC_RC_ARG_1"' /dev/null`);
+  // Terminal simulado ancho y fijo (la URL de la sesión sale entera en una línea).
+  assert.equal(remoteCommand(["a", "b"], "darwin").cmd, `cat | script -q /dev/null sh -c 'stty cols 500 rows 60 2>/dev/null; exec "$@"' sh "$BC_RC_ARG_0" "$BC_RC_ARG_1"`);
+  assert.equal(remoteCommand(["a", "b"], "linux").cmd, `cat | script -qfc 'stty cols 500 rows 60 2>/dev/null; exec "$BC_RC_ARG_0" "$BC_RC_ARG_1"' /dev/null`);
   assert.equal(
     remoteCommand(["a", "b"], "darwin", true).cmd,
-    '{ cat; exec sleep 2147483647; } | script -q /dev/null "$BC_RC_ARG_0" "$BC_RC_ARG_1" 2>&1 | { cat; cat >/dev/null; kill 0; }',
+    `{ cat; exec sleep 2147483647; } | script -q /dev/null sh -c 'stty cols 500 rows 60 2>/dev/null; exec "$@"' sh "$BC_RC_ARG_0" "$BC_RC_ARG_1" 2>&1 | { cat; cat >/dev/null; kill 0; }`,
   );
 });
 
