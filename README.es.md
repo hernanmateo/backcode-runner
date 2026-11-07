@@ -748,6 +748,11 @@ kind = "migration"                  # migration (primero) · functions · servic
 dir = "api"                         # opcional: carpeta, relativa al fichero
 paths = ["api/"]                    # opcional: qué cambios lo dejan pendiente (por defecto, su carpeta)
 
+[deploy.refresh-data]
+run = "./scripts/refresh-data.sh"
+paths = []                          # nunca pendiente ni en «Desplegar todo»: solo cuando alguien lo lanza
+description = "Refrescar datos"
+
 [deploy.api]
 run = "make deploy"
 dir = "api"
@@ -755,6 +760,9 @@ description = "API en Fly.io"       # opcional: frase corta que la app enseña b
 ```
 
 Si un nombre está también en un `package.json` de la misma carpeta, gana `backcode.toml` (y el registro del runner lo avisa).
+Un comando que solo se lanza a demanda (refrescar datos, un job contra un servidor…) va con `paths = []`. Si una tarea lo
+añade en su propio PR y lo cita en «Después de mergear», el paso espera al merge («Disponible al fusionar») y el botón sale
+en cuanto el runner lo lee en la rama principal (≥ 1.5.40).
 Si el fichero tiene algún error, el registro del runner dice qué línea o qué despliegue falla.
 
 **Detectados sin script** (`src/deploy-detect.ts`), solo con lo versionado en git:

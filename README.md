@@ -507,6 +507,18 @@ tells Claude not to add the OTA or the native builds as <code>afterMerge</code> 
 </details>
 
 <details>
+<summary><strong>Can a task add a new command to run after merging?</strong></summary>
+<br>
+Yes, since 1.5.40. For a privileged operation that will be run again (refreshing data, a job against a server…), Claude
+writes the script and declares it in the same PR as a <code>[deploy.&lt;name&gt;]</code> entry in <code>backcode.toml</code>
+with <code>paths = []</code> (only run on demand, never pending nor part of «Deploy everything»), and points the after-merge
+step's <code>deployTarget</code> at it. The runner keeps it with <code>pendingMerge: true</code>: before merging the step reads
+«Available once merged» and isn't a manual step; once merged, as soon as the runner reads the main branch (every 3 minutes
+and after each action) the app shows the button to run it. If no runner offers it 15 minutes after the merge (for example,
+it was dropped from the PR), it's a manual step again.
+</details>
+
+<details>
 <summary><strong>Does it cost extra?</strong></summary>
 <br>
 No. The runner uses your own Claude Code, so with a Pro or Max plan tasks come out of your plan's usage. With an API key, you

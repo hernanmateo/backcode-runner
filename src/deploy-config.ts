@@ -6,7 +6,7 @@
 //   run = "make deploy"          # el comando (con sh -c) o una lista ["make", "deploy"] (sin shell)
 //   dir = "server"               # opcional: carpeta, relativa al fichero; por defecto la del fichero
 //   kind = "service"             # migration (va primero) · functions · service (por defecto, después)
-//   paths = ["server/"]          # opcional: qué cambios lo dejan pendiente; por defecto, su carpeta
+//   paths = ["server/"]          # opcional: qué cambios lo dejan pendiente; por defecto, su carpeta. [] = solo a demanda
 //   description = "API en Fly"   # opcional: frase corta que la app enseña bajo el nombre del botón
 //
 // Si un nombre también está en un package.json (backcode:deploy:<nombre>) en la misma carpeta, gana este fichero.

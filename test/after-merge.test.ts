@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, OTA_AFTER_MERGE_TARGET } from "../src/after-merge.js";
+import { afterMergeHint, DEPLOY_TARGET_INPUT, normalizeAfterMerge, OTA_AFTER_MERGE_TARGET, REPEATABLE_HINT } from "../src/after-merge.js";
 
 test("afterMergeHint: con OTA en Backcode pide no añadirla como paso manual", () => {
-  assert.equal(afterMergeHint([], false), "");
+  assert.equal(afterMergeHint([], false), REPEATABLE_HINT);
   assert.match(afterMergeHint(["api"], false), /deploy targets.*api/);
   const hint = afterMergeHint([], true);
   assert.match(hint, /do not list publishing an OTA/);
@@ -27,4 +27,26 @@ test("normalizeAfterMerge: solo destinos que existen; el de OTA solo con OTA en 
   ];
   assert.deepEqual(normalizeAfterMerge(steps, ["api"], true), [{ why: "API", deployTarget: "api" }, { why: "Web", command: "npm run deploy" }, { why: "OTA", deployTarget: "backcode:ota" }]);
   assert.deepEqual(normalizeAfterMerge(steps, ["api"], false)?.[2], { why: "OTA" });
+});
+
+test("afterMergeHint: lo repetible con privilegios, como destino declarado en el propio PR", () => {
+  assert.match(afterMergeHint([], false), /\[deploy\.<name>\] entry in backcode\.toml/);
+  assert.match(afterMergeHint([], false), /paths = \[\]/);
+});
+
+test("normalizeAfterMerge: destinos que añade el propio PR, pendientes del merge", () => {
+  const steps = [
+    { why: "Datos", deployTarget: "georank-data" },
+    { why: "API", deployTarget: "api" },
+    { why: "Nada", command: "x", deployTarget: "fantasma" },
+    { why: "OTA", deployTarget: "backcode:ota" },
+  ];
+  assert.deepEqual(normalizeAfterMerge(steps, ["api"], false, ["api", "georank-data", "backcode:ota"]), [
+    { why: "Datos", deployTarget: "georank-data", pendingMerge: true },
+    { why: "API", deployTarget: "api" },
+    { why: "Nada", command: "x" },
+    { why: "OTA" },
+  ]);
+  // Si ya está en la principal no queda pendiente aunque el PR también lo declare.
+  assert.deepEqual(normalizeAfterMerge([{ why: "API", deployTarget: "api" }], ["api"], false, ["api"]), [{ why: "API", deployTarget: "api" }]);
 });

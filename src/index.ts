@@ -450,7 +450,10 @@ async function runFeature(id: string, feature: Feature): Promise<RunOutcome> {
           }
           // Solo se guardan destinos que el repo declara de verdad (la app no ejecuta nada que el repo no ofrezca).
           // Tarea de CI: sin pasos tras mergear (ni despliegues): se revisa y se mergea a mano.
-          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta);
+          // Los destinos que añade este mismo PR (backcode.toml o package.json de la rama) también valen: quedan pendientes
+          // del merge y la app ofrece el botón cuando el runner los ve en la rama principal (refreshPlan › saveDeploys).
+          const prNames = ciHost || !steps?.some((s) => s.deployTarget) ? [] : (await findDeployTargets(wt.path, "HEAD").catch(() => [])).map((d) => d.name);
+          afterMerge = ciHost ? undefined : normalizeAfterMerge(steps, deployNames, backcodeOta, prNames);
           // Siguientes tareas (follow-ups.ts): la app las ofrece al quedar el PR listo. Tarea de CI: ninguna.
           // Si vuelve a abrir el PR sin proponer nada, se quedan las de antes (las propuso para este mismo trabajo).
           // Las que marcó el plan para tu Claude Code (runsLocally) se conservan, las primeras.
