@@ -938,6 +938,18 @@ leyendo, y la propuesta indica qué modelo la ha escrito. Usa `BACKCODE_REFINE_M
 o API key. Si el runner está apagado, ocupado con otro refinado, falla o tarda más de 3 minutos, el servidor la refina con
 OpenAI como siempre y la app lo indica. Solo se usa tu propio runner: las ideas de otros nunca gastan tu cuota.
 
+## Pasos externos reagrupados con tu Claude Code
+En la pantalla «Pasos externos» de la app (los pasos manuales de «Después de mergear» que te quedan, lo que se hace fuera
+de Backcode), «Reagrupar con Claude» le pide a tu runner (≥ 1.5.46) que los junte como lo haría una persona: los pasos que
+son el mismo trabajo aunque el comando cambie, en el orden correcto, con qué revisar antes, cómo volver atrás y, si una
+tarea en marcha ya lo cubre, que esperes a ella. La app calcula los pasos (acción `consolidateExternal`, con su huella) y
+el runner los contrasta con las tareas antes de usarlos. Claude trabaja en una copia de la rama principal en **solo
+lectura** (lee los scripts que nombran los comandos; sin Bash, sin escribir y sin red) y el runner valida el resultado:
+cada paso pendiente queda en un grupo exactamente una vez (los que Claude no cubre van solos), «esperar a» solo a tareas
+en marcha, textos recortados y nada que parezca un secreto. Se guarda en `projects/{pid}/externalPlan/{tu uid}`. **Los
+comandos no se ejecutan nunca**: la app los enseña con los pasos originales de cada tarea debajo, y si los pasos cambian
+(se fusiona otra tarea, marcas uno) vuelve al agrupado por comando hasta que reagrupes. Usa `BACKCODE_REFINE_MODEL`.
+
 ## Uso y cuota
 Mientras una tarea se ejecuta, la ficha y «En directo» muestran sus tokens y un coste aproximado («≈ $1.20») calculado
 con la tabla de precios por familia de modelo de `src/prices.ts`; al acabar cada turno lo sustituye el coste exacto de

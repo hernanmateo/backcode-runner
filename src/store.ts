@@ -338,7 +338,7 @@ export class Store {
   // refine: sabe refinar ideas con Claude Code (refineFeature solo se lo encarga a runners que lo anuncian).
   // live: recibe los mensajes del hilo mientras Claude trabaja (y se puede parar); remoteControl: puede abrir la sesión
   // de una tarea en la app de Claude. chat: atiende la conversación libre (projects/{pid}/chats).
-  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean; description?: string; run?: string }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; fixConflicts?: boolean; fixChecks?: boolean; revert?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
+  capabilities: { pr: "github" | "bitbucket" | null; expo: boolean; deploys: { id: string; name: string; dir: string; env?: FirebaseDeployEnv; provider?: "wrangler" | "supabase" | "firebase"; detected?: boolean; config?: boolean; description?: string; run?: string }[]; ota: { channels: string[]; via: "eas" | "script"; server?: string; provider?: "eas" | "xprem" | "custom"; script?: string } | null; build: { platforms: ("ios" | "android")[] } | null; install?: { platforms: ("ios" | "android")[] } | null; refine: boolean; live: boolean; remoteControl: boolean; knowledge?: boolean; consolidateExternal?: boolean; fixConflicts?: boolean; fixChecks?: boolean; revert?: boolean; localChecks?: string[]; rerunChecks?: boolean; githubActions?: boolean; chat?: boolean; ci?: boolean; ciSetup?: boolean; quotaResume?: boolean; handoff?: boolean } = { pr: null, expo: false, deploys: [], ota: null, build: null, refine: true, live: true, remoteControl: false, knowledge: true, fixConflicts: true, chat: true };
 
   /**
    * Idioma del perfil del usuario en la app (users/{uid}.lang) para todo lo que escribe el runner; se sigue en vivo, así
@@ -762,6 +762,25 @@ export class Store {
       ...("error" in outcome ? { status: "failed", error: outcome.error.slice(0, 1000) } : { status: "done", ...outcome }),
       updatedAt: serverTimestamp(),
     });
+  }
+
+  // --- «Pasos externos» reagrupados con Claude (external-plan.ts): projects/{pid}/externalPlan/{uid}, el de quien lo pide ---
+
+  /** Cuántos pasos «Después de mergear» tiene cada tarea fusionada (0 si no existe o no está fusionada). */
+  async afterMergeSteps(fids: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    await Promise.all(
+      [...new Set(fids)].map(async (fid) => {
+        const d = await getDoc(this.feature(fid)).catch(() => null);
+        const data = d?.data() as { status?: string; merged?: unknown; result?: { afterMerge?: unknown[] } } | undefined;
+        out.set(fid, data?.status === "done" && data.merged && Array.isArray(data.result?.afterMerge) ? data.result.afterMerge.length : 0);
+      }),
+    );
+    return out;
+  }
+
+  async saveExternalPlan(plan: { groups: unknown[]; inputHash: string; costUsd: number }): Promise<void> {
+    await setDoc(doc(this.project(), "externalPlan", this.uid), { groups: JSON.parse(JSON.stringify(plan.groups)) as unknown[], inputHash: plan.inputHash, costUsd: plan.costUsd, by: this.uid, generatedAt: serverTimestamp() });
   }
 
   // --- Conversación libre con mi runner (botón junto a «Proponer una idea»): projects/{pid}/chats, solo los míos ---

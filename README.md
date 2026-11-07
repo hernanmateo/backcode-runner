@@ -144,6 +144,11 @@ For every task you accept, the runner:
    what fails. At most 3 times per run. It opens no new door: it's the same code the runner already runs on that work before
    merging; only the timing changes. And a test or check is never an “After merging” step: Claude sees the project's checks
    in `open_pull_request` and, if it lists one anyway (e.g. `cd tests && npm run test:rules`), the runner drops it.
+   In the app's «External steps» screen (the manual «After merging» steps you have left), «Regroup with Claude» asks your
+   runner (≥ 1.5.46, action `consolidateExternal`) to group them like a person would: steps that are the same work even
+   with different commands, in order, with what to check first, how to roll back and which running task to wait for.
+   Claude works read-only on a copy of the main branch (no Bash, no writes, no network); the runner checks every pending
+   step lands in exactly one group and saves it in `projects/{pid}/externalPlan/{your uid}`. Commands are never run.
 4. **Reviews the result** (protected paths, secrets in the diff), commits, pushes and opens a **draft PR**. Claude never pushes.
 5. **Reports live** to the app: what Claude says, the commands it runs, the files it touches, cost and tokens.
 
