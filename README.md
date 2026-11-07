@@ -385,7 +385,12 @@ Control). It runs with **your normal Claude Code permissions and settings, outsi
 unfinished work in that folder (the app warns before opening it). The command is fixed: the only text from the app is the
 first message, passed as a single argument through environment variables (the `sh -c` line never contains it). Before
 launching, the supervisor makes sure the Backcode plugin is active in that folder (it installs it with `--scope user` if
-missing). One per project: if one is already open, the same link is returned (`result.reused`, the new prompt isn't sent).
+missing). One per project. **Since 1.5.49 a first message is never dropped**: if one is already open *with* a link and the
+request has no prompt (or the same one it was opened with —kept only as a sha256 in memory, never on disk—), the same link
+is returned (`result.reused`); with a different prompt, or if the open one has **no link** (own or adopted after a
+restart), it's closed (without publishing `closed`: it goes straight to `opening`) and a new one is opened with that
+prompt (`result.replaced`, with the new link). If a new one couldn't be launched (no Claude Code, no folder), the open one
+is left untouched.
 `closeProjectSession` closes it. **Since 1.5.37 it survives restarts and updates of the supervisor/runner**: it runs in
 its own process group with pipes that don't depend on the runner (and, under the systemd service, in its own
 `systemd-run --user --scope`), its pid, link and project are saved in `~/.backcode/sessions.json` (0600, no paths or
@@ -400,8 +405,13 @@ ends with `result.url` or `result.code` (`unavailable`, `noRepo`, `plugin`, `tim
 is looked for in every new chunk of the TUI output with some overlap (also inside OSC 8 hyperlinks, split by escape
 sequences or wrapped over two lines), so it's found even when Claude starts working right away on the first message. If
 it hasn't arrived after 90 s but the session is alive and producing output, it is **not killed**: it's published as `open`
-without `url` (`result.linkless`), the app offers «Open the Claude app» (it's in its session list) and «Close session», and
-a link that arrives later is added. It only fails when it really didn't start (it exited, isn't logged in, or printed
+without `url` (`result.linkless`), and a link that arrives later is added (the app opens that deep link if you're still
+on the screen). Since 1.5.49 `linkless` is an explicit last resort: the app says it couldn't get the link and offers
+«Try again» (a new session) and «Close session», instead of the Claude app's generic list; the runner logs only the
+lines that mention Remote Control or claude.ai. Also since 1.5.49 the simulated terminal is wide and fixed (`stty cols 500
+rows 60`) so the link comes out whole on one line, a link followed by «…» is treated as truncated, and a wrapped link is
+only joined with the next line when the id is still short and that line is nothing but the continuation (the next TUI
+line —«Working…», «Ready»…— is never glued to the link, which used to produce a wrong deep link). It only fails when it really didn't start (it exited, isn't logged in, or printed
 nothing), and the error carries only diagnostic lines, never the conversation text. The same applies to the tasks' Remote
 Control. Only the computer's owner
 can request it (the rules and the app: the button only shows on your own computers). In the app: the project's Overview, and

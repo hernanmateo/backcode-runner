@@ -105,8 +105,11 @@ export interface ControlHooks {
 
 export interface ControlOutcome {
   status: "done" | "failed";
-  /** `linkless`: sesión directa abierta y viva, pero sin enlace (la app ofrece la lista de sesiones de la app de Claude). */
-  result: { error?: string; updated?: boolean; pluginError?: string; url?: string; linkless?: boolean; reused?: boolean; code?: SessionErrorCode };
+  /**
+   * `linkless`: sesión directa abierta y viva, pero aún sin enlace (último recurso: la app lo dice y ofrece reintentar).
+   * `replaced`: había otra abierta (sin enlace o con otro primer mensaje) y se ha sustituido por esta.
+   */
+  result: { error?: string; updated?: boolean; pluginError?: string; url?: string; linkless?: boolean; reused?: boolean; replaced?: boolean; code?: SessionErrorCode };
   /** Lo que corta este proceso (reiniciar, apagar) va después de dejar el resultado en la petición. */
   after?: () => void | Promise<void>;
 }
@@ -208,7 +211,7 @@ export async function runControlRequest(target: ControlTarget, hooks: ControlHoo
       if (!hooks.sessions) return { status: "failed", result: { code: "unavailable", error: t("remote.unavailable") } };
       const r = await hooks.sessions.open(req.projectId, { name: project.name, repoPath: project.repoPath }, req.prompt);
       return r.ok
-        ? { status: "done", result: { ...(r.url ? { url: r.url } : { linkless: true }), ...(r.reused ? { reused: true } : {}) } }
+        ? { status: "done", result: { ...(r.url ? { url: r.url } : { linkless: true }), ...(r.reused ? { reused: true } : {}), ...(r.replaced ? { replaced: true } : {}) } }
         : { status: "failed", result: { ...(r.code ? { code: r.code } : {}), ...(r.error ? { error: r.error } : {}) } };
     }
     case "closeProjectSession":

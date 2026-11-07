@@ -26,6 +26,9 @@ export interface RemoteSession {
 
 const LINK_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/g;
 const ID_CHAR = /[A-Za-z0-9]/;
+const SESSION_PREFIX = "https://claude.ai/code/session_";
+/** Largo del id de una sesión (como los ids de Anthropic: «01» + 22): solo uno más corto se junta con la línea siguiente. */
+const SESSION_ID_LEN = 24;
 /** Lo que se vuelve a mirar del trozo anterior (una URL partida entre dos trozos) y lo que se guarda de texto. */
 const OVERLAP = 1024;
 const KEEP = 20_000;
@@ -93,26 +96,41 @@ export function stripTerminal(raw: string): { compact: string; spaced: string; l
 /**
  * La URL de la sesión en un texto ya sin secuencias, o null. Una que acaba justo al final del texto no vale aún (puede
  * venir el resto en el próximo trozo) salvo con `final`. Si la TUI la envuelve (acaba en un salto de línea y la línea
- * siguiente sigue con letras y números, tras espacios o bordes │), se juntan los dos trozos.
+ * siguiente sigue con letras y números, tras espacios o bordes │), se juntan los dos trozos, pero solo si esa
+ * continuación es todo lo que queda de la línea (como mucho con espacios y un borde): la línea siguiente de la TUI
+ * («Working on it», «Ready»…) no se pega nunca al enlace. Una URL seguida de «…» está recortada: no vale.
  */
 export function findLink(text: string, final = false): string | null {
   for (const m of text.matchAll(LINK_RE)) {
     let url = m[0];
     let end = m.index + url.length;
-    while (true) {
+    let pending = false;
+    // Un id ya completo (session_01 + 22, como los demás ids de Anthropic) no sigue en la línea siguiente.
+    while (url.length - SESSION_PREFIX.length < SESSION_ID_LEN) {
       const wrap = /^\r*\n[\r\n]*[ \t│┃|]*/.exec(text.slice(end));
       if (!wrap) break;
-      const cont = /^[A-Za-z0-9]+/.exec(text.slice(end + wrap[0].length))?.[0];
+      const from = end + wrap[0].length;
+      const cont = /^[A-Za-z0-9]+/.exec(text.slice(from))?.[0];
       if (!cont) {
         // El salto de línea y nada más: puede que la continuación aún no haya llegado.
-        if (end + wrap[0].length >= text.length && !final) return null;
+        if (from >= text.length && !final) pending = true;
+        break;
+      }
+      const tail = /^[ \t]*[│┃|]?[ \t]*(\r|\n|$)/.exec(text.slice(from + cont.length));
+      // La línea sigue con más texto: no es la URL envuelta, es otra línea de la TUI.
+      if (!tail) break;
+      // La línea aún no ha acabado de llegar: puede seguir con más texto.
+      if (!tail[1] && !final) {
+        pending = true;
         break;
       }
       url += cont;
-      end += wrap[0].length + cont.length;
+      end = from + cont.length;
     }
+    if (pending) return null;
     if (end >= text.length && !final) return null;
     if (end < text.length && ID_CHAR.test(text[end])) continue;
+    if (text[end] === "…" || text.startsWith("...", end)) continue;
     return url;
   }
   return null;
@@ -173,6 +191,21 @@ export function diagnostic(text: string): string {
 const NOT_STARTED_RE = /not logged in|please (run )?\/login|must be logged in|invalid api key|unauthori[sz]ed|remote control is not (available|enabled)|remote control (is )?disabled/i;
 export const notStarted = (text: string) => NOT_STARTED_RE.test(text);
 
+/**
+ * Sin enlace a tiempo: lo que se apunta en el log del runner para saber por qué. Solo las líneas que hablan de Remote
+ * Control o de claude.ai (nunca el texto de la conversación), recortado.
+ */
+export function linkDiagnostic(text: string): string {
+  const lines = text
+    .split(/[\r\n]+/)
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l && /remote|claude\.ai/i.test(l));
+  return [...new Set(lines)].slice(-3).join(" · ").slice(-300);
+}
+
+/** Tamaño del terminal simulado: ancho de sobra para que la URL de la sesión salga entera en una línea. */
+export const PTY_SIZE = "stty cols 500 rows 60 2>/dev/null";
+
 const ARG_VAR = "BC_RC_ARG_";
 
 /** Variables que no deben pasar a la sesión: las del propio runner y las que marcarían a Claude como sesión hija. */
@@ -227,7 +260,8 @@ export const SESSION_MARK = "sleep 2147483647";
 export function remoteCommand(args: string[], platform: NodeJS.Platform = process.platform, persistent = false): { cmd: string; env: Record<string, string> } {
   const refs = args.map((_, i) => `"$${ARG_VAR}${i}"`).join(" ");
   const env = Object.fromEntries(args.map((a, i) => [`${ARG_VAR}${i}`, a]));
-  const inner = platform === "darwin" ? `script -q /dev/null ${refs}` : `script -qfc '${refs}' /dev/null`;
+  // Terminal ancho y fijo (PTY_SIZE): sin tamaño, Claude Code dibuja a ~80 columnas y puede partir o recortar el enlace.
+  const inner = platform === "darwin" ? `script -q /dev/null sh -c '${PTY_SIZE}; exec "$@"' sh ${refs}` : `script -qfc '${PTY_SIZE}; exec ${refs}' /dev/null`;
   return { cmd: persistent ? keepAlive(inner) : `cat | ${inner}`, env };
 }
 
@@ -346,6 +380,8 @@ export function watchRemoteControl(child: ChildProcessWithoutNullStreams, timeou
       if (late) return found(late);
       if (alive && scanner.visible() && !notStarted(scanner.text())) {
         settled = true;
+        const diag = linkDiagnostic(scanner.text());
+        console.warn(`[remote] sin enlace de la sesión tras ${Math.round(timeoutMs / 1000)} s (se sigue esperando)${diag ? `: ${diag}` : ""}`);
         resolve(session());
         return;
       }
