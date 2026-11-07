@@ -42,6 +42,7 @@ import { bitbucketHost, githubHost, type PrHost } from "./hosts.js";
 import { devInstalls, resumeDevServer, stopDevServer } from "./dev-server.js";
 import { installPlatforms, listDevices } from "./devices.js";
 import { refreshKnowledge } from "./knowledge.js";
+import { consolidateExternal } from "./external-plan.js";
 import { fixConflicts } from "./conflicts.js";
 import { revertCheck, revertPr } from "./revert.js";
 import { prepareTaskDependencies } from "./task-deps.js";
@@ -1390,6 +1391,8 @@ async function main(): Promise<void> {
 
     refine: true,
     knowledge: true,
+    // «Reagrupar con Claude» los pasos externos (external-plan.ts): la app solo ofrece el botón si el runner lo sabe hacer.
+    consolidateExternal: true,
     // Continúa tareas que un admin le pasa desde otro runner (handoff.ts): el servidor solo se las pasa si lo anuncia.
     handoff: true,
     fixConflicts: true,
@@ -1863,6 +1866,9 @@ async function main(): Promise<void> {
         const work = withStopScope(stopState, () =>
           action.type === "knowledge"
             ? refreshKnowledge(cfg, store, agentEnv(), agentSignal, { force: true }).then((): { ok: boolean; result: ActionResult } => ({ ok: true, result: {} }))
+            : action.type === "consolidateExternal"
+              ? // «Reagrupar con Claude» los pasos externos (external-plan.ts): solo lectura, guarda el plan de quien lo pide.
+                consolidateExternal(cfg, store, agentEnv(), agentSignal, action as { input?: unknown; inputHash?: unknown }).then((r): { ok: boolean; result: ActionResult } => ({ ok: r.ok, result: r.result as ActionResult }))
             : action.type === "fixConflicts"
               ? fixConflicts(cfg, store, prHost, agentEnv(), agentSignal, String(action.featureId ?? ""))
               : action.type === "fixChecks"
